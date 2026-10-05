@@ -1,0 +1,22 @@
+# BIOS dumps and anything derived from them stay local: bring your own.
+*.BIN
+*.bin
+*.EROM
+*.ROM1
+*.ROM2
+*.NVM
+*.nvm
+*.mec
+*.MEC
+*.ps2
+/extracted/
+/analysis/
+/ghidra_proj*/
+
+# Local toolchain and build output
+/vendor/
+/.venv/
+__pycache__/
+/app/.build/
+/app/BootScreen.app/
+.DS_Store
