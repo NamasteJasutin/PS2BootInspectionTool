@@ -23,11 +23,19 @@ final class AppModel: ObservableObject {
     @Published var customLaunches = 30.0 { didSet { if historySource == .custom { rebuildHistory() } } }
     @Published private(set) var history = PlayHistory()
 
-    @Published var sceneKind: SceneKind = .boot { didSet { rebuildTimeline(); frame = 0 } }
+    @Published var sceneKind: SceneKind = .boot { didSet { rebuildTimeline(); frame = startFrame } }
     @Published var video: VideoMode = .ntsc { didSet { rebuildTimeline() } }
     /// Warning scene: seconds until the drive reports a change and the scene fades out.
     @Published var warningExitSeconds = 10.0 { didSet { rebuildTimeline() } }
+    /// Black screen between power-on and the first frame (`notes/boot_sequence.md` §4).
+    @Published var powerOnSeconds = 3.0
     @Published var frame: Float = 0
+    var startFrame: Float { -Float(powerOnSeconds) * timeline.framesPerSecond }
+    var bootPhase: BootPhase? {
+        guard frame < 0 else { return nil }
+        let elapsed = Float(powerOnSeconds) + frame / timeline.framesPerSecond
+        return BootPhase.all[BootPhase.index(elapsed: elapsed, total: Float(powerOnSeconds))]
+    }
     @Published var playing = true
     @Published var loop = true
     @Published var speed = 1.0
@@ -69,6 +77,7 @@ final class AppModel: ObservableObject {
         var cardCandidates = [defaults.url(forKey: "card")].compactMap { $0 }
         cardCandidates += Self.files(in: Self.pcsx2.appendingPathComponent("memcards"))
         for url in cardCandidates where card == nil { loadCard(url, quiet: true) }
+        frame = startFrame
     }
 
     private static func files(in dir: URL) -> [URL] {
@@ -164,7 +173,7 @@ final class AppModel: ObservableObject {
         var f = frame + Float(dt * speed) * timeline.framesPerSecond
         let end = Float(timeline.endFrame)
         if f >= end {
-            if loop { f = 0 } else { f = end; playing = false }
+            if loop { f = startFrame } else { f = end; playing = false }
         }
         frame = f
     }

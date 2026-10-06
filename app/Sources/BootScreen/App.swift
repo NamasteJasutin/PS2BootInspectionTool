@@ -65,10 +65,15 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                Text(statusLine)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(8)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(statusLine)
+                    if let phase = model.bootPhase {
+                        Text("booting: \(phase.name)").foregroundStyle(.yellow.opacity(0.8))
+                    }
+                }
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.7))
+                .padding(8)
             }
             Divider()
             Sidebar().frame(width: 310)
@@ -77,6 +82,9 @@ struct ContentView: View {
 
     private var statusLine: String {
         let c = model.camera
+        if model.frame < 0 {
+            return String(format: "power-on %+5.2f s  (opening starts at 0)", model.frame / model.timeline.framesPerSecond)
+        }
         return String(format: "frame %6.1f  %5.2f s  camera z %6.1f  roll %+.2f  stage %d",
                       model.frame, model.frame / model.timeline.framesPerSecond, c.z, c.roll, c.stage)
     }
@@ -135,11 +143,12 @@ struct Sidebar: View {
                     HStack {
                         Button(model.playing ? "Pause" : "Play") { model.playing.toggle() }
                             .keyboardShortcut(.space, modifiers: [])
-                        Button("Restart") { model.frame = 0; model.playing = true }
+                        Button("Restart") { model.frame = model.startFrame; model.playing = true }
                         Toggle("Loop", isOn: $model.loop)
                     }
                     Slider(value: Binding(get: { Double(model.frame) }, set: { model.frame = Float($0) }),
-                           in: 0 ... Double(max(model.timeline.endFrame, 1)))
+                           in: Double(model.startFrame) ... Double(max(model.timeline.endFrame, 1)))
+                    slider("Power-on black screen", $model.powerOnSeconds, 0 ... 6, format: "%.1f s")
                     slider("Speed", $model.speed, 0.05 ... 2, format: "%.2fx")
                     if model.sceneKind == .boot {
                         slider("Disc identified after", $model.discSeconds, 0 ... 10.5, format: "%.1f s")

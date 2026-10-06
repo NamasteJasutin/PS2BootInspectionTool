@@ -93,6 +93,36 @@ public enum VideoMode: String, CaseIterable, Identifiable {
     public var aspectY: Float { self == .pal ? 0.526271 : 0.457627 }
 }
 
+/// What the console is busy with while the screen is still black after power-on. Durations
+/// are the mid-points of the estimates in `notes/boot_sequence.md` (nothing was measured).
+public struct BootPhase {
+    public let name: String
+    public let seconds: Float
+    public static let all: [BootPhase] = [
+        BootPhase(name: "IOP boot #1: IOPBOOT + 29 modules from ROM", seconds: 0.55),
+        BootPhase(name: "EELOAD loads rom0:OSDSYS (363 KB)", seconds: 0.20),
+        BootPhase(name: "OSDSYS stub decompresses itself to 0x200000", seconds: 0.06),
+        BootPhase(name: "IOP boot #2: rom0:UDNL rom0:OSDCNF, 39 modules", seconds: 0.85),
+        BootPhase(name: "Memory card mount (sceMcGetInfo, system folder)", seconds: 0.30),
+        BootPhase(name: "Asset archives: 1.7 MB read, 1.1 MB LZ-decoded", seconds: 0.70),
+        BootPhase(name: "Sound bank upload to SPU2 (410 KB)", seconds: 0.27),
+        BootPhase(name: "CDVD S-commands, NVRAM config, history read, threads", seconds: 0.10),
+        BootPhase(name: "Video init: GS reset, sync, cleared buffers", seconds: 0.05),
+    ]
+    public static var totalSeconds: Float { all.reduce(0) { $0 + $1.seconds } }
+
+    /// Index of the phase active `elapsed` seconds into a black period of `total` seconds.
+    public static func index(elapsed: Float, total: Float) -> Int {
+        let scaled = elapsed / max(total, 0.01) * totalSeconds
+        var t: Float = 0
+        for (i, p) in all.enumerated() {
+            t += p.seconds
+            if scaled < t { return i }
+        }
+        return all.count - 1
+    }
+}
+
 /// Which of the opening's two scenes is being shown.
 public enum SceneKind: String, CaseIterable, Identifiable {
     case boot = "Boot (towers)"

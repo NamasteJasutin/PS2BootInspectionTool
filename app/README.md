@@ -24,6 +24,9 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
 * **Scenes**: the boot animation, or the red "Please insert a PlayStation or PlayStation 2
   format disc" screen (dolly-in, spinning light source with 87.5 % feedback, flares, 128
   drifting puffs, red-tinted prisms, text in the console's language, its own ambient sound).
+* **Power-on**: an adjustable black period (default 3 s, the estimate in
+  `notes/boot_sequence.md`) with a readout of what the console is doing at that moment —
+  two IOP boots, loading OSDSYS, mounting the card, decoding assets, uploading the sound bank.
 * **Time**: pause, scrub, slow down, loop; choose when the drive "identifies the disc",
   which is what releases the camera into its dive.
 * **Free camera**: drag to look, scroll to fly, right-drag to slide.

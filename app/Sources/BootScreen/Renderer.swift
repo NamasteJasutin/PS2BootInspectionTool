@@ -174,6 +174,10 @@ final class Renderer {
     func render(frame: Float, scene: OpeningScene, timeline: Timeline, freeCamera: ViewCamera?,
                 options: RenderOptions, commandBuffer cb: MTLCommandBuffer) -> MTLTexture {
         ViewCamera.video = timeline.video
+        if frame < 0 {       // still booting: the TV shows nothing (or a cleared buffer)
+            pass(cb, color: "scene", clear: true, depth: .none) { _ in }
+            return targets["scene"]!
+        }
         if timeline.kind == .warning {
             return renderWarning(frame: frame, timeline: timeline, freeCamera: freeCamera, options: options, commandBuffer: cb)
         }
