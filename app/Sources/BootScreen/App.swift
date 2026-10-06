@@ -113,6 +113,9 @@ struct Sidebar: View {
                     }
                     .labelsHidden()
                     if model.sceneKind == .warning {
+                        Picker("Language", selection: $model.language) {
+                            ForEach(AppModel.languages, id: \.0) { Text($0.1).tag($0.0) }
+                        }
                         slider("Drive reports a change after", $model.warningExitSeconds, 3 ... 60, format: "%.0f s")
                         Text("The console holds this screen until a disc is inserted or removed; then it fades out over two seconds.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

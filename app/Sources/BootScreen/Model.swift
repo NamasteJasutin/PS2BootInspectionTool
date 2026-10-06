@@ -35,6 +35,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var timeline = Timeline()
 
     @Published var options = RenderOptions()
+    /// Console language setting: picks the warning text texture (TEXOPNG + letter).
+    @Published var language = "E" { didSet { options.warningTexture = "TEXOPNG" + language } }
+    static let languages: [(String, String)] = [("J", "Japanese"), ("E", "English"), ("F", "French"), ("S", "Spanish"),
+                                                ("G", "German"), ("I", "Italian"), ("D", "Dutch"), ("P", "Portuguese"),
+                                                ("R", "Russian"), ("K", "Korean"), ("H", "Chinese (traditional)"),
+                                                ("C", "Chinese (simplified)")]
     @Published var soundEnabled = true
     @Published var soundVolume = 0.8
     @Published var soundStatus = "No sound loaded"
