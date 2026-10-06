@@ -11,7 +11,10 @@ final class AudioPlayer {
     private var lock = os_unfair_lock()
     private var chime: [Float] = []
     private var cue: [Float] = []
+    private var warning: [Float] = []
     private var cueOffset = 0          // in stereo frames
+    private var scene = SceneKind.boot
+    private var fadeStart = Int.max    // stereo frame where the warning's stop-with-release begins
     private var position = 0.0        // stereo frames into the chime
     private var rate = 1.0
     private var playing = false
@@ -34,6 +37,7 @@ final class AudioPlayer {
         os_unfair_lock_lock(&lock)
         chime = sound.chime
         cue = sound.cue
+        warning = sound.warning
         os_unfair_lock_unlock(&lock)
         ready = true
     }
@@ -43,19 +47,27 @@ final class AudioPlayer {
         guard frame >= 0 else { return 0 }
         let c = right ? 1 : 0
         var v: Float = 0
-        if frame * 2 + c < chime.count { v += chime[frame * 2 + c] }
-        let k = frame - cueOffset
-        if k >= 0, k * 2 + c < cue.count { v += cue[k * 2 + c] }
+        if scene == .warning {
+            guard !warning.isEmpty else { return 0 }
+            let n = warning.count / 2
+            v = warning[(frame % n) * 2 + c]
+            // Stop command with release rate 0xF: a linear fade of at most 1.37 s.
+            if frame > fadeStart { v *= max(0, 1 - Float(frame - fadeStart) / Float(sampleRate * 1.37)) }
+        } else {
+            if frame * 2 + c < chime.count { v += chime[frame * 2 + c] }
+            let k = frame - cueOffset
+            if k >= 0, k * 2 + c < cue.count { v += cue[k * 2 + c] }
+        }
         return v * gain
     }
 
-    var totalFrames: Int { max(chime.count / 2, cueOffset + cue.count / 2) }
-
     /// Called once per display frame with the opening's clock.
-    func sync(frame: Float, speed: Double, playing: Bool, diveFrame: Int, enabled: Bool, volume: Float) {
+    func sync(frame: Float, speed: Double, playing: Bool, diveFrame: Int, scene: SceneKind, enabled: Bool, volume: Float) {
         let target = Double(frame) / Double(Timeline.framesPerSecond) * sampleRate
         os_unfair_lock_lock(&lock)
+        self.scene = scene
         cueOffset = Int(Double(diveFrame) / Double(Timeline.framesPerSecond) * sampleRate)
+        fadeStart = scene == .warning ? cueOffset : .max
         rate = speed
         gain = volume
         let wasPlaying = self.playing

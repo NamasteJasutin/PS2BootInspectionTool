@@ -19,6 +19,8 @@ struct RenderOptions: Equatable {
     /// Draw the scripted camera's route and its current frustum (best seen with the free camera).
     var cameraPath = false
     var orbSeed: Float = 4000
+    /// Texture name of the warning text in the current language (e.g. TEXOPNGE).
+    var warningTexture: String? = "TEXOPNGE"
 }
 
 /// A camera in the opening's world: +Z is into the screen, +Y is down the screen.
@@ -32,7 +34,7 @@ struct ViewCamera: Equatable {
     }
 
     init(_ s: CameraState) {
-        self.init(position: s.position, forward: SIMD3(0, 0, 1), up: s.up)
+        self.init(position: s.position, forward: s.forward, up: s.up)
     }
 
     /// Screen-right, screen-down and view axes (same construction as the console's camera matrix).
@@ -52,24 +54,25 @@ struct ViewCamera: Equatable {
     }
 }
 
-private struct Vertex {
+struct Vertex {
     var pos: SIMD4<Float>
     var uv: SIMD2<Float>
     var color: SIMD4<Float>
 }
 
-private struct GlassVertex {
+struct GlassVertex {
     var pos: SIMD4<Float>
     var a: SIMD4<Float>      // refraction offset (uv), reflection uv
     var b: SIMD4<Float>      // noise uv, magnification, rim
     var c: SIMD4<Float>      // projected cube centre (uv), reflection strength
-    var tint: SIMD4<Float>
+    var tint: SIMD4<Float>   // multiplies the refracted frame
+    var reflTint: SIMD4<Float>
 }
 
-private enum Blend: Hashable { case opaque, add, addSrcAlpha, alpha }
-private enum DepthMode: Hashable { case none, test, write }
+enum Blend: Hashable { case opaque, add, addSrcAlpha, alpha }
+enum DepthMode: Hashable { case none, test, write }
 
-private struct Batch {
+struct Batch {
     var texture: String
     var blend: Blend
     var depth: DepthMode = .none
@@ -85,8 +88,8 @@ final class Renderer {
     private var depthStates: [DepthMode: MTLDepthStencilState] = [:]
     private let samplerClamp: MTLSamplerState
     private let samplerRepeat: MTLSamplerState
-    private var textures: [String: MTLTexture] = [:]
-    private var targets: [String: MTLTexture] = [:]
+    var textures: [String: MTLTexture] = [:]
+    var targets: [String: MTLTexture] = [:]
     private(set) var size = (width: 1280, height: 960)
 
     private(set) var assets: OpeningAssets?
@@ -156,6 +159,9 @@ final class Renderer {
     @discardableResult
     func render(frame: Float, scene: OpeningScene, timeline: Timeline, freeCamera: ViewCamera?,
                 options: RenderOptions, commandBuffer cb: MTLCommandBuffer) -> MTLTexture {
+        if timeline.kind == .warning {
+            return renderWarning(frame: frame, timeline: timeline, freeCamera: freeCamera, options: options, commandBuffer: cb)
+        }
         let scripted = timeline.camera(at: frame)
         let camera = freeCamera ?? ViewCamera(scripted)
         func cameraAt(_ f: Float) -> ViewCamera { freeCamera ?? ViewCamera(timeline.camera(at: f)) }
@@ -214,7 +220,10 @@ final class Renderer {
             for front in [false, true] {
                 var gv: [GlassVertex] = []
                 for (i, p) in positions.enumerated() {
-                    appendGlassCube(&gv, index: i, model: p, frame: frame, camera: camera, front: front)
+                    appendGlassCube(&gv, centre: SIMD3(p.x * 3.5, p.y * 3.5, p.z * -15 + 150),
+                                    rotation: OpeningMotion.cubeRotation(i, frame: frame), half: 1.8,
+                                    tint: SIMD3(112, 112, 152) / 128, reflectTint: SIMD3(repeating: 1), refraction: 1,
+                                    reflection: (0.25, 0.5), camera: camera, front: front)
                 }
                 guard !gv.isEmpty else { continue }
                 pass(cb, color: front ? "scene" : "copy", clear: false, depth: .none) { enc in
@@ -374,7 +383,7 @@ final class Renderer {
         }
     }
 
-    private func appendBillboard(_ out: inout [Vertex], centre: SIMD3<Float>, half: Float, color: SIMD4<Float>, camera: ViewCamera) {
+    func appendBillboard(_ out: inout [Vertex], centre: SIMD3<Float>, half: Float, color: SIMD4<Float>, camera: ViewCamera) {
         let b = camera.basis
         let corners: [(Float, Float)] = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
         let q = corners.map { c in
@@ -428,7 +437,7 @@ final class Renderer {
     }
 
     /// A world-space line drawn `width` target pixels wide.
-    private func appendLine(_ out: inout [Vertex], _ a: SIMD3<Float>, _ b: SIMD3<Float>, color: SIMD4<Float>,
+    func appendLine(_ out: inout [Vertex], _ a: SIMD3<Float>, _ b: SIMD3<Float>, color: SIMD4<Float>,
                             width: Float = 3, camera: ViewCamera) {
         var ca = camera.project(a), cb = camera.project(b)
         let near: Float = 1.05
@@ -449,7 +458,7 @@ final class Renderer {
     /// The scripted camera's route: a spine through every frame's position, a rung every
     /// 10 frames pointing along the camera's screen-up (so the roll shows as a twist), gates
     /// where the scene's events fire, and the frustum at the current frame.
-    private func appendCameraPath(_ out: inout [Vertex], timeline: Timeline, frame: Float, camera: ViewCamera, showFrustum: Bool) {
+    func appendCameraPath(_ out: inout [Vertex], timeline: Timeline, frame: Float, camera: ViewCamera, showFrustum: Bool) {
         let travelled = SIMD4<Float>(1.0, 0.82, 0.25, 0.95), ahead = SIMD4<Float>(1.0, 0.82, 0.25, 0.35)
         let now = Int(frame)
         for f in 0 ..< timeline.endFrame {
@@ -507,22 +516,20 @@ final class Renderer {
     ]
 
     /// Approximation of the console's ten-pass glass: per face, a refracted copy of the frame
-    /// tinted blue-grey, plus the reflection map masked by the noise texture.
-    private func appendGlassCube(_ out: inout [GlassVertex], index: Int, model: SIMD3<Float>, frame: Float,
-                                 camera: ViewCamera, front: Bool) {
-        let centre = SIMD3<Float>(model.x * 3.5, model.y * 3.5, model.z * -15 + 150)
-        let r = OpeningMotion.cubeRotation(index, frame: frame)
+    /// multiplied by `tint`, plus the reflection map (times `reflectTint`) masked by the noise
+    /// texture. `reflection` gives the back/front reflection strengths.
+    func appendGlassCube(_ out: inout [GlassVertex], centre: SIMD3<Float>, rotation r: SIMD3<Float>, half: Float,
+                         tint: SIMD3<Float>, reflectTint: SIMD3<Float>, refraction: Float,
+                         reflection: (back: Float, front: Float), camera: ViewCamera, front: Bool) {
         let rot = float3x3(simd_quatf(angle: r.x, axis: SIMD3(1, 0, 0)))
             * float3x3(simd_quatf(angle: r.y, axis: SIMD3(0, 1, 0)))
             * float3x3(simd_quatf(angle: r.z, axis: SIMD3(0, 0, 1)))
-        let half: Float = 1.8
         let world = Self.cubeCorners.map { centre + rot * ($0 * half) }
         let clip = world.map(camera.project)
         guard clip.allSatisfy({ $0.w > 1 }) else { return }
         func screenUV(_ c: SIMD4<Float>) -> SIMD2<Float> { SIMD2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5) }
         let centreUV = screenUV(camera.project(centre))
         let basis = camera.basis
-        let tint = SIMD3<Float>(112, 112, 152) / 128
         let corners: [SIMD2<Float>] = [SIMD2(0, 0), SIMD2(1, 0), SIMD2(0, 1), SIMD2(1, 1)]
         for (indices, normal) in Self.cubeFaces {
             let n = rot * normal
@@ -535,7 +542,7 @@ final class Renderer {
                 let toEye = normalize(camera.position - world[ci])
                 let rim = pow(1 - abs(dot(n, toEye)), 2) * 0.5 * 32 / 128
                 // Offset the lookup along the face normal, weaker with distance (2/w in uv units).
-                let refract = nView * 2 / clip[ci].w
+                let refract = nView * 2 * refraction / clip[ci].w
                 let reflectScale: Float = front ? 0.5 : -0.25
                 let reflUV = corners[vi] * 0.5 + SIMD2(repeating: 0.25) + nView * reflectScale
                 let noiseShift: Float = front ? 0.0075 : 0.00375
@@ -543,15 +550,16 @@ final class Renderer {
                     pos: clip[ci],
                     a: SIMD4(refract.x, refract.y, reflUV.x, reflUV.y),
                     b: SIMD4(corners[vi].x + noiseShift, corners[vi].y - noiseShift, front ? -0.084 : 0, rim),
-                    c: SIMD4(centreUV.x, centreUV.y, front ? 0.5 : 0.25, 0),
-                    tint: SIMD4(tint.x, tint.y, tint.z, 1)))
+                    c: SIMD4(centreUV.x, centreUV.y, front ? reflection.front : reflection.back, 0),
+                    tint: SIMD4(tint.x, tint.y, tint.z, 1),
+                    reflTint: SIMD4(reflectTint.x, reflectTint.y, reflectTint.z, 1)))
             }
             out.append(contentsOf: [quad[0], quad[1], quad[2], quad[2], quad[1], quad[3]])
         }
     }
 
     /// Full-target quad by default; coordinates are NDC, uv origin top-left.
-    private func appendQuad(_ out: inout [Vertex], x0: Float = -1, y0: Float = -1, x1: Float = 1, y1: Float = 1,
+    func appendQuad(_ out: inout [Vertex], x0: Float = -1, y0: Float = -1, x1: Float = 1, y1: Float = 1,
                             u0: Float = 0, v0: Float = 0, u1: Float = 1, v1: Float = 1,
                             color: SIMD4<Float> = SIMD4(1, 1, 1, 1)) {
         func v(_ x: Float, _ y: Float, _ u: Float, _ w: Float) -> Vertex { Vertex(pos: SIMD4(x, y, 0, 1), uv: SIMD2(u, w), color: color) }
@@ -560,7 +568,7 @@ final class Renderer {
     }
 
     /// A sprite in the console's 640x224 field coordinates.
-    private func appendSprite(_ out: inout [Vertex], x: Float, y: Float, w: Float, h: Float,
+    func appendSprite(_ out: inout [Vertex], x: Float, y: Float, w: Float, h: Float,
                               u: Float, v: Float, uw: Float, vh: Float, texture: (Float, Float), alpha: Float, rgb: Float = 1) {
         appendQuad(&out, x0: x / 320 - 1, y0: 1 - (y + h) / 112, x1: (x + w) / 320 - 1, y1: 1 - y / 112,
                    u0: u / texture.0, v0: v / texture.1, u1: (u + uw) / texture.0, v1: (v + vh) / texture.1,
@@ -569,9 +577,9 @@ final class Renderer {
 
     // MARK: - Metal plumbing
 
-    private enum DepthAction { case none, clear, load }
+    enum DepthAction { case none, clear, load }
 
-    private func pass(_ cb: MTLCommandBuffer, color: String, clear: Bool, depth: DepthAction, _ body: (MTLRenderCommandEncoder) -> Void) {
+    func pass(_ cb: MTLCommandBuffer, color: String, clear: Bool, depth: DepthAction, _ body: (MTLRenderCommandEncoder) -> Void) {
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = targets[color]
         rp.colorAttachments[0].loadAction = clear ? .clear : .load
@@ -588,13 +596,13 @@ final class Renderer {
         enc.endEncoding()
     }
 
-    private func blit(_ cb: MTLCommandBuffer, from: String, to: String) {
+    func blit(_ cb: MTLCommandBuffer, from: String, to: String) {
         guard let enc = cb.makeBlitCommandEncoder(), let src = targets[from], let dst = targets[to] else { return }
         enc.copy(from: src, to: dst)
         enc.endEncoding()
     }
 
-    private func texture(_ name: String) -> MTLTexture? {
+    func texture(_ name: String) -> MTLTexture? {
         name.hasPrefix("@") ? targets[String(name.dropFirst())] : (textures[name] ?? textures["white"])
     }
 
@@ -625,7 +633,7 @@ final class Renderer {
         return p
     }
 
-    private func draw(_ enc: MTLRenderCommandEncoder, _ verts: [Vertex], _ batches: [Batch], format: MTLPixelFormat, hasDepth: Bool) {
+    func draw(_ enc: MTLRenderCommandEncoder, _ verts: [Vertex], _ batches: [Batch], format: MTLPixelFormat, hasDepth: Bool) {
         guard !verts.isEmpty,
               let buffer = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<Vertex>.stride, options: .storageModeShared)
         else { return }
@@ -639,7 +647,7 @@ final class Renderer {
         }
     }
 
-    private func drawGlass(_ enc: MTLRenderCommandEncoder, _ verts: [GlassVertex], source: String) {
+    func drawGlass(_ enc: MTLRenderCommandEncoder, _ verts: [GlassVertex], source: String) {
         guard let buffer = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<GlassVertex>.stride, options: .storageModeShared)
         else { return }
         enc.setRenderPipelineState(pipeline(vertex: "v_glass", fragment: "f_glass", format: .rgba8Unorm, hasDepth: false, blend: .opaque))
@@ -670,12 +678,12 @@ final class Renderer {
         return t.sample(s, in.uv) * in.color;
     }
 
-    struct GlassVertex { float4 pos; float4 a; float4 b; float4 c; float4 tint; };
-    struct GOut { float4 pos [[position]]; float4 a; float4 b; float4 c; float4 tint; };
+    struct GlassVertex { float4 pos; float4 a; float4 b; float4 c; float4 tint; float4 reflTint; };
+    struct GOut { float4 pos [[position]]; float4 a; float4 b; float4 c; float4 tint; float4 reflTint; };
 
     vertex GOut v_glass(uint vid [[vertex_id]], const device GlassVertex* v [[buffer(0)]]) {
         GOut o;
-        o.pos = v[vid].pos; o.a = v[vid].a; o.b = v[vid].b; o.c = v[vid].c; o.tint = v[vid].tint;
+        o.pos = v[vid].pos; o.a = v[vid].a; o.b = v[vid].b; o.c = v[vid].c; o.tint = v[vid].tint; o.reflTint = v[vid].reflTint;
         return o;
     }
 
@@ -684,7 +692,7 @@ final class Renderer {
         float2 uv = in.pos.xy / float2(scene.get_width(), scene.get_height());
         uv += (uv - in.c.xy) * in.b.z + in.a.xy;
         float3 col = scene.sample(clampS, uv).rgb * in.tint.rgb + in.b.w;
-        col += refl.sample(repeatS, in.a.zw).rgb * noise.sample(repeatS, in.b.xy).a * 2.0 * in.c.z;
+        col += refl.sample(repeatS, in.a.zw).rgb * in.reflTint.rgb * noise.sample(repeatS, in.b.xy).a * 2.0 * in.c.z;
         return float4(col, 1.0);
     }
     """

@@ -72,9 +72,19 @@ public struct CameraState {
     public var z: Float
     public var roll: Float
     public var stage: Int
+    /// Downward tilt of the view direction (the warning scene looks slightly down).
+    public var tilt: Float = 0
 
     public var position: SIMD3<Float> { SIMD3(0, 0, z) }
+    public var forward: SIMD3<Float> { SIMD3(0, tilt, 1) }
     public var up: SIMD3<Float> { SIMD3(sin(roll), cos(roll), 0) }
+}
+
+/// Which of the opening's two scenes is being shown.
+public enum SceneKind: String, CaseIterable, Identifiable {
+    case boot = "Boot (towers)"
+    case warning = "Warning (insert disc)"
+    public var id: String { rawValue }
 }
 
 /// The opening's stage machine and camera kinematics, precomputed for every frame.
@@ -85,10 +95,36 @@ public struct Timeline {
     public static let framesPerSecond: Float = 60
 
     public let states: [CameraState]
-    /// Frame at which the dive starts.
+    public let kind: SceneKind
+    /// Frame at which the dive starts (boot scene) or the exit fade starts (warning scene).
     public let diveFrame: Int
     /// First frame after the scene has ended.
     public var endFrame: Int { states.count - 1 }
+
+    /// The warning scene: dolly from z = 672 to 800, then hold with a slow roll until the
+    /// drive reports a change (`exitFrame`), after which the scene fades for 128 frames.
+    public static func warning(exitFrame: Int) -> Timeline {
+        var z: Float = 672, vz: Float = 2.16, az: Float = -0.0178
+        var roll: Float = 0
+        let vr: Float = 0.00462
+        var stage = 4
+        var out = [CameraState(z: z, roll: roll, stage: stage, tilt: -0.03)]
+        let thresholds: [Float] = [16, 56, 104, 320, 672, 800, 1160]
+        for _ in 0 ..< exitFrame + 129 {
+            if stage < 6, thresholds[stage] < z { stage += 1 }
+            if stage == 6 { vz = 0; az = 0 }
+            vz += az
+            z += vz
+            roll += vr
+            if roll > .pi { roll -= 2 * .pi }
+            out.append(CameraState(z: z, roll: roll, stage: stage, tilt: -0.03))
+        }
+        return Timeline(states: out, kind: .warning, diveFrame: exitFrame)
+    }
+
+    private init(states: [CameraState], kind: SceneKind, diveFrame: Int) {
+        self.states = states; self.kind = kind; self.diveFrame = diveFrame
+    }
 
     /// - Parameter discSettledFrame: when the drive has finished identifying the disc
     ///   (0 = already known). The dive needs this and at least two seconds of drift.
@@ -126,6 +162,7 @@ public struct Timeline {
             out.append(CameraState(z: z, roll: roll, stage: stage))
         }
         states = out
+        kind = .boot
         diveFrame = max(dive, 0)
     }
 
@@ -135,7 +172,7 @@ public struct Timeline {
         let i = min(Int(f), endFrame - 1 < 0 ? 0 : endFrame - 1)
         let a = states[i], b = states[min(i + 1, endFrame)]
         let t = f - Float(i)
-        return CameraState(z: a.z + (b.z - a.z) * t, roll: a.roll + (b.roll - a.roll) * t, stage: a.stage)
+        return CameraState(z: a.z + (b.z - a.z) * t, roll: a.roll + (b.roll - a.roll) * t, stage: a.stage, tilt: a.tilt)
     }
 
     /// First frame whose camera has passed depth `z`.
@@ -189,5 +226,33 @@ public enum OpeningMotion {
     /// Number of defocus passes for camera depth `z`.
     public static func defocusPasses(z: Float) -> Int {
         z > 56 ? min(3, max(0, Int((z - 56) / 12))) : 0
+    }
+
+    // MARK: Warning scene
+
+    /// Scene brightness that scales the light source: 26 at z = 672, 39 once parked at 800.
+    public static func warningBrightness(z: Float) -> Float {
+        (740 - (1160 - z)) * 128 / 740 * 0.6
+    }
+
+    /// Light-source disc `i` (0...6): orbit position and the (wildly spinning) rotation vector.
+    public static func warningDisc(_ i: Int, frame: Float) -> (position: SIMD3<Float>, rotation: SIMD3<Float>) {
+        let n = Float(i + 1), k = Float((7 - i) * (7 - i)) * 2 * .pi / 64
+        let r = k / 2
+        let phi = frame.truncatingRemainder(dividingBy: 201) / 32 - .pi + k
+        let base = SIMD3<Float>(0, 0, Float(i) * 0.925 * 2 * .pi / 7)
+        return (SIMD3(r * cos(phi), r * sin(phi), 1160), base + SIMD3(0.2, 0.27, 0.35) * n * frame)
+    }
+
+    /// Black overlay of the warning scene before the camera has parked.
+    public static func warningFadeIn(z: Float) -> Float {
+        z < 800 ? max(0, min(1, (128 - (z - 672)) / 128)) : 0
+    }
+
+    /// Glass prism `i` (0...4) of the warning scene: Euler angles at `frame`.
+    public static func prismRotation(_ i: Int, frame: Float) -> SIMD3<Float> {
+        let s: Float = i == 2 ? 0.9 : Float(i - 2) * 0.8
+        let start = SIMD3<Float>(s * Float((2 * i) % 9) / 4, s * Float((2 * i) % 8) / 5, s * Float((2 * i) % 7) / 6)
+        return start + SIMD3(0.004 / s, 0.003 * s, s / 800 + 0.002) * frame
     }
 }

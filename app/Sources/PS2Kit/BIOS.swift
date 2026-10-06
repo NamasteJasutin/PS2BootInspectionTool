@@ -112,13 +112,14 @@ struct OpeningLayout {
     let towerPositions: Int
     let orbColours: Int
     let cubePositions: Int
+    let prismPositions: Int
 
     static let byROMVersion: [String: OpeningLayout] = [
         // SCPH-70004, v2.00 Europe, 2004-06-14
         "0200EC20040614": OpeningLayout(
             assetNames: 0x27B4F8, textureTable: 0x287700, textureCount: 25,
             slotTable: 0x2891E0, fillTable: 0x289E60, sizeTable: 0x289E98,
-            towerPositions: 0x2895F0, orbColours: 0x289080, cubePositions: 0x289190),
+            towerPositions: 0x2895F0, orbColours: 0x289080, cubePositions: 0x289190, prismPositions: 0x289ED0),
     ]
 }
 
@@ -137,6 +138,8 @@ public struct OpeningAssets {
     public let towerPositions: [[SIMD3<Float>]]
     public let orbColours: [SIMD3<Float>]
     public let cubePositions: [SIMD3<Float>]
+    /// Glass prisms of the warning scene (model units; z maps as (z - 2.5) * 128 + 788).
+    public let prismPositions: [SIMD3<Float>]
     public let textures: [String: TextureImage]
 
     public init(biosURL: URL) throws {
@@ -170,6 +173,8 @@ public struct OpeningAssets {
         orbColours = (0 ..< 4).map { let o = at(layout.orbColours) + $0 * 16
             return SIMD3(osd.f32(o), osd.f32(o + 4), osd.f32(o + 8)) }
         cubePositions = (0 ..< 5).map { let o = at(layout.cubePositions) + $0 * 16
+            return SIMD3(osd.f32(o), osd.f32(o + 4), osd.f32(o + 8)) }
+        prismPositions = (0 ..< 5).map { let o = at(layout.prismPositions) + $0 * 16
             return SIMD3(osd.f32(o), osd.f32(o + 4), osd.f32(o + 8)) }
 
         // Asset names, in table order, to resolve the texture descriptors' asset indices.

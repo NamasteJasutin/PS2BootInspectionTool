@@ -58,7 +58,9 @@ enum OfflineRender {
             if let f = named["free"]?.split(separator: ",").compactMap({ Float($0) }), f.count == 5 {
                 free = FreeCamera(position: SIMD3(f[0], f[1], f[2]), yaw: f[3], pitch: f[4]).view
             }
-            let timeline = Timeline(discSettledFrame: Int((named["disc"].flatMap { Float($0) } ?? 0) * 60))
+            let timeline = named["scene"] == "warning"
+                ? Timeline.warning(exitFrame: Int((named["exit"].flatMap { Float($0) } ?? 10) * 60))
+                : Timeline(discSettledFrame: Int((named["disc"].flatMap { Float($0) } ?? 0) * 60))
             guard let cb = renderer.queue.makeCommandBuffer() else { return fail("no command buffer") }
             let scene = OpeningScene(assets: assets, history: history)
             renderer.render(frame: frame, scene: scene, timeline: timeline, freeCamera: free, options: options, commandBuffer: cb)

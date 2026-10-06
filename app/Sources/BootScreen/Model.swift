@@ -23,12 +23,15 @@ final class AppModel: ObservableObject {
     @Published var customLaunches = 30.0 { didSet { if historySource == .custom { rebuildHistory() } } }
     @Published private(set) var history = PlayHistory()
 
+    @Published var sceneKind: SceneKind = .boot { didSet { rebuildTimeline(); frame = 0 } }
+    /// Warning scene: seconds until the drive reports a change and the scene fades out.
+    @Published var warningExitSeconds = 10.0 { didSet { rebuildTimeline() } }
     @Published var frame: Float = 0
     @Published var playing = true
     @Published var loop = true
     @Published var speed = 1.0
     /// Seconds until the drive has identified the disc; the dive waits for it.
-    @Published var discSeconds = 0.0 { didSet { timeline = Timeline(discSettledFrame: Int(discSeconds * 60)) } }
+    @Published var discSeconds = 0.0 { didSet { rebuildTimeline() } }
     @Published private(set) var timeline = Timeline()
 
     @Published var options = RenderOptions()
@@ -102,6 +105,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func rebuildTimeline() {
+        timeline = sceneKind == .boot ? Timeline(discSettledFrame: Int(discSeconds * 60))
+                                  : .warning(exitFrame: Int(warningExitSeconds * 60))
+    }
+
     /// The chime is synthesised from the BIOS on a background thread (a second or so).
     private func loadSound(_ url: URL) {
         soundStatus = "Synthesising the chime from the BIOS…"
@@ -153,7 +161,7 @@ final class AppModel: ObservableObject {
 
     /// Keeps audio and the visualiser in step with the clock; called once per display frame.
     func syncAudio() {
-        audio.sync(frame: frame, speed: speed, playing: playing, diveFrame: timeline.diveFrame,
+        audio.sync(frame: frame, speed: speed, playing: playing, diveFrame: timeline.diveFrame, scene: sceneKind,
                    enabled: soundEnabled && audio.ready, volume: Float(soundVolume))
         if visualizer.mode != .off {
             let at = Int(Double(frame) / Double(Timeline.framesPerSecond) * audio.sampleRate)

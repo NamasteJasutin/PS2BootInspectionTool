@@ -19,6 +19,9 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
   file when it launches a disc itself (PCSX2 full boot, not fast boot), so many cards have
   none; then the app can invent one from the titles that have saves on the card, or from two
   sliders (titles × launches), or show the empty new-console scene.
+* **Scenes**: the boot animation, or the red "Please insert a PlayStation or PlayStation 2
+  format disc" screen (dolly-in, spinning light source with 87.5 % feedback, flares, 128
+  drifting puffs, red-tinted prisms, text in the console's language, its own ambient sound).
 * **Time**: pause, scrub, slow down, loop; choose when the drive "identifies the disc",
   which is what releases the camera into its dive.
 * **Free camera**: drag to look, scroll to fly, right-drag to slide.
@@ -42,7 +45,7 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
 swift run ps2history <card.ps2|folder> [ls [dir] | cat <file>]   # dump the history / browse a card
 swift run ps2history --bios <bios>                               # check a BIOS can be read
 swift run BootScreen --render <frame> out.png --bios <bios> [--card <card> | --titles N --launches N]
-        [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
+        [--scene warning --exit seconds] [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
 swift run BootScreen --chime <bios> out.wav [dive-frame]        # the synthesised boot sound
 swift run BootScreen --path [disc-seconds]                       # camera route as CSV (frame, time, z, roll, up, stage)
 ```
@@ -76,6 +79,7 @@ swift run BootScreen --path [disc-seconds]                       # camera route 
 * **Chime without reverb**: the console runs every voice through the SPU2's reverb (a
   studio-style preset); the app plays the dry mix. Timing uses the nominal 60 Hz sequencer
   update (the console's timer runs ~1.7 % fast).
-* The second ("insert disc") scene is not implemented.
+* The warning scene's ambient piece is rendered for its first minute and looped; the console
+  plays the full 5.5-minute sequence with its own loop points.
 * Unverified against hardware: which way is up for the tower grid, and whether tower-cap
   colours overflow (toggle *8-bit overflow on tower caps* to see the alternative).

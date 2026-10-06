@@ -276,13 +276,14 @@ public struct SequenceSynth {
 
     /// Mixes `sequence` into `mix` (interleaved stereo) starting `startSeconds` in, growing
     /// the buffer as needed. `sequenceVolume` replaces the file's master volume.
-    public func render(_ sequence: SoundSequence, sequenceVolume: Int, startSeconds: Double, tail: Double = 3, into mix: inout [Float]) {
+    public func render(_ sequence: SoundSequence, sequenceVolume: Int, startSeconds: Double, tail: Double = 3,
+                       maxSeconds: Double = .infinity, into mix: inout [Float]) {
         let rate = Self.sampleRate
         let base = Int(startSeconds * Double(rate))
         var channels = sequence.channels
         var voices: [Voice] = []
         var active: [Int: [Int]] = [:]          // channel << 8 | note -> voice indices
-        for e in sequence.events {
+        for e in sequence.events where Double(e.update) / Self.updatesPerSecond <= maxSeconds {
             let t = base + Int(Double(e.update) / Self.updatesPerSecond * Double(rate))
             switch e.kind {
             case .program(let p):
@@ -313,7 +314,8 @@ public struct SequenceSynth {
             }
         }
         let endUpdate = sequence.events.last?.update ?? 0
-        let total = base + Int((Double(endUpdate) / Self.updatesPerSecond + tail) * Double(rate))
+        let seconds = min(Double(endUpdate) / Self.updatesPerSecond, maxSeconds)
+        let total = base + Int((seconds + tail) * Double(rate))
         if mix.count < total * 2 { mix.append(contentsOf: [Float](repeating: 0, count: total * 2 - mix.count)) }
 
         var samples: [Int: (pcm: [Float], loopStart: Int?)] = [:]
@@ -359,6 +361,8 @@ public struct BootSound {
     public let chime: [Float]
     /// `SNDTNNLS`, the cue the opening starts when the dive begins (no disc / menu boot).
     public let cue: [Float]
+    /// `SNDWARNS`, the ambient loop under the warning scene (first minute of a 5.5-minute piece).
+    public let warning: [Float]
 
     public init(biosURL: URL, driverTableOffsets: (pitch: Int, pan: Int)? = (0x1DBB0 + 0xA0, 0x1E070 + 0xA0)) throws {
         let rom = try ROMDirectory(data: try Data(contentsOf: biosURL))
@@ -374,8 +378,11 @@ public struct BootSound {
         var a: [Float] = [], b: [Float] = []
         synth.render(try SoundSequence(data: try asset("SNDBOOTS")), sequenceVolume: 0x42, startSeconds: 0, into: &a)
         synth.render(try SoundSequence(data: try asset("SNDTNNLS")), sequenceVolume: 0x2A, startSeconds: 0, into: &b)
+        var w: [Float] = []
+        synth.render(try SoundSequence(data: try asset("SNDWARNS")), sequenceVolume: 0x36, startSeconds: 0, tail: 0, maxSeconds: 60, into: &w)
         chime = a
         cue = b
+        warning = w
     }
 
     /// Both cues mixed, with the transition cue placed at `diveFrame`.

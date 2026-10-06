@@ -107,6 +107,17 @@ struct Sidebar: View {
                     }
                     HistoryTable(history: model.history)
                 }
+                section("Scene") {
+                    Picker("Scene", selection: $model.sceneKind) {
+                        ForEach(SceneKind.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                    if model.sceneKind == .warning {
+                        slider("Drive reports a change after", $model.warningExitSeconds, 3 ... 60, format: "%.0f s")
+                        Text("The console holds this screen until a disc is inserted or removed; then it fades out over two seconds.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 section("Time") {
                     HStack {
                         Button(model.playing ? "Pause" : "Play") { model.playing.toggle() }
@@ -117,7 +128,9 @@ struct Sidebar: View {
                     Slider(value: Binding(get: { Double(model.frame) }, set: { model.frame = Float($0) }),
                            in: 0 ... Double(max(model.timeline.endFrame, 1)))
                     slider("Speed", $model.speed, 0.05 ... 2, format: "%.2fx")
-                    slider("Disc identified after", $model.discSeconds, 0 ... 10.5, format: "%.1f s")
+                    if model.sceneKind == .boot {
+                        slider("Disc identified after", $model.discSeconds, 0 ... 10.5, format: "%.1f s")
+                    }
                 }
                 section("Camera") {
                     Toggle("Free camera", isOn: $model.freeCameraEnabled)
