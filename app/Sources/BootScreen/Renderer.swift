@@ -171,6 +171,25 @@ final class Renderer {
         appendSprite(&out, x: 0, y: h - bar, w: 640, h: bar, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
     }
 
+    /// One frame of the whole boot sequence: black, opening, black, logo, black.
+    @discardableResult
+    func renderFull(frame: Float, sequence: BootSequence, scene: OpeningScene, freeCamera: ViewCamera?,
+                    options: RenderOptions, commandBuffer cb: MTLCommandBuffer) -> MTLTexture {
+        let (span, local) = sequence.span(at: Int(frame))
+        switch span.segment {
+        case .opening:
+            return render(frame: Float(local) + (frame - frame.rounded(.down)), scene: scene, timeline: sequence.opening,
+                          freeCamera: freeCamera, options: options, commandBuffer: cb)
+        case .logo:
+            ViewCamera.video = sequence.video
+            return renderLogo(frame: Float(local), timeline: sequence.logo, options: options, commandBuffer: cb)
+        default:
+            logoCachedField = nil
+            pass(cb, color: "scene", clear: true, depth: .none) { _ in }
+            return targets["scene"]!
+        }
+    }
+
     /// Renders one frame of the opening into the "scene" target and returns it.
     @discardableResult
     func render(frame: Float, scene: OpeningScene, timeline: Timeline, freeCamera: ViewCamera?,

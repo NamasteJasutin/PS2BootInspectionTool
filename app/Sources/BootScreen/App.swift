@@ -59,6 +59,7 @@ struct ContentView: View {
                     Spacer()
                     VisualizerView(state: model.visualizer)
                 }
+                HandoffCard(model: model)
                 if model.assets == nil {
                     Text("Open your PS2 BIOS dump to begin.\nNothing from the BIOS is bundled with this app.")
                         .multilineTextAlignment(.center)
@@ -82,6 +83,12 @@ struct ContentView: View {
 
     private var statusLine: String {
         let c = model.camera
+        if model.sceneKind == .full {
+            let (span, local) = model.sequence.span(at: Int(max(model.frame, 0)))
+            let name = ["power-on", "ONE: BIOS opening", "hand-off", "TWO: disc logo", "end"][[.powerOn, .opening, .handoff, .logo, .end].firstIndex(of: span.segment) ?? 4]
+            return String(format: "%@  %5.2f s  (segment frame %d)  camera z %6.1f  roll %+.2f",
+                          name, model.frame / model.timeline.framesPerSecond, local, c.z, c.roll)
+        }
         if model.frame < 0 {
             return String(format: "power-on %+5.2f s  (opening starts at 0)", model.frame / model.timeline.framesPerSecond)
         }
@@ -121,6 +128,11 @@ struct Sidebar: View {
                         ForEach(SceneKind.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .labelsHidden()
+                    if model.sceneKind == .full {
+                        Text("Phase ONE (BIOS): power-on, the opening. Phase TWO (disc): hand-off to rom0:PS2LOGO, the logo, then the point where the game's ELF would start. The console is never asked to run the game.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        slider("Hand-off to PS2LOGO (black)", $model.handoffSeconds, 0.2 ... 4, format: "%.1f s")
+                    }
                     if model.sceneKind != .warning {
                         Picker("Video", selection: $model.video) {
                             ForEach(VideoMode.allCases) { Text($0.rawValue).tag($0) }
@@ -152,16 +164,16 @@ struct Sidebar: View {
                         Toggle("Loop", isOn: $model.loop)
                     }
                     Slider(value: Binding(get: { Double(model.frame) }, set: { model.frame = Float($0) }),
-                           in: Double(model.startFrame) ... Double(max(model.timeline.endFrame, 1)))
+                           in: Double(model.startFrame) ... Double(max(model.endFrame, 1)))
                     slider("Power-on black screen", $model.powerOnSeconds, 0 ... 6, format: "%.1f s")
                     slider("Speed", $model.speed, 0.05 ... 2, format: "%.2fx")
-                    if model.sceneKind == .boot {
+                    if model.sceneKind == .boot || model.sceneKind == .full {
                         slider("Disc identified after", $model.discSeconds, 0 ... 10.5, format: "%.1f s")
                     }
                 }
                 section("Camera") {
                     Toggle("Free camera", isOn: $model.freeCameraEnabled)
-                    Text("Drag to look, scroll to fly, right-drag to slide.")
+                    Text("Drag to look, scroll to fly, Ctrl+scroll to rotate the view, right-drag to slide.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Back to the scripted position") { model.resetFreeCamera() }
                         .disabled(!model.freeCameraEnabled)
@@ -174,6 +186,9 @@ struct Sidebar: View {
                             Button("Export CSV…") { exportPath() }
                         }
                     }
+                }
+                section("Disc") {
+                    DiscPanel(model: model)
                 }
                 section("Sound") {
                     Toggle("Boot chime", isOn: $model.soundEnabled)
@@ -280,6 +295,69 @@ struct PathLegend: View {
     }
 }
 
+/// Introspection of the game disc: what the console would read and where it would jump.
+struct DiscPanel: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if let d = model.disc {
+            VStack(alignment: .leading, spacing: 3) {
+                row("Volume", "\(d.volumeID)  (\(d.sectorCount) sectors, \(d.byteSize / (1 << 20)) MiB, \(d.isDVD ? "DVD" : "CD"))")
+                row("Title ID", d.titleID ?? "—")
+                row("Disc state", String(format: "0x%02X — PlayStation 2 %@", d.discStateCode, d.isDVD ? "DVD" : "CD"))
+                row("SYSTEM.CNF", d.systemCNFText.trimmingCharacters(in: .whitespacesAndNewlines))
+                if let b = d.bootELF {
+                    row("Boot ELF", "\(b.fileName): LBA \(b.lba), \(b.size) bytes, entry \(String(format: "0x%08X", b.entry)), \(b.segments.count) segment(s)")
+                }
+                row("Logo sectors", d.logo?.region.map { "checksum matches region \($0)" } ?? "checksum: no E/J match")
+                DisclosureGroup("What the console would do next") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(model.handoffSteps.enumerated()), id: \.offset) { _, s in
+                            Text(s.who).font(.caption).bold() + Text("  " + s.what).font(.caption)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            }
+        } else {
+            Text("Open a game disc image (.iso) to see what the console would load.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func row(_ k: String, _ v: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(k).font(.caption).bold()
+            Text(v).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Shown over the picture once the sequence reaches the point where the game would start.
+struct HandoffCard: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if model.currentSegment == .end {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("End of the boot sequence — what the console would do now").font(.headline)
+                    ForEach(Array(model.handoffSteps.enumerated()), id: \.offset) { _, s in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(s.who).font(.system(.caption, design: .monospaced)).bold().frame(width: 220, alignment: .trailing)
+                            Text(s.what).font(.system(.caption, design: .monospaced))
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(.black.opacity(0.75))
+            .foregroundStyle(.white)
+            .padding(40)
+        }
+    }
+}
+
 struct VisualizerPicker: View {
     @ObservedObject var state: VisualizerState
 
@@ -331,7 +409,13 @@ final class SceneView: MTKView {
 
     override func scrollWheel(with e: NSEvent) {
         guard let m = model, m.freeCameraEnabled else { return }
-        m.freeCamera.move(right: 0, down: 0, forward: Float(e.scrollingDeltaY) * (e.hasPreciseScrollingDeltas ? 0.05 : 1))
+        let k: Float = e.hasPreciseScrollingDeltas ? 1 : 10
+        if e.modifierFlags.contains(.control) {
+            // Ctrl + scroll rotates the view: horizontal = yaw, vertical = pitch.
+            m.freeCamera.look(dx: Float(e.scrollingDeltaX) * k, dy: Float(e.scrollingDeltaY) * k)
+        } else {
+            m.freeCamera.move(right: 0, down: 0, forward: Float(e.scrollingDeltaY) * k * 0.05)
+        }
     }
 }
 
@@ -383,9 +467,14 @@ struct MetalView: NSViewRepresentable {
                 loadedLogo = model.logoVersion
             }
             if let scene = model.scene {
-                renderer.render(frame: model.frame, scene: scene, timeline: model.timeline,
-                                freeCamera: model.freeCameraEnabled ? model.freeCamera.view : nil,
-                                options: model.options, commandBuffer: cb)
+                let free = model.freeCameraEnabled ? model.freeCamera.view : nil
+                if model.sceneKind == .full {
+                    renderer.renderFull(frame: model.frame, sequence: model.sequence, scene: scene, freeCamera: free,
+                                        options: model.options, commandBuffer: cb)
+                } else {
+                    renderer.render(frame: model.frame, scene: scene, timeline: model.timeline, freeCamera: free,
+                                    options: model.options, commandBuffer: cb)
+                }
                 renderer.present(cb, to: drawable.texture)
             }
             cb.present(drawable)

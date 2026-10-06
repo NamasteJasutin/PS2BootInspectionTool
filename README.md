@@ -140,4 +140,5 @@ re-created from the BIOS and fully decompiled for research. Status:
 | Opening (towers) | done | done, incl. chime + visualiser |
 | Warning scene (red "insert disc") | done | done |
 | `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | done: `notes/ps2logo.md` | done (reads the lettering from your disc image) |
+| Disc boot, end to end (opening → hand-off → logo → where the ELF would start) with disc introspection | done: `notes/osdsys_flow.md` §2.5, `notes/ps2logo.md` | done: *Full boot* scene, *Disc* panel, end card |
 | Main menu / browser (no-disc path) | surveyed: `notes/menu_survey.md` (≈8k lines of behaviour for a trimmed version) | not started |

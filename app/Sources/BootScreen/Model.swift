@@ -23,17 +23,35 @@ final class AppModel: ObservableObject {
     @Published var customLaunches = 30.0 { didSet { if historySource == .custom { rebuildHistory() } } }
     @Published private(set) var history = PlayHistory()
 
-    @Published var sceneKind: SceneKind = .boot { didSet { rebuildTimeline(); frame = startFrame } }
+    @Published var sceneKind: SceneKind = .full { didSet { rebuildTimeline(); frame = startFrame } }
+    /// Black gap between the opening and the logo while OSDSYS hands over to PS2LOGO.
+    @Published var handoffSeconds = 1.2 { didSet { rebuildTimeline() } }
+    @Published private(set) var sequence = BootSequence(video: .ntsc, powerOnSeconds: 3, discSettledSeconds: 0, handoffSeconds: 1.2)
+    private(set) var disc: DiscImage?
+    var handoffSteps: [BootHandoff.Step] { BootHandoff.steps(disc: disc, history: history, video: video) }
+    /// The segment of the full sequence at the current frame.
+    var currentSegment: BootSequence.Segment? { sceneKind == .full ? sequence.span(at: Int(max(frame, 0))).0.segment : nil }
     @Published var video: VideoMode = .ntsc { didSet { rebuildTimeline() } }
     /// Warning scene: seconds until the drive reports a change and the scene fades out.
     @Published var warningExitSeconds = 10.0 { didSet { rebuildTimeline() } }
     /// Black screen between power-on and the first frame (`notes/boot_sequence.md` §4).
-    @Published var powerOnSeconds = 3.0
+    @Published var powerOnSeconds = 3.0 { didSet { rebuildTimeline() } }
     @Published var frame: Float = 0
-    var startFrame: Float { -Float(powerOnSeconds) * timeline.framesPerSecond }
+    var startFrame: Float { sceneKind == .full ? 0 : -Float(powerOnSeconds) * timeline.framesPerSecond }
+    var endFrame: Float { sceneKind == .full ? Float(sequence.totalFrames - 1) : Float(timeline.endFrame) }
     var bootPhase: BootPhase? {
+        let fps = timeline.framesPerSecond
+        if sceneKind == .full {
+            let (span, local) = sequence.span(at: Int(max(frame, 0)))
+            switch span.segment {
+            case .powerOn: return BootPhase.all[BootPhase.index(elapsed: Float(local) / fps, total: Float(powerOnSeconds))]
+            case .handoff: return BootSequence.handoffPhase(elapsed: Float(local) / fps, total: Float(handoffSeconds))
+            case .end: return BootPhase(name: "SPU quit; LoadExecPS2(boot ELF) — the game would start here", seconds: 0)
+            default: return nil
+            }
+        }
         guard frame < 0 else { return nil }
-        let elapsed = Float(powerOnSeconds) + frame / timeline.framesPerSecond
+        let elapsed = Float(powerOnSeconds) + frame / fps
         return BootPhase.all[BootPhase.index(elapsed: elapsed, total: Float(powerOnSeconds))]
     }
     @Published var playing = true
@@ -115,6 +133,7 @@ final class AppModel: ObservableObject {
             logoAssets = try? LogoAssets(biosURL: url)
             logoVersion += 1
             if let l = logoAssets { audio.loadLogoChime(l.chime()) }
+            arrangeAudio()
         } catch {
             if !quiet { biosStatus = "\(url.lastPathComponent): \(error)" }
         }
@@ -143,23 +162,36 @@ final class AppModel: ObservableObject {
 
     private func rebuildTimeline() {
         let fps = Double(video.framesPerSecond)
+        sequence = BootSequence(video: video, powerOnSeconds: Float(powerOnSeconds), discSettledSeconds: Float(discSeconds),
+                                handoffSeconds: Float(handoffSeconds))
         switch sceneKind {
-        case .boot: timeline = Timeline(discSettledFrame: Int(discSeconds * fps), video: video)
+        case .boot, .full: timeline = Timeline(discSettledFrame: Int(discSeconds * fps), video: video)
         case .warning: timeline = .warning(exitFrame: Int(warningExitSeconds * fps), video: video)
         case .logo: timeline = .logo(video: video)
         }
         logoVersion += 1
+        arrangeAudio()
+    }
+
+    private func arrangeAudio() {
+        if sceneKind == .full {
+            audio.arrange(scene: .full, fps: timeline.framesPerSecond, diveFrame: sequence.diveFrame,
+                          logoStart: sequence.logoStart, openingStart: sequence.openingStart)
+        } else {
+            audio.arrange(scene: sceneKind, fps: timeline.framesPerSecond, diveFrame: timeline.diveFrame, logoStart: 0, openingStart: 0)
+        }
     }
 
     /// Reads the lettering from sectors 0-11 of a game disc image.
     func loadDisc(_ url: URL, quiet: Bool = false) {
         do {
-            let d = try DiscLogo(discImageURL: url)
-            discLogo = d
+            let d = try DiscImage(url: url)
+            disc = d
+            discLogo = d.logo
             discURL = url
             logoVersion += 1
             UserDefaults.standard.set(url, forKey: "disc")
-            discStatus = "\(url.lastPathComponent) — logo sectors read, checksum: " + (d.region.map { "region \($0)" } ?? "no match (A/C discs are not checked)")
+            discStatus = "\(url.lastPathComponent) — \(d.titleID ?? "no BOOT2"), " + (d.logo?.region.map { "logo checksum region \($0)" } ?? "logo checksum: no E/J match")
         } catch {
             if !quiet { discStatus = "\(url.lastPathComponent): \(error)" }
         }
@@ -173,6 +205,7 @@ final class AppModel: ObservableObject {
                 let sound = try BootSound(biosURL: url)
                 DispatchQueue.main.async {
                     self?.audio.load(sound)
+                    self?.arrangeAudio()
                     self?.soundStatus = String(format: "Chime: %.1f s from SNDBOOTH/B/S, cue from SNDTNNLS",
                                                Double(sound.chime.count / 2) / Double(sound.sampleRate))
                 }
@@ -207,7 +240,7 @@ final class AppModel: ObservableObject {
     func tick(_ dt: Double) {
         guard playing else { return }
         var f = frame + Float(dt * speed) * timeline.framesPerSecond
-        let end = Float(timeline.endFrame)
+        let end = endFrame
         if f >= end {
             if loop { f = startFrame } else { f = end; playing = false }
         }
@@ -216,15 +249,21 @@ final class AppModel: ObservableObject {
 
     /// Keeps audio and the visualiser in step with the clock; called once per display frame.
     func syncAudio() {
-        audio.sync(frame: frame, speed: speed, playing: playing, diveFrame: timeline.diveFrame, fps: timeline.framesPerSecond,
-                   scene: sceneKind, enabled: soundEnabled && audio.ready, volume: Float(soundVolume))
+        audio.sync(frame: frame, speed: speed, playing: playing, fps: timeline.framesPerSecond,
+                   enabled: soundEnabled && audio.ready, volume: Float(soundVolume))
         if visualizer.mode != .off {
             let at = Int(Double(frame) / Double(timeline.framesPerSecond) * audio.sampleRate)
             visualizer.snapshot = analysis.measure(player: audio, frame: at, mode: visualizer.mode)
         }
     }
 
-    var camera: CameraState { timeline.camera(at: frame) }
+    var camera: CameraState {
+        if sceneKind == .full {
+            let (span, local) = sequence.span(at: Int(max(frame, 0)))
+            return span.segment == .opening ? sequence.opening.camera(at: Float(local)) : CameraState(z: 0, roll: 0, stage: 0)
+        }
+        return timeline.camera(at: frame)
+    }
 
     /// Turning the path on from the scripted view would show it end-on, so step outside.
     func setCameraPath(_ on: Bool) {

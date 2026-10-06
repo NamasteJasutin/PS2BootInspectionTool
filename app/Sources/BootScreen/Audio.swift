@@ -9,19 +9,22 @@ final class AudioPlayer {
     private let engine = AVAudioEngine()
     private var node: AVAudioSourceNode!
     private var lock = os_unfair_lock()
-    private var chime: [Float] = []
-    private var cue: [Float] = []
-    private var warning: [Float] = []
-    private var logo: [Float] = []
-    private var cueOffset = 0          // in stereo frames
-    private var scene = SceneKind.boot
-    private var fadeStart = Int.max    // stereo frame where the warning's stop-with-release begins
-    private var position = 0.0        // stereo frames into the chime
+    /// A piece of audio placed on the sequence clock.
+    struct Clip {
+        var start: Int            // stereo frame
+        var pcm: [Float]
+        var loop = false
+        var fadeStart: Int?       // stop command with release 0xF: 1.37 s linear fade
+    }
+    private var clips: [Clip] = []
+    private var position = 0.0        // stereo frames into the sequence
     private var rate = 1.0
     private var playing = false
     private var gain: Float = 1
     private(set) var ready = false
     let sampleRate = Double(SequenceSynth.sampleRate)
+    private(set) var sounds: BootSound?
+    private(set) var logoChime: [Float] = []
 
     init() {
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
@@ -34,49 +37,49 @@ final class AudioPlayer {
         engine.prepare()
     }
 
-    func load(_ sound: BootSound) {
-        os_unfair_lock_lock(&lock)
-        chime = sound.chime
-        cue = sound.cue
-        warning = sound.warning
-        os_unfair_lock_unlock(&lock)
-        ready = true
-    }
+    func load(_ sound: BootSound) { sounds = sound; ready = true }
+    func loadLogoChime(_ pcm: [Float]) { logoChime = pcm }
 
-    func loadLogoChime(_ pcm: [Float]) {
+    /// Places the clips for a scene; frames are converted with `fps`.
+    func arrange(scene: SceneKind, fps: Float, diveFrame: Int, logoStart: Int, openingStart: Int) {
+        func at(_ frame: Int) -> Int { Int(Double(frame) / Double(fps) * sampleRate) }
+        var list: [Clip] = []
+        switch scene {
+        case .boot, .full:
+            if let s = sounds {
+                list.append(Clip(start: at(openingStart), pcm: s.chime))
+                list.append(Clip(start: at(diveFrame), pcm: s.cue))
+            }
+            if scene == .full { list.append(Clip(start: at(logoStart), pcm: logoChime)) }
+        case .warning:
+            if let s = sounds { list.append(Clip(start: 0, pcm: s.warning, loop: true, fadeStart: at(diveFrame))) }
+        case .logo:
+            list.append(Clip(start: 0, pcm: logoChime))
+        }
         os_unfair_lock_lock(&lock)
-        logo = pcm
+        clips = list
         os_unfair_lock_unlock(&lock)
     }
 
     /// Mixed sample at a stereo frame index (for the visualiser), or silence.
     func sample(_ frame: Int, right: Bool) -> Float {
-        guard frame >= 0 else { return 0 }
         let c = right ? 1 : 0
         var v: Float = 0
-        if scene == .logo {
-            if frame * 2 + c < logo.count { v = logo[frame * 2 + c] }
-        } else if scene == .warning {
-            guard !warning.isEmpty else { return 0 }
-            let n = warning.count / 2
-            v = warning[(frame % n) * 2 + c]
-            // Stop command with release rate 0xF: a linear fade of at most 1.37 s.
-            if frame > fadeStart { v *= max(0, 1 - Float(frame - fadeStart) / Float(sampleRate * 1.37)) }
-        } else {
-            if frame * 2 + c < chime.count { v += chime[frame * 2 + c] }
-            let k = frame - cueOffset
-            if k >= 0, k * 2 + c < cue.count { v += cue[k * 2 + c] }
+        for clip in clips {
+            var k = frame - clip.start
+            guard k >= 0, !clip.pcm.isEmpty else { continue }
+            if clip.loop { k %= clip.pcm.count / 2 } else if k * 2 + c >= clip.pcm.count { continue }
+            var s = clip.pcm[k * 2 + c]
+            if let f = clip.fadeStart, frame > f { s *= max(0, 1 - Float(frame - f) / Float(sampleRate * 1.37)) }
+            v += s
         }
         return v * gain
     }
 
-    /// Called once per display frame with the opening's clock.
-    func sync(frame: Float, speed: Double, playing: Bool, diveFrame: Int, fps: Float, scene: SceneKind, enabled: Bool, volume: Float) {
+    /// Called once per display frame with the sequence clock.
+    func sync(frame: Float, speed: Double, playing: Bool, fps: Float, enabled: Bool, volume: Float) {
         let target = Double(frame) / Double(fps) * sampleRate
         os_unfair_lock_lock(&lock)
-        self.scene = scene
-        cueOffset = Int(Double(diveFrame) / Double(fps) * sampleRate)
-        fadeStart = scene == .warning ? cueOffset : .max
         rate = speed
         gain = volume
         let wasPlaying = self.playing
@@ -94,7 +97,7 @@ final class AudioPlayer {
         defer { os_unfair_lock_unlock(&lock) }
         for i in 0 ..< frames {
             guard playing else { left[i] = 0; right[i] = 0; continue }
-            let p = Int(position), f = Float(position - Double(p))
+            let p = Int(position.rounded(.down)), f = Float(position - Double(p))
             left[i] = (sample(p, right: false) * (1 - f) + sample(p + 1, right: false) * f)
             right[i] = (sample(p, right: true) * (1 - f) + sample(p + 1, right: true) * f)
             position += rate

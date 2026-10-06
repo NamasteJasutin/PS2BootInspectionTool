@@ -21,6 +21,16 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
   sliders (titles × launches), or show the empty new-console scene.
 * **Video mode**: NTSC (60 Hz, 224-line field) or PAL (50 Hz, 256-line field, 1.2× time
   step, different pixel aspect and text placement), chosen from the BIOS region.
+* **Full boot**: the default scene — one clock from power-on to the point where the game would
+  start. Phase ONE (BIOS): the black boot period, the opening with your towers. Phase TWO
+  (disc): the hand-off gap while OSDSYS reads SYSTEM.CNF, updates the history and loads
+  PS2LOGO; the logo; then an end card. The chime, the transition cue and the logo chime are
+  placed on that clock, so the visualiser, scrubbing and the free camera work across it.
+* **Disc introspection** (sidebar *Disc*, and the end card): what the console would read and
+  do with the disc image — ISO volume and type, the disc-state code, SYSTEM.CNF, the boot ELF's
+  location, size, entry point and segments, the logo checksum, how the play history would
+  change — and the exact chain of named functions (OSDSYS → KERNEL → EELOAD → PS2LOGO → kernel
+  → ELF entry) up to the instruction where the game takes over. Nothing from the disc is run.
 * **PlayStation 2 logo**: the disc-boot screen from `rom0:PS2LOGO` — the lettering bitmap read
   and descrambled from the first 12 sectors of a game disc image (checksum-verified; filled from
   the BIOS outline when no disc is given), the progressive blur, the lavender outline unfolding
@@ -34,7 +44,7 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
   two IOP boots, loading OSDSYS, mounting the card, decoding assets, uploading the sound bank.
 * **Time**: pause, scrub, slow down, loop; choose when the drive "identifies the disc",
   which is what releases the camera into its dive.
-* **Free camera**: drag to look, scroll to fly, right-drag to slide.
+* **Free camera**: drag to look, scroll to fly, Ctrl+scroll to rotate the view, right-drag to slide.
 * **Camera path**: overlay the scripted camera's route — a spine through every frame, rungs
   every 10 frames that point screen-up (so the roll shows as a twist), coloured gates where
   the lettering, dive, defocus, fade and scene end fire, and the live view frustum — and

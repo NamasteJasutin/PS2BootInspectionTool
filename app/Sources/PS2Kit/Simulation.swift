@@ -75,6 +75,8 @@ public struct CameraState {
     /// Downward tilt of the view direction (the warning scene looks slightly down).
     public var tilt: Float = 0
 
+    public init(z: Float, roll: Float, stage: Int, tilt: Float = 0) { self.z = z; self.roll = roll; self.stage = stage; self.tilt = tilt }
+
     public var position: SIMD3<Float> { SIMD3(0, 0, z) }
     public var forward: SIMD3<Float> { SIMD3(0, tilt, 1) }
     public var up: SIMD3<Float> { SIMD3(sin(roll), cos(roll), 0) }
@@ -98,6 +100,7 @@ public enum VideoMode: String, CaseIterable, Identifiable {
 public struct BootPhase {
     public let name: String
     public let seconds: Float
+    public init(name: String, seconds: Float) { self.name = name; self.seconds = seconds }
     public static let all: [BootPhase] = [
         BootPhase(name: "IOP boot #1: IOPBOOT + 29 modules from ROM", seconds: 0.55),
         BootPhase(name: "EELOAD loads rom0:OSDSYS (363 KB)", seconds: 0.20),
@@ -125,6 +128,7 @@ public struct BootPhase {
 
 /// Which of the opening's two scenes is being shown.
 public enum SceneKind: String, CaseIterable, Identifiable {
+    case full = "Full boot: BIOS → disc → hand-off"
     case boot = "Boot (towers)"
     case warning = "Warning (insert disc)"
     case logo = "PlayStation 2 logo (disc boot)"
@@ -310,5 +314,67 @@ public enum OpeningMotion {
         let s: Float = i == 2 ? 0.9 : Float(i - 2) * 0.8
         let start = SIMD3<Float>(s * Float((2 * i) % 9) / 4, s * Float((2 * i) % 8) / 5, s * Float((2 * i) % 7) / 6)
         return start + SIMD3(0.004 / s, 0.003 * s, s / 800 + 0.002) * frame
+    }
+}
+
+/// The whole boot as one clock: power-on black → the opening → the hand-off to PS2LOGO →
+/// the logo → the point where the game would start. Frames are fields of the video mode.
+public struct BootSequence {
+    public enum Segment { case powerOn, opening, handoff, logo, end }
+    public struct Span {
+        public let segment: Segment
+        public let start: Int
+        public let length: Int
+        public let timeline: Timeline?
+    }
+
+    public let video: VideoMode
+    public let spans: [Span]
+    public let opening: Timeline
+    public let logo: Timeline
+    public var totalFrames: Int { spans.last.map { $0.start + $0.length } ?? 0 }
+    public var openingStart: Int { spans[1].start }
+    public var logoStart: Int { spans[3].start }
+    public var diveFrame: Int { openingStart + opening.diveFrame }
+
+    public init(video: VideoMode, powerOnSeconds: Float, discSettledSeconds: Float, handoffSeconds: Float, endSeconds: Float = 6) {
+        self.video = video
+        let fps = video.framesPerSecond
+        opening = Timeline(discSettledFrame: Int(discSettledSeconds * fps), video: video)
+        logo = .logo(video: video)
+        var list: [Span] = []
+        var t = 0
+        func add(_ seg: Segment, _ n: Int, _ tl: Timeline?) { list.append(Span(segment: seg, start: t, length: n, timeline: tl)); t += n }
+        add(.powerOn, Int(powerOnSeconds * fps), nil)
+        add(.opening, opening.endFrame, opening)
+        add(.handoff, Int(handoffSeconds * fps), nil)
+        add(.logo, logo.endFrame, logo)
+        add(.end, Int(endSeconds * fps), nil)
+        spans = list
+    }
+
+    public func span(at frame: Int) -> (Span, Int) {
+        for s in spans where frame < s.start + s.length { return (s, frame - s.start) }
+        return (spans[spans.count - 1], spans[spans.count - 1].length - 1)
+    }
+
+    /// What the console is doing during the black gap between the opening and the logo.
+    public static let handoffPhases: [BootPhase] = [
+        BootPhase(name: "OSDSYS: disc thread off, disc key read twice, title ID decoded", seconds: 0.15),
+        BootPhase(name: "OSDSYS: cdrom0:\\SYSTEM.CNF;1 read, BOOT2 checked against the disc ID", seconds: 0.10),
+        BootPhase(name: "OSDSYS: play history updated and saved to the memory card", seconds: 0.20),
+        BootPhase(name: "OSDSYS: subsystems shut down, LoadExecPS2(\"rom0:PS2LOGO\")", seconds: 0.10),
+        BootPhase(name: "KERNEL/EELOAD: PS2LOGO loaded and decompressed to 0x100000", seconds: 0.15),
+        BootPhase(name: "PS2LOGO: rom0:OSDSND loaded, chime bank uploaded, GS set to 640×512", seconds: 0.30),
+        BootPhase(name: "PS2LOGO: logo sectors 0–11 read from the disc and checksummed", seconds: 0.20),
+    ]
+
+    public static func handoffPhase(elapsed: Float, total: Float) -> BootPhase {
+        let all = handoffPhases
+        let sum = all.reduce(Float(0)) { $0 + $1.seconds }
+        let scaled = elapsed / max(total, 0.01) * sum
+        var t: Float = 0
+        for p in all { t += p.seconds; if scaled < t { return p } }
+        return all[all.count - 1]
     }
 }
