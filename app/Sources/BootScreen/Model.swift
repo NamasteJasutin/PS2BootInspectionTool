@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var history = PlayHistory()
 
     @Published var sceneKind: SceneKind = .boot { didSet { rebuildTimeline(); frame = 0 } }
+    @Published var video: VideoMode = .ntsc { didSet { rebuildTimeline() } }
     /// Warning scene: seconds until the drive reports a change and the scene fades out.
     @Published var warningExitSeconds = 10.0 { didSet { rebuildTimeline() } }
     @Published var frame: Float = 0
@@ -82,6 +83,8 @@ final class AppModel: ObservableObject {
             assetsVersion += 1
             biosURL = url
             biosStatus = "\(url.lastPathComponent) — ROM \(a.romVersion)"
+            // ROMVER's fifth character is the region: E = Europe (50 Hz).
+            video = a.romVersion.dropFirst(4).first == "E" ? .pal : .ntsc
             UserDefaults.standard.set(url, forKey: "bios")
             rebuildScene()
             loadSound(url)
@@ -112,8 +115,9 @@ final class AppModel: ObservableObject {
     }
 
     private func rebuildTimeline() {
-        timeline = sceneKind == .boot ? Timeline(discSettledFrame: Int(discSeconds * 60))
-                                  : .warning(exitFrame: Int(warningExitSeconds * 60))
+        let fps = Double(video.framesPerSecond)
+        timeline = sceneKind == .boot ? Timeline(discSettledFrame: Int(discSeconds * fps), video: video)
+                                  : .warning(exitFrame: Int(warningExitSeconds * fps), video: video)
     }
 
     /// The chime is synthesised from the BIOS on a background thread (a second or so).
@@ -157,7 +161,7 @@ final class AppModel: ObservableObject {
     /// Advances the clock by `dt` seconds of wall time.
     func tick(_ dt: Double) {
         guard playing else { return }
-        var f = frame + Float(dt * speed) * Timeline.framesPerSecond
+        var f = frame + Float(dt * speed) * timeline.framesPerSecond
         let end = Float(timeline.endFrame)
         if f >= end {
             if loop { f = 0 } else { f = end; playing = false }
@@ -167,10 +171,10 @@ final class AppModel: ObservableObject {
 
     /// Keeps audio and the visualiser in step with the clock; called once per display frame.
     func syncAudio() {
-        audio.sync(frame: frame, speed: speed, playing: playing, diveFrame: timeline.diveFrame, scene: sceneKind,
-                   enabled: soundEnabled && audio.ready, volume: Float(soundVolume))
+        audio.sync(frame: frame, speed: speed, playing: playing, diveFrame: timeline.diveFrame, fps: timeline.framesPerSecond,
+                   scene: sceneKind, enabled: soundEnabled && audio.ready, volume: Float(soundVolume))
         if visualizer.mode != .off {
-            let at = Int(Double(frame) / Double(Timeline.framesPerSecond) * audio.sampleRate)
+            let at = Int(Double(frame) / Double(timeline.framesPerSecond) * audio.sampleRate)
             visualizer.snapshot = analysis.measure(player: audio, frame: at, mode: visualizer.mode)
         }
     }
@@ -202,7 +206,7 @@ final class AppModel: ObservableObject {
         var out = "frame,seconds,x,y,z,roll_rad,up_x,up_y,up_z,stage\n"
         for (f, s) in timeline.states.enumerated() {
             // "up" here is the direction that points up on screen.
-            out += String(format: "%d,%.4f,0,0,%.5f,%.6f,%.6f,%.6f,0,%d\n", f, Float(f) / Timeline.framesPerSecond,
+            out += String(format: "%d,%.4f,0,0,%.5f,%.6f,%.6f,%.6f,0,%d\n", f, Float(f) / timeline.framesPerSecond,
                           s.z, s.roll, -s.up.x, -s.up.y, s.stage)
         }
         return out

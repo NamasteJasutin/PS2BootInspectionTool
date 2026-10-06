@@ -25,7 +25,7 @@ for t in $targets; do
       -loader BinaryLoader -loader-baseAddr 0xBFC00000 -processor "r5900:LE:32:default" \
       -scriptPath "$ROOT/tools/ghidra" \
       -preScript BootPre.java "file=$ROM/RDRAM:BFC41000:RDRAM" \
-        "bss=70000000:70004000:scratchpad" "bss=80000000:80020000:ram" \
+        "bss=80000000:80020000:ram" \
         "entry=BFC00000:_reset_vector" "entry=BFC00800:ee_reset" "entry=BFC02000:iop_reset" \
         "entry=BFC00180:rom_exception_loop" "entry=BFC008FC:ee_flush_caches" \
         "entry=BFC00C00:ee_load_kernel" "entry=BFC41000:rdram_init" \
@@ -36,7 +36,7 @@ for t in $targets; do
       -loader BinaryLoader -loader-baseAddr 0x80000000 -processor "r5900:LE:32:default" \
       -scriptPath "$ROOT/tools/ghidra" \
       -preScript BootPre.java "file=$ROM/RESET:BFC00000:ROM" "file=$ROM/RDRAM:BFC41000:RDRAM" \
-        "bss=80016E30:80100000:kbss" "bss=70000000:70004000:scratchpad" \
+        "bss=80016E30:80100000:kbss" \
         "entry=80001000:_kernel_entry" "entry=80000000:v_tlb_refill" "entry=80000080:v_counter" \
         "entry=80000100:v_debug" "entry=80000180:v_common" "entry=80000200:v_interrupt" \
         "entry=80005598:KLoadExec" "entry=80005988:ExecOSD" "entry=800059A0:ExitToBrowser" \

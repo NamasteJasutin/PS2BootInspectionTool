@@ -32,6 +32,7 @@ public class BootPre extends GhidraScript {
             if (eq < 0) continue;
             String key = arg.substring(0, eq), val = arg.substring(eq + 1);
             String[] p = val.split(":");
+            try {
             if (key.equals("bss")) {
                 long s = hex(p[0]), e = hex(p[1]);
                 mem.createUninitializedBlock(p.length > 2 ? p[2] : ".bss" + (n++), toAddr(s), e - s, false);
@@ -56,6 +57,9 @@ public class BootPre extends GhidraScript {
                 }
             } else if (key.equals("label")) {
                 currentProgram.getSymbolTable().createLabel(toAddr(hex(p[0])), p[1], SourceType.USER_DEFINED);
+            }
+            } catch (Exception e) {
+                printerr("BootPre: " + arg + ": " + e);
             }
         }
     }

@@ -19,6 +19,8 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
   file when it launches a disc itself (PCSX2 full boot, not fast boot), so many cards have
   none; then the app can invent one from the titles that have saves on the card, or from two
   sliders (titles × launches), or show the empty new-console scene.
+* **Video mode**: NTSC (60 Hz, 224-line field) or PAL (50 Hz, 256-line field, 1.2× time
+  step, different pixel aspect and text placement), chosen from the BIOS region.
 * **Scenes**: the boot animation, or the red "Please insert a PlayStation or PlayStation 2
   format disc" screen (dolly-in, spinning light source with 87.5 % feedback, flares, 128
   drifting puffs, red-tinted prisms, text in the console's language, its own ambient sound).
@@ -45,7 +47,7 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
 swift run ps2history <card.ps2|folder> [ls [dir] | cat <file>]   # dump the history / browse a card
 swift run ps2history --bios <bios>                               # check a BIOS can be read
 swift run BootScreen --render <frame> out.png --bios <bios> [--card <card> | --titles N --launches N]
-        [--scene warning --exit seconds] [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
+        [--pal] [--scene warning --exit seconds] [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
 swift run BootScreen --chime <bios> out.wav [dive-frame]        # the synthesised boot sound
 swift run BootScreen --path [disc-seconds]                       # camera route as CSV (frame, time, z, roll, up, stage)
 ```
@@ -74,7 +76,6 @@ swift run BootScreen --path [disc-seconds]                       # camera route 
 * Rendered at 1280×960 progressive rather than 640×448 interlaced; no edge anti-aliasing;
   geometry is depth-buffered instead of painter-sorted; out-of-range triangles are clipped
   rather than dropped.
-* 60 Hz timing only (the console's 50 Hz mode plays the same motion with a 1.2× step).
 * The orb seed is fixed (the console's depends on its C-library `rand()` state).
 * **Chime without reverb**: the console runs every voice through the SPU2's reverb (a
   studio-style preset); the app plays the dry mix. Timing uses the nominal 60 Hz sequencer

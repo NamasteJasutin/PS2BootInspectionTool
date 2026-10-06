@@ -78,7 +78,7 @@ struct ContentView: View {
     private var statusLine: String {
         let c = model.camera
         return String(format: "frame %6.1f  %5.2f s  camera z %6.1f  roll %+.2f  stage %d",
-                      model.frame, model.frame / 60, c.z, c.roll, c.stage)
+                      model.frame, model.frame / model.timeline.framesPerSecond, c.z, c.roll, c.stage)
     }
 }
 
@@ -112,7 +112,17 @@ struct Sidebar: View {
                         ForEach(SceneKind.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .labelsHidden()
+                    if model.sceneKind == .boot {
+                        Picker("Video", selection: $model.video) {
+                            ForEach(VideoMode.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                    }
                     if model.sceneKind == .warning {
+                        Picker("Video", selection: $model.video) {
+                            ForEach(VideoMode.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
                         Picker("Language", selection: $model.language) {
                             ForEach(AppModel.languages, id: \.0) { Text($0.1).tag($0.0) }
                         }

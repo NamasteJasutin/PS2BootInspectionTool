@@ -80,6 +80,19 @@ public struct CameraState {
     public var up: SIMD3<Float> { SIMD3(sin(roll), cos(roll), 0) }
 }
 
+/// The console's video mode. The opening integrates its motion with a 1.2 time step at
+/// 50 Hz so that both modes take the same wall-clock time, and draws into a field of 224 or
+/// 256 lines with a different pixel-aspect factor.
+public enum VideoMode: String, CaseIterable, Identifiable {
+    case ntsc = "NTSC 60 Hz"
+    case pal = "PAL 50 Hz"
+    public var id: String { rawValue }
+    public var framesPerSecond: Float { self == .pal ? 50 : 60 }
+    public var timeStep: Float { self == .pal ? 1.2 : 1 }
+    public var fieldHeight: Float { self == .pal ? 256 : 224 }
+    public var aspectY: Float { self == .pal ? 0.526271 : 0.457627 }
+}
+
 /// Which of the opening's two scenes is being shown.
 public enum SceneKind: String, CaseIterable, Identifiable {
     case boot = "Boot (towers)"
@@ -92,7 +105,8 @@ public enum SceneKind: String, CaseIterable, Identifiable {
 /// Frames are 60 Hz (the console scales its time step by 1.2 at 50 Hz, so PAL plays the
 /// same motion with fewer frames).
 public struct Timeline {
-    public static let framesPerSecond: Float = 60
+    public let video: VideoMode
+    public var framesPerSecond: Float { video.framesPerSecond }
 
     public let states: [CameraState]
     public let kind: SceneKind
@@ -103,7 +117,8 @@ public struct Timeline {
 
     /// The warning scene: dolly from z = 672 to 800, then hold with a slow roll until the
     /// drive reports a change (`exitFrame`), after which the scene fades for 128 frames.
-    public static func warning(exitFrame: Int) -> Timeline {
+    public static func warning(exitFrame: Int, video: VideoMode = .ntsc) -> Timeline {
+        let dt = video.timeStep
         var z: Float = 672, vz: Float = 2.16, az: Float = -0.0178
         var roll: Float = 0
         let vr: Float = 0.00462
@@ -113,22 +128,25 @@ public struct Timeline {
         for _ in 0 ..< exitFrame + 129 {
             if stage < 6, thresholds[stage] < z { stage += 1 }
             if stage == 6 { vz = 0; az = 0 }
-            vz += az
-            z += vz
-            roll += vr
+            vz += az * dt
+            z += (2 * vz + az) * 0.5 * dt
+            roll += vr * dt
             if roll > .pi { roll -= 2 * .pi }
             out.append(CameraState(z: z, roll: roll, stage: stage, tilt: -0.03))
         }
-        return Timeline(states: out, kind: .warning, diveFrame: exitFrame)
+        return Timeline(states: out, kind: .warning, diveFrame: exitFrame, video: video)
     }
 
-    private init(states: [CameraState], kind: SceneKind, diveFrame: Int) {
-        self.states = states; self.kind = kind; self.diveFrame = diveFrame
+    private init(states: [CameraState], kind: SceneKind, diveFrame: Int, video: VideoMode) {
+        self.states = states; self.kind = kind; self.diveFrame = diveFrame; self.video = video
     }
 
     /// - Parameter discSettledFrame: when the drive has finished identifying the disc
     ///   (0 = already known). The dive needs this and at least two seconds of drift.
-    public init(discSettledFrame: Int = 0) {
+    public init(discSettledFrame: Int = 0, video: VideoMode = .ntsc) {
+        self.video = video
+        let dt = video.timeStep
+        let fps = Int(video.framesPerSecond)
         let thresholds: [Float] = [16, 56, 104]
         var z: Float = 16, vz: Float = 0.04, az: Float = 0, jz: Float = 0
         var roll: Float = -0.12, vr: Float = 0.001, ar: Float = 0
@@ -140,9 +158,9 @@ public struct Timeline {
             switch stage {
             case 1:
                 jz = 4e-7
-                if frame >= discSettledFrame, frame > 120 { diving = true; stage = 2 }
+                if frame >= discSettledFrame, frame > 2 * fps { diving = true; stage = 2 }
             case 2:
-                if frame > 600 { diving = true }
+                if frame > 10 * fps { diving = true }
                 if diving {
                     if dive < 0 { dive = frame }
                     az = 0.0099
@@ -151,11 +169,11 @@ public struct Timeline {
             default:
                 break
             }
-            vr += ar
-            vz += (2 * az + jz) * 0.5
-            az += jz
-            roll += (2 * vr + ar) * 0.5
-            z += (2 * vz + az) * 0.5
+            vr += ar * dt
+            vz += (2 * az + jz) * 0.5 * dt
+            az += jz * dt
+            roll += (2 * vr + ar) * 0.5 * dt
+            z += (2 * vz + az) * 0.5 * dt
             if roll > .pi { roll -= 2 * .pi }
             if roll < -.pi { roll += 2 * .pi }
             frame += 1

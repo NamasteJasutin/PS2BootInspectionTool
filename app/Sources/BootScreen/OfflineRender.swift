@@ -32,6 +32,8 @@ enum OfflineRender {
                 options.colourWrap = true
             } else if a == "--show-path" {
                 options.cameraPath = true
+            } else if a == "--pal" {
+                named["video"] = "pal"
             } else if a.hasPrefix("--"), i + 1 < args.count {
                 named[String(a.dropFirst(2))] = args[i + 1]
                 i += 1
@@ -58,9 +60,11 @@ enum OfflineRender {
             if let f = named["free"]?.split(separator: ",").compactMap({ Float($0) }), f.count == 5 {
                 free = FreeCamera(position: SIMD3(f[0], f[1], f[2]), yaw: f[3], pitch: f[4]).view
             }
+            let video: VideoMode = named["video"] == "pal" ? .pal : .ntsc
+            let fps = video.framesPerSecond
             let timeline = named["scene"] == "warning"
-                ? Timeline.warning(exitFrame: Int((named["exit"].flatMap { Float($0) } ?? 10) * 60))
-                : Timeline(discSettledFrame: Int((named["disc"].flatMap { Float($0) } ?? 0) * 60))
+                ? Timeline.warning(exitFrame: Int((named["exit"].flatMap { Float($0) } ?? 10) * fps), video: video)
+                : Timeline(discSettledFrame: Int((named["disc"].flatMap { Float($0) } ?? 0) * fps), video: video)
             guard let cb = renderer.queue.makeCommandBuffer() else { return fail("no command buffer") }
             let scene = OpeningScene(assets: assets, history: history)
             renderer.render(frame: frame, scene: scene, timeline: timeline, freeCamera: free, options: options, commandBuffer: cb)

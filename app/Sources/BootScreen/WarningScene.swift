@@ -88,16 +88,12 @@ extension Renderer {
             if frame >= Float(timeline.diveFrame) { counter = max(0, counter - exitFrames) }
             let a = counter / 128
             if a > 0, let name = options.warningTexture, textures[name] != nil {
-                batch(name, .add) { self.appendSprite(&$0, x: 64, y: 88, w: 512, h: 64, u: 0, v: 0, uw: 512, vh: 128,
+                let k: Float = ViewCamera.video == .pal ? 0.526271 / 0.457627 : 1
+                batch(name, .add) { self.appendSprite(&$0, x: 64, y: 88 * k, w: 512, h: 64 * k, u: 0, v: 0, uw: 512, vh: 128,
                                                       texture: (512, 128), alpha: 1, rgb: a) }
             }
         }
-        if options.letterbox {
-            batch("white", .opaque) {
-                self.appendSprite(&$0, x: 0, y: 0, w: 640, h: 30, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
-                self.appendSprite(&$0, x: 0, y: 194, w: 640, h: 30, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
-            }
-        }
+        if options.letterbox { batch("white", .opaque) { self.appendLetterbox(&$0) } }
         if !batches.isEmpty {
             pass(cb, color: "scene", clear: false, depth: .none) { enc in
                 self.draw(enc, verts, batches, format: .rgba8Unorm, hasDepth: false)
@@ -152,7 +148,8 @@ extension Renderer {
         let centre = SIMD3<Float>(0.196 * cos(angle), 0.196 * sin(angle), 1160)
         let clip = camera.project(centre)
         guard clip.w > 1 else { return }
-        let sx = clip.x / clip.w * 320, sy = -clip.y / clip.w * 112
+        let half = ViewCamera.video.fieldHeight / 2
+        let sx = clip.x / clip.w * 320, sy = -clip.y / clip.w * half
         let flares: [(scale: Float, half: Float, fix: Float, colour: SIMD3<Float>)] = [
             (1, 0x70, n + 2, SIMD3(0x80, 0x40, 0x40)), (1, 0xAA, n + 2, SIMD3(0x80, 0x40, 0x40)),
             (1, 0x100, n + 2, SIMD3(0x80, 0x40, 0x40)), (1, 0x1C0, n + 2, SIMD3(0x80, 0x40, 0x40)),
@@ -160,7 +157,7 @@ extension Renderer {
         ]
         for f in flares {
             let k = f.colour / 128 * (f.fix / 128)
-            appendSprite(&out, x: sx * f.scale + 320 - f.half, y: sy * f.scale + 112 - f.half / 2, w: 2 * f.half, h: f.half,
+            appendSprite(&out, x: sx * f.scale + 320 - f.half, y: sy * f.scale + half - f.half / 2, w: 2 * f.half, h: f.half,
                          u: 0, v: 0, uw: 128, vh: 128, texture: (128, 128), alpha: 1, rgb: 1)
             for i in out.count - 6 ..< out.count { out[i].color = SIMD4(k.x, k.y, k.z, 1) }
         }

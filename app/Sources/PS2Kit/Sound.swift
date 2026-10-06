@@ -385,9 +385,9 @@ public struct BootSound {
         warning = w
     }
 
-    /// Both cues mixed, with the transition cue placed at `diveFrame`.
-    public func mixed(diveFrame: Int) -> [Float] {
-        let offset = Int(Double(diveFrame) / Double(Timeline.framesPerSecond) * Double(sampleRate)) * 2
+    /// Both cues mixed, with the transition cue placed at `diveFrame` (of `fps` per second).
+    public func mixed(diveFrame: Int, fps: Float = 60) -> [Float] {
+        let offset = Int(Double(diveFrame) / Double(fps) * Double(sampleRate)) * 2
         var out = chime
         if out.count < offset + cue.count { out.append(contentsOf: [Float](repeating: 0, count: offset + cue.count - out.count)) }
         for i in 0 ..< cue.count { out[offset + i] += cue[i] }

@@ -44,13 +44,18 @@ struct ViewCamera: Equatable {
         return (x, cross(z, x), z)
     }
 
+    /// Video mode the projection and sprite coordinates follow (set by the renderer per frame).
+    static var video: VideoMode = .ntsc
+    /// Vertical clip-space scale: screen distance 1024 times the line-aspect factor over the half field height.
+    static var yScale: Float { 1024 * video.aspectY / (video.fieldHeight / 2) }
+
     /// Clip-space position. Scale factors reproduce the console projection (screen distance
-    /// 1024 on a 640x224 field with a 0.4576 line aspect) shown on a 4:3 picture.
+    /// 1024 on a 640-wide field) shown on a 4:3 picture.
     func project(_ p: SIMD3<Float>) -> SIMD4<Float> {
         let b = basis, d = p - position
         let v = SIMD3(dot(d, b.x), dot(d, b.y), dot(d, b.z))
         let near: Float = 1, far: Float = 4000
-        return SIMD4(v.x * 3.2, -v.y * (1024 * 0.4576 / 112), (v.z - near) * far / (far - near), v.z)
+        return SIMD4(v.x * 3.2, -v.y * Self.yScale, (v.z - near) * far / (far - near), v.z)
     }
 }
 
@@ -157,8 +162,18 @@ final class Renderer {
 
     /// Renders one frame of the opening into the "scene" target and returns it.
     @discardableResult
+    /// Black bars that leave a 16:9 window in the current field.
+    func appendLetterbox(_ out: inout [Vertex]) {
+        let h = ViewCamera.video.fieldHeight
+        let visible = Float(Int(640 * 9 * ViewCamera.video.aspectY / 16))
+        let bar = Float(Int((h - visible + 1) / 2))
+        appendSprite(&out, x: 0, y: 0, w: 640, h: bar, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
+        appendSprite(&out, x: 0, y: h - bar, w: 640, h: bar, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
+    }
+
     func render(frame: Float, scene: OpeningScene, timeline: Timeline, freeCamera: ViewCamera?,
                 options: RenderOptions, commandBuffer cb: MTLCommandBuffer) -> MTLTexture {
+        ViewCamera.video = timeline.video
         if timeline.kind == .warning {
             return renderWarning(frame: frame, timeline: timeline, freeCamera: freeCamera, options: options, commandBuffer: cb)
         }
@@ -237,7 +252,8 @@ final class Renderer {
             let n = OpeningMotion.defocusPasses(z: scripted.z)
             for i in 0 ..< n {
                 let shrink = Float(i * (n - 1))
-                let fx = (640 * 7 / 8 - 1 - shrink) / 640, fy = (224 * 7 / 8 - 1 - shrink) / 224
+                let fh = ViewCamera.video.fieldHeight
+                let fx = (640 * 7 / 8 - 1 - shrink) / 640, fy = (fh * 7 / 8 - 1 - shrink) / fh
                 var down: [Vertex] = [], up: [Vertex] = []
                 appendQuad(&down, x0: -1, y0: 1 - 2 * fy, x1: -1 + 2 * fx, y1: 1)
                 appendQuad(&up, u0: 0, v0: 0, u1: fx, v1: fy)
@@ -259,18 +275,15 @@ final class Renderer {
         if options.lettering {
             let a = OpeningMotion.letteringAlpha(framesSinceTrigger: frame - Float(timeline.frame(passing: 18)))
             if a > 0 {
+                let pal = ViewCamera.video == .pal
+                let y: Float = pal ? 120 : 105, h: Float = pal ? 18 : 16
                 batch("TEXOSCE", .alpha) {
-                    self.appendSprite(&$0, x: 120, y: 105, w: 256, h: 16, u: 0, v: 1, uw: 256, vh: 30, texture: (256, 64), alpha: a)
-                    self.appendSprite(&$0, x: 326, y: 105, w: 256, h: 16, u: 0, v: 33, uw: 256, vh: 30, texture: (256, 64), alpha: a)
+                    self.appendSprite(&$0, x: 120, y: y, w: 256, h: h, u: 0, v: 1, uw: 256, vh: 30, texture: (256, 64), alpha: a)
+                    self.appendSprite(&$0, x: 326, y: y, w: 256, h: h, u: 0, v: 33, uw: 256, vh: 30, texture: (256, 64), alpha: a)
                 }
             }
         }
-        if options.letterbox {
-            batch("white", .opaque) {
-                self.appendSprite(&$0, x: 0, y: 0, w: 640, h: 30, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
-                self.appendSprite(&$0, x: 0, y: 194, w: 640, h: 30, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
-            }
-        }
+        if options.letterbox { batch("white", .opaque) { self.appendLetterbox(&$0) } }
         if !batches.isEmpty {
             pass(cb, color: "scene", clear: false, depth: .none) { enc in
                 self.draw(enc, verts, batches, format: .rgba8Unorm, hasDepth: false)
@@ -491,7 +504,7 @@ final class Renderer {
         guard showFrustum else { return }
         let cam = ViewCamera(timeline.camera(at: frame))
         let b = cam.basis, depth: Float = 10
-        let halfW = depth / 3.2, halfH = depth / (1024 * 0.4576 / 112)
+        let halfW = depth / 3.2, halfH = depth / ViewCamera.yScale
         let centre = cam.position + b.z * depth
         let corners = [centre - b.x * halfW - b.y * halfH, centre + b.x * halfW - b.y * halfH,
                        centre + b.x * halfW + b.y * halfH, centre - b.x * halfW + b.y * halfH]
@@ -570,7 +583,8 @@ final class Renderer {
     /// A sprite in the console's 640x224 field coordinates.
     func appendSprite(_ out: inout [Vertex], x: Float, y: Float, w: Float, h: Float,
                               u: Float, v: Float, uw: Float, vh: Float, texture: (Float, Float), alpha: Float, rgb: Float = 1) {
-        appendQuad(&out, x0: x / 320 - 1, y0: 1 - (y + h) / 112, x1: (x + w) / 320 - 1, y1: 1 - y / 112,
+        let half = ViewCamera.video.fieldHeight / 2
+        appendQuad(&out, x0: x / 320 - 1, y0: 1 - (y + h) / half, x1: (x + w) / 320 - 1, y1: 1 - y / half,
                    u0: u / texture.0, v0: v / texture.1, u1: (u + uw) / texture.0, v1: (v + vh) / texture.1,
                    color: SIMD4(rgb, rgb, rgb, alpha))
     }

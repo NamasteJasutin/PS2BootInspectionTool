@@ -62,11 +62,11 @@ final class AudioPlayer {
     }
 
     /// Called once per display frame with the opening's clock.
-    func sync(frame: Float, speed: Double, playing: Bool, diveFrame: Int, scene: SceneKind, enabled: Bool, volume: Float) {
-        let target = Double(frame) / Double(Timeline.framesPerSecond) * sampleRate
+    func sync(frame: Float, speed: Double, playing: Bool, diveFrame: Int, fps: Float, scene: SceneKind, enabled: Bool, volume: Float) {
+        let target = Double(frame) / Double(fps) * sampleRate
         os_unfair_lock_lock(&lock)
         self.scene = scene
-        cueOffset = Int(Double(diveFrame) / Double(Timeline.framesPerSecond) * sampleRate)
+        cueOffset = Int(Double(diveFrame) / Double(fps) * sampleRate)
         fadeStart = scene == .warning ? cueOffset : .max
         rate = speed
         gain = volume
