@@ -160,8 +160,6 @@ final class Renderer {
 
     // MARK: - Frame
 
-    /// Renders one frame of the opening into the "scene" target and returns it.
-    @discardableResult
     /// Black bars that leave a 16:9 window in the current field.
     func appendLetterbox(_ out: inout [Vertex]) {
         let h = ViewCamera.video.fieldHeight
@@ -171,6 +169,8 @@ final class Renderer {
         appendSprite(&out, x: 0, y: h - bar, w: 640, h: bar, u: 0, v: 0, uw: 1, vh: 1, texture: (1, 1), alpha: 1, rgb: 0)
     }
 
+    /// Renders one frame of the opening into the "scene" target and returns it.
+    @discardableResult
     func render(frame: Float, scene: OpeningScene, timeline: Timeline, freeCamera: ViewCamera?,
                 options: RenderOptions, commandBuffer cb: MTLCommandBuffer) -> MTLTexture {
         ViewCamera.video = timeline.video
