@@ -27,6 +27,14 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
   the lettering, dive, defocus, fade and scene end fire, and the live view frustum — and
   export it as CSV.
 * **Layers**: switch each stage of the console's frame on and off.
+* **Boot chime**: synthesised from the BIOS, not played from a recording — the console has
+  none. `SNDBOOTH` (instrument bank), `SNDBOOTB` (nine ADPCM samples) and `SNDBOOTS` (an
+  8-note sequence) are read from `rom0:SNDIMAGE`, the driver's pitch and pan tables from
+  `rom0:OSDSND`, and the app re-runs the driver's note → voice → pitch/volume arithmetic and
+  the SPU2 envelope generator. The transition cue (`SNDTNNLS`) is placed where the dive
+  starts. Playback follows pause, scrub and speed (speed changes pitch, as it would).
+* **Visualiser**: *Volume* (RMS and peak meters with peak hold), *Wave* (the last 21 ms) or
+  *Equalizer* (32 log-spaced bands, 40 Hz – 16 kHz) of the chime, drawn over the picture.
 
 ## Tools
 
@@ -35,6 +43,7 @@ swift run ps2history <card.ps2|folder> [ls [dir] | cat <file>]   # dump the hist
 swift run ps2history --bios <bios>                               # check a BIOS can be read
 swift run BootScreen --render <frame> out.png --bios <bios> [--card <card> | --titles N --launches N]
         [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
+swift run BootScreen --chime <bios> out.wav [dive-frame]        # the synthesised boot sound
 swift run BootScreen --path [disc-seconds]                       # camera route as CSV (frame, time, z, roll, up, stage)
 ```
 
@@ -46,6 +55,8 @@ swift run BootScreen --path [disc-seconds]                       # camera route 
 | `Sources/PS2Kit/History.swift` | The 21-record history table; synthetic histories following the console's update rules. |
 | `Sources/PS2Kit/BIOS.swift` | ROMDIR, the OSD LZ scheme, texture decoding, per-ROM data layout. |
 | `Sources/PS2Kit/Simulation.swift` | Towers from history, camera timeline, closed-form motion of orbs/fog/cubes. |
+| `Sources/PS2Kit/Sound.swift` | SShd bank / SSsq sequence parsers, PS-ADPCM decoder, the driver's voice maths and SPU envelope, chime renderer. |
+| `Sources/BootScreen/Audio.swift`, `VisualizerView.swift` | Timeline-locked playback (AVAudioEngine) and the three visualisers. |
 | `Sources/BootScreen/Renderer.swift` | The frame: towers → smear → fog → orbs → glass → defocus → overlays. |
 | `Sources/BootScreen/{App,Model,OfflineRender}.swift` | SwiftUI shell, app state, windowless frame export. |
 
@@ -62,6 +73,9 @@ swift run BootScreen --path [disc-seconds]                       # camera route 
   rather than dropped.
 * 60 Hz timing only (the console's 50 Hz mode plays the same motion with a 1.2× step).
 * The orb seed is fixed (the console's depends on its C-library `rand()` state).
-* No sound, and the second ("insert disc") scene is not implemented.
+* **Chime without reverb**: the console runs every voice through the SPU2's reverb (a
+  studio-style preset); the app plays the dry mix. Timing uses the nominal 60 Hz sequencer
+  update (the console's timer runs ~1.7 % fast).
+* The second ("insert disc") scene is not implemented.
 * Unverified against hardware: which way is up for the tower grid, and whether tower-cap
   colours overflow (toggle *8-bit overflow on tower caps* to see the alternative).

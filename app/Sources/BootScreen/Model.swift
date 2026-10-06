@@ -32,6 +32,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var timeline = Timeline()
 
     @Published var options = RenderOptions()
+    @Published var soundEnabled = true
+    @Published var soundVolume = 0.8
+    @Published var soundStatus = "No sound loaded"
+    let audio = AudioPlayer()
+    let visualizer = VisualizerState()
+    private let analysis = VisualizerAnalysis()
     @Published var freeCameraEnabled = false { didSet { if freeCameraEnabled { resetFreeCamera() } } }
     var freeCamera = FreeCamera()
 
@@ -69,6 +75,7 @@ final class AppModel: ObservableObject {
             biosStatus = "\(url.lastPathComponent) — ROM \(a.romVersion)"
             UserDefaults.standard.set(url, forKey: "bios")
             rebuildScene()
+            loadSound(url)
         } catch {
             if !quiet { biosStatus = "\(url.lastPathComponent): \(error)" }
         }
@@ -92,6 +99,23 @@ final class AppModel: ObservableObject {
             }
         } catch {
             if !quiet { cardStatus = "\(url.lastPathComponent): \(error)" }
+        }
+    }
+
+    /// The chime is synthesised from the BIOS on a background thread (a second or so).
+    private func loadSound(_ url: URL) {
+        soundStatus = "Synthesising the chime from the BIOS…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let sound = try BootSound(biosURL: url)
+                DispatchQueue.main.async {
+                    self?.audio.load(sound)
+                    self?.soundStatus = String(format: "Chime: %.1f s from SNDBOOTH/B/S, cue from SNDTNNLS",
+                                               Double(sound.chime.count / 2) / Double(sound.sampleRate))
+                }
+            } catch {
+                DispatchQueue.main.async { self?.soundStatus = "Sound: \(error)" }
+            }
         }
     }
 
@@ -125,6 +149,16 @@ final class AppModel: ObservableObject {
             if loop { f = 0 } else { f = end; playing = false }
         }
         frame = f
+    }
+
+    /// Keeps audio and the visualiser in step with the clock; called once per display frame.
+    func syncAudio() {
+        audio.sync(frame: frame, speed: speed, playing: playing, diveFrame: timeline.diveFrame,
+                   enabled: soundEnabled && audio.ready, volume: Float(soundVolume))
+        if visualizer.mode != .off {
+            let at = Int(Double(frame) / Double(Timeline.framesPerSecond) * audio.sampleRate)
+            visualizer.snapshot = analysis.measure(player: audio, frame: at, mode: visualizer.mode)
+        }
     }
 
     var camera: CameraState { timeline.camera(at: frame) }

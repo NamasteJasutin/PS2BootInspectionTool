@@ -74,6 +74,33 @@ enum OfflineRender {
         }
     }
 
+    static func chime(bios: String, out: String, diveFrame: Int) -> Int32 {
+        do {
+            let sound = try BootSound(biosURL: URL(fileURLWithPath: bios))
+            let pcm = sound.mixed(diveFrame: diveFrame)
+            try writeWAV(pcm, sampleRate: sound.sampleRate, to: URL(fileURLWithPath: out))
+            let peak = pcm.map(abs).max() ?? 0
+            print("\(pcm.count / 2) frames (\(Double(pcm.count / 2) / Double(sound.sampleRate)) s), peak \(peak)")
+            return 0
+        } catch {
+            return fail("error: \(error)")
+        }
+    }
+
+    private static func writeWAV(_ pcm: [Float], sampleRate: Int, to url: URL) throws {
+        var data = Data()
+        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
+        let bytes = pcm.count * 2
+        data.append(contentsOf: Array("RIFF".utf8)); u32(UInt32(36 + bytes)); data.append(contentsOf: Array("WAVE".utf8))
+        data.append(contentsOf: Array("fmt ".utf8)); u32(16); u16(1); u16(2); u32(UInt32(sampleRate)); u32(UInt32(sampleRate * 4)); u16(4); u16(16)
+        data.append(contentsOf: Array("data".utf8)); u32(UInt32(bytes))
+        var samples = [Int16](repeating: 0, count: pcm.count)
+        for (i, v) in pcm.enumerated() { samples[i] = Int16(max(-32768, min(32767, (v * 32767).rounded()))) }
+        samples.withUnsafeBytes { data.append(contentsOf: $0) }
+        try data.write(to: url)
+    }
+
     private static func fail(_ message: String) -> Int32 {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         return 1

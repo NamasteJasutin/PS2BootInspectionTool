@@ -10,6 +10,10 @@ enum Main {
         if args.count >= 2, args[1] == "--render" {
             exit(OfflineRender.run(Array(args.dropFirst(2))))
         }
+        if args.count >= 4, args[1] == "--chime" {
+            // BootScreen --chime <bios> <out.wav> [dive-frame]: the boot sound as rendered by the app.
+            exit(OfflineRender.chime(bios: args[2], out: args[3], diveFrame: args.count > 4 ? Int(args[4]) ?? 121 : 121))
+        }
         if args.count >= 2, args[1] == "--path" {
             // BootScreen --path [disc-seconds]: the scripted camera route as CSV on stdout.
             let disc = args.count > 2 ? Float(args[2]) ?? 0 : 0
@@ -51,6 +55,10 @@ struct ContentView: View {
         HStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
                 MetalView(model: model)
+                VStack {
+                    Spacer()
+                    VisualizerView(state: model.visualizer)
+                }
                 if model.assets == nil {
                     Text("Open your PS2 BIOS dump to begin.\nNothing from the BIOS is bundled with this app.")
                         .multilineTextAlignment(.center)
@@ -127,6 +135,12 @@ struct Sidebar: View {
                         }
                     }
                 }
+                section("Sound") {
+                    Toggle("Boot chime", isOn: $model.soundEnabled)
+                    slider("Volume", $model.soundVolume, 0 ... 1, format: "%.0f%%", scale: 100)
+                    VisualizerPicker(state: model.visualizer)
+                    Text(model.soundStatus).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 section("Layers") {
                     Toggle("Towers", isOn: $model.options.towers)
                     Toggle("Frame-to-frame smear", isOn: $model.options.trails)
@@ -163,12 +177,12 @@ struct Sidebar: View {
     }
 
     private func slider(_ label: String, _ value: Binding<Double>, _ range: ClosedRange<Double>,
-                        step: Double? = nil, format: String) -> some View {
+                        step: Double? = nil, format: String, scale: Double = 1) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(label)
                 Spacer()
-                Text(String(format: format, value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary)
+                Text(String(format: format, value.wrappedValue * scale)).monospacedDigit().foregroundStyle(.secondary)
             }
             if let step {
                 Slider(value: value, in: range, step: step)
@@ -215,6 +229,17 @@ struct PathLegend: View {
                 }
             }
         }
+    }
+}
+
+struct VisualizerPicker: View {
+    @ObservedObject var state: VisualizerState
+
+    var body: some View {
+        Picker("Visualiser", selection: $state.mode) {
+            ForEach(VisualizerMode.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
     }
 }
 
@@ -298,6 +323,7 @@ struct MetalView: NSViewRepresentable {
             let now = CACurrentMediaTime()
             model.tick(min(now - lastTime, 0.1))
             lastTime = now
+            model.syncAudio()
             guard let renderer, let drawable = view.currentDrawable, let cb = renderer.queue.makeCommandBuffer() else { return }
             if loadedAssets != model.assetsVersion, let a = model.assets {
                 renderer.setAssets(a)
