@@ -72,6 +72,9 @@ overflow on tower caps, no sound in the app — are listed in `notes/opening.md`
 | `notes/opening_scene1.md` | The second opening scene (red "insert disc" screen). |
 | `notes/osdsys_flow.md` | Boot chain, OSDSYS `main`, threads, state machine, play-history file format. |
 | `notes/sound.md` | Boot sound: EE→IOP command path, OSDSND, HD/BD/SQ data. |
+| `notes/boot_sequence.md` | Power-on to the first opening frame: RESET → KERNEL → EELOAD → OSDSYS call tree, IOP boots, timeline estimates, every place OSDSYS waits. |
+| `analysis/symbols/` | Symbol tables (`address name source`) for OSDSYS, OSDSND, KERNEL, EELOAD, RESET, gathered from the notes plus syscall/SDK/libc identifications (`tools/build_symbols.py`). |
+| `analysis/osdsys_named/` | Generated: OSDSYS decompilation with those names applied (same layout as `analysis/osdsys/`). `analysis/{reset,kernel,eeload}/`: the boot chain before OSDSYS. |
 | `app/` | **BootScreen**: a native macOS (Swift/Metal) re-creation of the tower scene that reads your BIOS dump and PCSX2 memory card. See `app/README.md`. |
 | `tools/` | Scripts used to get from the ROM image to the analysis (below). |
 | `extracted/` | Generated: ROM modules, unpacked OSDSYS, unpacked assets, PNG previews. |
@@ -96,6 +99,10 @@ python3 -m venv .venv && .venv/bin/pip install rabbitizer pillow numpy
 
 # 4. Decompile (Ghidra headless; writes analysis/osdsys/{c/*.c,functions.tsv,data_xrefs.tsv})
 tools/ghidra/run_osdsys.sh
+#    Named re-export (analysis/osdsys_named/) and the boot chain (analysis/{reset,kernel,eeload}/)
+.venv/bin/python tools/build_symbols.py           # notes -> analysis/symbols/{osdsys,osdsnd}.tsv
+tools/ghidra/run_named.sh                         # ApplySymbols.java + OsdExport.java, project ghidra_proj_named/
+tools/ghidra/run_boot.sh                          # RESET/KERNEL/EELOAD, project ghidra_proj_boot/
 
 # 5. VU1 micro-program and packets used by the opening
 .venv/bin/python tools/vudis.py chain 0x273990
@@ -106,8 +113,8 @@ tools/ghidra/run_osdsys.sh
 .venv/bin/python tools/snd_render.py
 ```
 
-Helpers for reading the result: `tools/cview.py <addr>…` (compact view of decompiled
-functions), `tools/peek.py <f|i|x|h|b|s> <vaddr> [n]` (read initialised data),
+Helpers for reading the result: `tools/cview.py [-d analysis/<dir>] <addr>…` (compact view of
+decompiled functions), `tools/peek.py <f|i|x|h|b|s> <vaddr> [n]` (read initialised data),
 `tools/r5900dis.py` (linear R5900 disassembly).
 
 ## Formats worked out along the way
@@ -129,7 +136,7 @@ re-created from the BIOS and fully decompiled for research. Status:
 
 | Stage | Research | App |
 |---|---|---|
-| Power-on → OSDSYS (RESET, IOP modules, KERNEL, EELOAD) | in progress: `notes/boot_sequence.md`, named decompilation | planned: black-screen timing before the opening |
+| Power-on → OSDSYS (RESET, IOP modules, KERNEL, EELOAD) | done (static): `notes/boot_sequence.md`, named decompilation in `analysis/osdsys_named/` + `analysis/{reset,kernel,eeload}/`; timings are estimates, not measured | planned: black-screen timing before the opening |
 | Opening (towers) | done | done, incl. chime + visualiser |
 | Warning scene (red "insert disc") | done | done |
 | `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | in progress: `notes/ps2logo.md` | next |

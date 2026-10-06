@@ -1,0 +1,151 @@
+# KERNEL (rom0:KERNEL at 0x80000000) symbol table; syscall handlers are prefixed k_
+address	name	source
+80000000	v_tlb_refill	exception vector (TLB refill)
+80000080	v_counter	exception vector (COP0 counter)
+80000100	v_debug	exception vector (debug)
+80000180	v_common	exception vector: dispatches through the exception table at 0x80015340
+80000200	v_interrupt	exception vector (interrupt)
+80000280	exc_syscall	exception 8: syscall dispatcher, table at 0x80014F40 (128 entries); negative numbers = interrupt-context variants
+8000032C	exc_syscall_nested	syscall dispatcher used when already on the kernel stack
+80000380	exc_interrupt_18	exception table entry 18 (interrupt)
+800004C0	exc_19	exception table entry 19
+80000600	exc_23	exception table entry 23
+800006C0	k_SetSyscall	syscall handler for 0x74 (table 0x80014F40)
+80000740	k_SetPgifHandler	syscall handler for 0x72 (table 0x80014F40)
+800007C0	k_SetCPUTimerHandler	syscall handler for 0x6c (table 0x80014F40)
+80000800	k_SetCPUTimer	syscall handler for 0x6d (table 0x80014F40)
+800008C0	k_EnableIntc	syscall handler for 0x14, 0x1a (table 0x80014F40)
+80000900	k_DisableIntc	syscall handler for 0x15, 0x1b (table 0x80014F40)
+80000940	k_EnableDmac	syscall handler for 0x16, 0x1c (table 0x80014F40)
+80000980	k_DisableDmac	syscall handler for 0x17, 0x1d (table 0x80014F40)
+800009C0	k_SetVTLBRefillHandler	syscall handler for 0xd (table 0x80014F40)
+80000A00	k_SetVCommonHandler	syscall handler for 0xe (table 0x80014F40)
+80000A40	k_SetVInterruptHandler	syscall handler for 0xf (table 0x80014F40)
+80000A80	k_CpuConfig	syscall handler for 0x66, 0x6a (table 0x80014F40)
+80000B80	k_PSMode	syscall handler for 0x7d (table 0x80014F40)
+80000BC0	k_MachineType	syscall handler for 0x7e (table 0x80014F40)
+80000C40	k_GetMemorySize	syscall handler for 0x7f (table 0x80014F40)
+80000D00	k_GsGetIMR	syscall handler for 0x70 (table 0x80014F40)
+80000D40	k_GsPutIMR	syscall handler for 0x71 (table 0x80014F40)
+80000D80	sc_Exit_thunk	syscall 4 entry: j ExitToBrowser
+80001000	_kernel_entry	reset dis: jumped to by ee_reset; saves RDRAM init result (0x70003FF0) and ROM word 0xBFC001F8
+80001460	ReturnFromException	restores the thread context and erets
+80001564	k_RFU000_FullReset	syscall handler for 0x0, 0x3, 0x8, 0x3f, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x7c (table 0x80014F40)
+80001578	SetIdleStackTop	stores 0x81FE0 (stack of EENULL) in 0x800154A4
+80001588	k_SetVSyncFlag	syscall handler for 0x73 (table 0x80014F40)
+80001A30	k_AddIntcHandler	syscall handler for 0x10 (table 0x80014F40)
+80001A70	k_RemoveIntcHandler	syscall handler for 0x11 (table 0x80014F40)
+80001C78	k_AddDmacHandler	syscall handler for 0x12 (table 0x80014F40)
+80001CB8	k_RemoveDmacHandler	syscall handler for 0x13 (table 0x80014F40)
+80001E78	k_AddSbusIntcHandler	syscall handler for 0xa (table 0x80014F40)
+80001ED0	k_RemoveSbusIntcHandler	syscall handler for 0xb (table 0x80014F40)
+80001F70	k_Interrupt2Iop	syscall handler for 0xc (table 0x80014F40)
+80001FA0	k_EnableIntcHandler	syscall handler for 0x5c (table 0x80014F40)
+80001FC8	k_DisableIntcHandler	syscall handler for 0x5d (table 0x80014F40)
+80001FF0	k_EnableDmacHandler	syscall handler for 0x5e (table 0x80014F40)
+80002018	k_DisableDmacHandler	syscall handler for 0x5f (table 0x80014F40)
+80002040	k_sc53	syscall handler for 0x53 (table 0x80014F40)
+80002050	IntcDmacInit	installs the INTC (0x80001630) / DMAC (0x80001798) / SBUS handlers, enables INTC 1
+800021B0	IntcDmacReinit	same as IntcDmacInit without INTC 1; called by KLoadExec
+800022D8	k_SetAlarm	syscall handler for 0x18, 0x1e (table 0x80014F40)
+80002570	k_ReleaseAlarm	syscall handler for 0x19, 0x1f (table 0x80014F40)
+800027E8	k_SetEventFlag	syscall handler for 0x52 (table 0x80014F40)
+80002880	k_RFU005	syscall handler for 0x5 (table 0x80014F40)
+80002A40	k_FlushCache	syscall handler for 0x64, 0x68 (table 0x80014F40)
+80002A80	FlushICache	cache invalidate
+80002AC0	FlushDCache	cache writeback
+80002B40	k_sc65	syscall handler for 0x65, 0x69 (table 0x80014F40)
+80002C40	k_GetCop0	syscall handler for 0x63, 0x67 (table 0x80014F40)
+80002F80	k_ExecPS2	syscall handler for 0x7 (table 0x80014F40)
+80002FC0	k_DeleteThread	syscall handler for 0x21 (table 0x80014F40)
+80003040	k_StartThread	syscall handler for 0x22 (table 0x80014F40)
+800030C0	k_ExitThread	syscall handler for 0x23 (table 0x80014F40)
+80003100	k_ExitDeleteThread	syscall handler for 0x24 (table 0x80014F40)
+80003140	k_TerminateThread	syscall handler for 0x25 (table 0x80014F40)
+800031C0	k_RotateThreadReadyQueue	syscall handler for 0x2b (table 0x80014F40)
+80003240	k_ReleaseWaitThread	syscall handler for 0x2d (table 0x80014F40)
+800032C0	k_SleepThread	syscall handler for 0x32 (table 0x80014F40)
+80003340	k_WakeupThread	syscall handler for 0x33 (table 0x80014F40)
+800033C0	k_ResumeThread	syscall handler for 0x39 (table 0x80014F40)
+80003440	k_WaitSema	syscall handler for 0x44 (table 0x80014F40)
+800034C0	k_SignalSema	syscall handler for 0x42 (table 0x80014F40)
+80003540	k_DeleteSema	syscall handler for 0x41 (table 0x80014F40)
+800035C0	k_ChangeThreadPriority	syscall handler for 0x29 (table 0x80014F40)
+80003C50	k_CreateThread	syscall handler for 0x20 (table 0x80014F40)
+80003DF8	k_sc26	syscall handler for 0x26 (table 0x80014F40)
+80003EF8	TerminateThreadIfIdle	KLoadExec: terminates every thread other than the current one
+80004220	k_DisableDispatchThread	syscall handler for 0x27 (table 0x80014F40)
+80004250	k_EnableDispatchThread	syscall handler for 0x28 (table 0x80014F40)
+80004280	k_sc2a	syscall handler for 0x2a (table 0x80014F40)
+80004380	k_sc2c	syscall handler for 0x2c (table 0x80014F40)
+800043C8	k_sc2e	syscall handler for 0x2e (table 0x80014F40)
+80004540	k_GetThreadId	syscall handler for 0x2f (table 0x80014F40)
+80004550	k_ReferThreadStatus	syscall handler for 0x30, 0x31 (table 0x80014F40)
+800046A8	k_sc34	syscall handler for 0x34 (table 0x80014F40)
+80004800	k_SuspendThread	syscall handler for 0x37, 0x38 (table 0x80014F40)
+800048B8	k_sc3a	syscall handler for 0x3a (table 0x80014F40)
+80004968	k_CancelWakeupThread_	used by KLoadExec
+800049A8	k_CreateEventFlag	syscall handler for 0x50 (table 0x80014F40)
+800049B8	k_CreateSema	syscall handler for 0x40 (table 0x80014F40)
+80004A40	k_RFU073_iDeleteSema	syscall handler for 0x49 (table 0x80014F40)
+80004BC0	k_sc43	syscall handler for 0x43 (table 0x80014F40)
+80004DC0	k_PollSema	syscall handler for 0x45, 0x46 (table 0x80014F40)
+80004DF8	k_ReferSemaStatus	syscall handler for 0x47, 0x48 (table 0x80014F40)
+80004E50	k_DeleteEventFlag	syscall handler for 0x51 (table 0x80014F40)
+80004E60	SemaInit	clears the 256 semaphore records
+80004EC0	ThreadInit	clears the 256-entry TCB table (0x8001A640, 0x4C bytes each) and creates thread 0 = EENULL at 0x81FC0, prio 0x80
+80005140	StartThreadRaw	marks the TCB running, EPC = entry, returns from exception into it
+80005190	k_SetupThread	syscall handler for 0x3c (table 0x80014F40)
+80005298	k_SetupHeap	syscall handler for 0x3d (table 0x80014F40)
+800052D0	k_EndOfHeap	syscall handler for 0x3e (table 0x80014F40)
+80005388	CreateRomThread	(romName, loadAddr, stackSize, prio): allocates a TCB, copies the ROM module to loadAddr, flushes caches; panics with "dir not found"/"not found"
+80005558	strcpy_end	copies a string, returns the pointer after the NUL (used to build the EELOAD argument block)
+80005598	KLoadExec	osdsys_flow.md §6: (path, argc, argv): builds "EELOAD"\0path\0args.., terminates all other threads, HardwareRestart, copies rom0:EELOAD to 0x82000 and jumps there
+80005988	ExecOSD	osdsys_flow.md §6: syscall 0x7B -> KLoadExec("rom0:OSDSYS", argc, argv)
+800059A0	ExitToBrowser	osdsys_flow.md §6: syscall 4 Exit() -> KLoadExec("rom0:OSDSYS", 1, {"BootBrowser"})
+800059D8	ThreadRelease	frees a TCB
+80005BC8	k_RFU009	syscall handler for 0x9 (table 0x80014F40)
+80005C30	TlbInit	prints "# TLB spad=0 kernel=..." and fills the TLB
+80005EF8	SifGetSmflag	reads SIF SMFLAG (0xB000F230)
+80006238	SifInit	clears the SIF command buffers at 0x80021240, sets SBUS registers (0xB000F2xx), spins until SMFLAG & 0x10000 (IOP SIFMAN initialised)
+80006340	k_sceSifSetDChain	syscall handler for 0x78 (table 0x80014F40)
+80006378	k_sceSifStopDma	syscall handler for 0x6b (table 0x80014F40)
+80006798	k_sceSifSetDma	syscall handler for 0x77 (table 0x80014F40)
+80006950	k_sceSifDmaStat	syscall handler for 0x76 (table 0x80014F40)
+80006C00	k_sceSifSetReg	syscall handler for 0x79 (table 0x80014F40)
+80006CB8	k_sceSifGetReg	syscall handler for 0x7a (table 0x80014F40)
+800073E0	kprintf	kernel printf (TTY, only visible with a DECI2/EE TTY attached)
+800074C8	k_print	syscall handler for 0x75 (table 0x80014F40)
+8000BD58	k_SetGsCrt	syscall handler for 0x2 (table 0x80014F40)
+8000CD18	k_GetGsHParam	syscall handler for 0x4c (table 0x80014F40)
+8000CF58	k_GetGsVParam	syscall handler for 0x4d (table 0x80014F40)
+8000CFB0	k_JoinThread	syscall handler for 0x3b (table 0x80014F40)
+8000CFD0	k_SetGsHParam	syscall handler for 0x4e (table 0x80014F40)
+8000D260	k_SetGsVParam	syscall handler for 0x4f (table 0x80014F40)
+8000D2B8	k_GetOsdConfigParam2	syscall handler for 0x6f (table 0x80014F40)
+8000D350	k_SetOsdConfigParam2	syscall handler for 0x6e (table 0x80014F40)
+8000D3C0	k_GetOsdConfigParam	syscall handler for 0x4b (table 0x80014F40)
+8000D470	k_SetOsdConfigParam	syscall handler for 0x4a (table 0x80014F40)
+8000D670	GsInit	GS reset (called before SetGsCrt(1,1,1))
+8000D7E8	GifReset	ResetEE bit 3
+8000D810	romdir_find_root	(start, end, out): finds the RESET entry in ROM (same code as RESET 0xBFC00CF8)
+8000D8A8	romdir_lookup	(dir, name, out): finds a ROMDIR entry by name
+8000D9B8	k_ResetEE	syscall handler for 0x1 (table 0x80014F40)
+8000DAD8	HardwareInit	"# Initialize Start." .. "# Initialize Done.": GS, INTC, TIMER, ResetEE(0x7F), FPU, user memory from 0x80000, scratchpad
+8000DBA0	HardwareRestart	"# Restart." variant used by KLoadExec/LoadExecPS2: waits for VBLANK, clears user memory from 0x82000
+8000DDE8	DmacReset	ResetEE bit 0
+8000DF38	Vu1Reset	ResetEE bit 1
+8000E020	Vif1Reset	ResetEE bit 2
+8000E0F8	IpuReset	ResetEE bit 6
+8000E440	Vif0Reset	ResetEE bit 2 (second half)
+8000E4C0	Vu0Reset	ResetEE bit 4
+8000E4F0	FpuInit	FPU
+8000E588	ScratchpadClear	clears the 16 KB scratchpad
+8000E5C0	UserMemoryClear	clears RAM from the given address to the end
+8000E618	IntcMaskSet	INTC mask write
+8000E648	TimerInit	timers
+8000EF18	Deci2Init	"EE DECI2 Manager version 0.06": sets up the KTTY/DCMP protocol handlers
+800140C0	exc_default	default exception handler (all other causes)
+A00028C0	k_EnableCache	syscall handler for 0x61 (table 0x80014F40)
+A0002980	k_DisableCache	syscall handler for 0x62 (table 0x80014F40)
+A0002C00	k_KSeg0	syscall handler for 0x60 (table 0x80014F40)

@@ -1,0 +1,36 @@
+# EELOAD (rom0:EELOAD, raw EE program at 0x82000) symbol table
+address	name	source
+82008	_start	osdsys_flow.md §1: clears bss 0x91200..0x955A4, SetupThread(gp 0xA91F0, stack 0x91200+0x2000, args 0x93200), SetupHeap(0x955A4, 0x2000), main
+82388	main	osdsys_flow.md §6 (eeload_main): argc<2 = cold boot -> WaitIopReady, LoadElf(rom0:OSDSYS), ExecPS2
+82170	WaitIopReady	polls SIF SMFLAG bit 0x40000 (IOP boot end), then acknowledges it
+821B0	IopResetAndWait	sceSifIopReset(string) + sceSifIopSync loop + WaitIopReady (LoadExecPS2 path)
+84FE0	sceSifIopReset	LoadExecPS2 path [I]
+85110	sceSifIopSync	polls SBUS/SMFLAG [I]
+820E8	SifDmaRestart	clears DMAC STAT bit 5 (SIF0) and re-arms the SIF DChain
+821D8	SifIntcClear	clears pending SIF interrupt state after an IOP reset
+82278	StrPrefix	(prefix, s): returns the remainder of s if it starts with prefix, else 0
+822B8	ExecLoaded	FlushCache, SifExitDma, ExecPS2(entry 0x8FF10, gp 0x8FF14, argc, argv)
+82310	BootErrorToOsd	osdsys_flow.md §6: ExecOSD(2, {"BootError", path})
+82350	BootIllegalToOsd	osdsys_flow.md §6: ExecOSD(1, {"BootIllegal"})
+82630	LoadFileBind	binds the LOADFILE RPC server 0x80000006 (retries with a 1M-iteration delay)
+82AD0	LoadElf	osdsys_flow.md §1: (path, secname, out{entry,gp}, fno): LOADFILE RPC; result -2 propagated for the BootIllegal case
+82BD8	LoadElfA	LoadElf wrapper (unused on cold boot)
+82BF8	LoadElfAll	LoadElf(path, "all", out, fno 1 = LF_F_ELF_LOAD): used for rom0:OSDSYS / rom0:TESTMODE
+82C20	LoadElfB	LoadElf wrapper (unused on cold boot)
+82C40	LoadElfEncrypted	LoadElf(path, "all", out, fno 5 = LF_F_MG_ELF_LOAD) for the -x argument
+828B0	LoadModuleCommon	LOADFILE module load used by -m / -k
+82A90	LoadModule	-m <irx>
+82AB0	LoadModuleEncrypted	-k <irx>
+82F30	RuntimeInit	one-time C runtime init (calls the constructor table at 0x95590)
+82E90	RunCtors	constructor table walk
+84180	sceSifInitRpc	installs SIF command handlers 8,9,A,C and syncs with the IOP (SBUS reg 0x80000002)
+83AC8	sceSifInitCmd	[I]
+83D98	sceSifAddCmdHandler	[I]
+83F30	sceSifSendCmd	[I]
+83A80	sceSifDmaStat	[I]
+84968	sceSifCallRpc	[I]
+847B8	sceSifBindRpc	[I]
+84338	sceSifGetNextRequest	RPC client helper [I]
+840D0	sceSifWriteBackDCache	[I]
+83000	strncpy	[I]
+83D40	SifExitDma	removes the DMAC 5 handler before ExecPS2/ExecOSD

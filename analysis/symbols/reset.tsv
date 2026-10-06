@@ -1,0 +1,11 @@
+address	name	source
+BFC00000	_reset_vector	reset dis: PRId<0x59 -> IOP code at BFC02000, else EE code at BFC00800
+BFC00180	rom_exception_loop	reset dis: saves Cause/Status/EPC and spins
+BFC00800	ee_reset	reset dis: EE COP0/TLB setup, calls rdram_init, ee_load_kernel, jumps 0x80001000
+BFC008FC	ee_flush_caches	reset dis: cache 0x07/0x16 loops
+BFC00C00	ee_load_kernel	reset dis: ROMDIR lookup of KERNEL, lq/sq copy to RAM, zero bss
+BFC00CF8	romdir_find_root	reset dis: scans ROM for the RESET entry, returns {romBase, dirPtr, extinfo}
+BFC00D90	romdir_lookup	reset dis: finds a ROMDIR entry by name, returns {entry, dataPtr, extinfoPtr}
+BFC02000	iop_reset	reset dis: IOP (R3000) side: cache init, SSBUS timing tables, finds IOPBOOT
+BFC02640	iop_romdir_lookup	reset dis: IOP copy of the ROMDIR search
+BFC41000	rdram_init	ROMDIR: RDRAM module, called from ee_reset
