@@ -139,5 +139,5 @@ re-created from the BIOS and fully decompiled for research. Status:
 | Power-on → OSDSYS (RESET, IOP modules, KERNEL, EELOAD) | done (static): `notes/boot_sequence.md`, named decompilation in `analysis/osdsys_named/` + `analysis/{reset,kernel,eeload}/`; timings are estimates, not measured | planned: black-screen timing before the opening |
 | Opening (towers) | done | done, incl. chime + visualiser |
 | Warning scene (red "insert disc") | done | done |
-| `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | in progress: `notes/ps2logo.md` | next |
-| Main menu / browser (no-disc path) | not started | not started — a separate project in size |
+| `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | done: `notes/ps2logo.md` | done (reads the lettering from your disc image) |
+| Main menu / browser (no-disc path) | surveyed: `notes/menu_survey.md` (≈8k lines of behaviour for a trimmed version) | not started |

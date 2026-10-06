@@ -60,6 +60,17 @@ final class AppModel: ObservableObject {
     var freeCamera = FreeCamera()
 
     private(set) var assets: OpeningAssets?
+    private(set) var logoAssets: LogoAssets?
+    @Published var discURL: URL?
+    @Published var discStatus = "No disc image — the lettering is filled from the BIOS outline"
+    private var discLogo: DiscLogo?
+    /// Bumped when the logo texture/animation should be re-sent to the renderer.
+    private(set) var logoVersion = 0
+    var logoAnimation: LogoAnimation? { logoAssets.map { LogoAnimation(assets: $0, video: video) } }
+    var logoBitmap: (width: Int, height: Int, grey: [UInt8])? {
+        if let d = discLogo { return d.bitmap(for: video) }
+        return logoAnimation.map { DiscLogo.synthesised(from: $0) }
+    }
     private(set) var scene: OpeningScene?
     private var card: MemoryCard?
     private var cardHistory: PlayHistory?
@@ -74,6 +85,10 @@ final class AppModel: ObservableObject {
         var biosCandidates = [defaults.url(forKey: "bios")].compactMap { $0 }
         biosCandidates += Self.files(in: Self.pcsx2.appendingPathComponent("bios"))
         for url in biosCandidates where assets == nil { loadBIOS(url, quiet: true) }
+        var discCandidates = [defaults.url(forKey: "disc")].compactMap { $0 }
+        discCandidates += Self.files(in: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("PS2ISO"))
+            .filter { $0.pathExtension.lowercased() == "iso" }
+        for url in discCandidates where discLogo == nil { loadDisc(url, quiet: true) }
         var cardCandidates = [defaults.url(forKey: "card")].compactMap { $0 }
         cardCandidates += Self.files(in: Self.pcsx2.appendingPathComponent("memcards"))
         for url in cardCandidates where card == nil { loadCard(url, quiet: true) }
@@ -97,6 +112,9 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(url, forKey: "bios")
             rebuildScene()
             loadSound(url)
+            logoAssets = try? LogoAssets(biosURL: url)
+            logoVersion += 1
+            if let l = logoAssets { audio.loadLogoChime(l.chime()) }
         } catch {
             if !quiet { biosStatus = "\(url.lastPathComponent): \(error)" }
         }
@@ -125,8 +143,26 @@ final class AppModel: ObservableObject {
 
     private func rebuildTimeline() {
         let fps = Double(video.framesPerSecond)
-        timeline = sceneKind == .boot ? Timeline(discSettledFrame: Int(discSeconds * fps), video: video)
-                                  : .warning(exitFrame: Int(warningExitSeconds * fps), video: video)
+        switch sceneKind {
+        case .boot: timeline = Timeline(discSettledFrame: Int(discSeconds * fps), video: video)
+        case .warning: timeline = .warning(exitFrame: Int(warningExitSeconds * fps), video: video)
+        case .logo: timeline = .logo(video: video)
+        }
+        logoVersion += 1
+    }
+
+    /// Reads the lettering from sectors 0-11 of a game disc image.
+    func loadDisc(_ url: URL, quiet: Bool = false) {
+        do {
+            let d = try DiscLogo(discImageURL: url)
+            discLogo = d
+            discURL = url
+            logoVersion += 1
+            UserDefaults.standard.set(url, forKey: "disc")
+            discStatus = "\(url.lastPathComponent) — logo sectors read, checksum: " + (d.region.map { "region \($0)" } ?? "no match (A/C discs are not checked)")
+        } catch {
+            if !quiet { discStatus = "\(url.lastPathComponent): \(error)" }
+        }
     }
 
     /// The chime is synthesised from the BIOS on a background thread (a second or so).

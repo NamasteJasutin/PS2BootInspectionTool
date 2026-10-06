@@ -21,6 +21,11 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
   sliders (titles × launches), or show the empty new-console scene.
 * **Video mode**: NTSC (60 Hz, 224-line field) or PAL (50 Hz, 256-line field, 1.2× time
   step, different pixel aspect and text placement), chosen from the BIOS region.
+* **PlayStation 2 logo**: the disc-boot screen from `rom0:PS2LOGO` — the lettering bitmap read
+  and descrambled from the first 12 sectors of a game disc image (checksum-verified; filled from
+  the BIOS outline when no disc is given), the progressive blur, the lavender outline unfolding
+  from the centre, three ghost-letter ribbon trails, the per-field feedback glow, the five-voice
+  chime, and the 120-field hold.
 * **Scenes**: the boot animation, or the red "Please insert a PlayStation or PlayStation 2
   format disc" screen (dolly-in, spinning light source with 87.5 % feedback, flares, 128
   drifting puffs, red-tinted prisms, text in the console's language, its own ambient sound).
@@ -50,7 +55,7 @@ keep the same data at different addresses and need an entry in `OpeningLayout.by
 swift run ps2history <card.ps2|folder> [ls [dir] | cat <file>]   # dump the history / browse a card
 swift run ps2history --bios <bios>                               # check a BIOS can be read
 swift run BootScreen --render <frame> out.png --bios <bios> [--card <card> | --titles N --launches N]
-        [--pal] [--scene warning --exit seconds] [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
+        [--pal] [--scene warning --exit seconds | --scene logo [--iso <disc image>]] [--free x,y,z,yaw,pitch] [--disc seconds] [--wrap] [--show-path] [--no-<layer>]...
 swift run BootScreen --chime <bios> out.wav [dive-frame]        # the synthesised boot sound
 swift run BootScreen --path [disc-seconds]                       # camera route as CSV (frame, time, z, roll, up, stage)
 ```
@@ -83,6 +88,8 @@ swift run BootScreen --path [disc-seconds]                       # camera route 
 * **Chime without reverb**: the console runs every voice through the SPU2's reverb (a
   studio-style preset); the app plays the dry mix. Timing uses the nominal 60 Hz sequencer
   update (the console's timer runs ~1.7 % fast).
+* **Logo blur passes** use exactly symmetric down/up rectangles; the console's rectangles
+  carry GS half-pixel offsets that do not map 1:1 onto Metal texel centres.
 * The warning scene's ambient piece is rendered for its first minute and looped; the console
   plays the full 5.5-minute sequence with its own loop points.
 * Unverified against hardware: which way is up for the tower grid, and whether tower-cap

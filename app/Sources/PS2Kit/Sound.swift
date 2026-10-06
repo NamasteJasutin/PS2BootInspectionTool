@@ -75,6 +75,10 @@ public struct SoundBank {
     /// Decodes one PS-ADPCM sample starting at `offset`: 16-byte blocks of a shift/filter
     /// byte, a flag byte and 28 nibbles. Returns PCM and the loop start, if it loops.
     public func decodeSample(at offset: Int) -> (pcm: [Float], loopStart: Int?) {
+        Self.decodeADPCM(body, at: offset)
+    }
+
+    public static func decodeADPCM(_ body: Data, at offset: Int) -> (pcm: [Float], loopStart: Int?) {
         let filters: [(Int32, Int32)] = [(0, 0), (60, 0), (115, -52), (98, -55), (122, -60)]
         var out: [Float] = []
         var s1: Int32 = 0, s2: Int32 = 0

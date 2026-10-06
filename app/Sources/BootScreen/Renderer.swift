@@ -98,6 +98,8 @@ final class Renderer {
     private(set) var size = (width: 1280, height: 960)
 
     private(set) var assets: OpeningAssets?
+    var logoAnimation: LogoAnimation?
+    var logoCachedField: Int?
 
     init(device: MTLDevice) throws {
         self.device = device
@@ -143,7 +145,7 @@ final class Renderer {
         target("depth", .depth32Float)
     }
 
-    private func makeTexture(width: Int, height: Int, rgba: [UInt8], mips: Bool) -> MTLTexture {
+    func makeTexture(width: Int, height: Int, rgba: [UInt8], mips: Bool) -> MTLTexture {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: mips)
         d.usage = mips ? [.shaderRead, .renderTarget] : [.shaderRead]
         let t = device.makeTexture(descriptor: d)!
@@ -178,6 +180,10 @@ final class Renderer {
             pass(cb, color: "scene", clear: true, depth: .none) { _ in }
             return targets["scene"]!
         }
+        if timeline.kind == .logo {
+            return renderLogo(frame: frame, timeline: timeline, options: options, commandBuffer: cb)
+        }
+        logoCachedField = nil
         if timeline.kind == .warning {
             return renderWarning(frame: frame, timeline: timeline, freeCamera: freeCamera, options: options, commandBuffer: cb)
         }

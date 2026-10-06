@@ -62,7 +62,18 @@ enum OfflineRender {
             }
             let video: VideoMode = named["video"] == "pal" ? .pal : .ntsc
             let fps = video.framesPerSecond
-            let timeline = named["scene"] == "warning"
+            if named["scene"] == "logo" {
+                let logoAssets = try LogoAssets(biosURL: URL(fileURLWithPath: bios))
+                let animation = LogoAnimation(assets: logoAssets, video: video)
+                var bitmap = DiscLogo.synthesised(from: animation)
+                if let iso = named["iso"] {
+                    let disc = try DiscLogo(discImageURL: URL(fileURLWithPath: iso))
+                    print("disc logo checksum region: \(disc.region ?? "no match")")
+                    bitmap = disc.bitmap(for: video)
+                }
+                renderer.setLogo(animation: animation, bitmap: bitmap)
+            }
+            let timeline = named["scene"] == "logo" ? Timeline.logo(video: video) : named["scene"] == "warning"
                 ? Timeline.warning(exitFrame: Int((named["exit"].flatMap { Float($0) } ?? 10) * fps), video: video)
                 : Timeline(discSettledFrame: Int((named["disc"].flatMap { Float($0) } ?? 0) * fps), video: video)
             guard let cb = renderer.queue.makeCommandBuffer() else { return fail("no command buffer") }

@@ -99,6 +99,7 @@ struct Sidebar: View {
                 section("Your files") {
                     fileRow("BIOS", status: model.biosStatus) { pick { model.loadBIOS($0) } }
                     fileRow("Memory card", status: model.cardStatus) { pick(directories: true) { model.loadCard($0) } }
+                    fileRow("Game disc image", status: model.discStatus) { pick { model.loadDisc($0) } }
                 }
                 section("Play history") {
                     Picker("Source", selection: $model.historySource) {
@@ -120,11 +121,15 @@ struct Sidebar: View {
                         ForEach(SceneKind.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .labelsHidden()
-                    if model.sceneKind == .boot {
+                    if model.sceneKind != .warning {
                         Picker("Video", selection: $model.video) {
                             ForEach(VideoMode.allCases) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
+                    }
+                    if model.sceneKind == .logo {
+                        Text("What a licensed disc shows before its game starts: the lettering comes from the disc's first 12 sectors, the animation from rom0:PS2LOGO. The console then holds the last frame for 120 fields and launches the game.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     if model.sceneKind == .warning {
                         Picker("Video", selection: $model.video) {
@@ -177,6 +182,13 @@ struct Sidebar: View {
                     Text(model.soundStatus).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 section("Layers") {
+                    if model.sceneKind == .logo {
+                        Toggle("Logo bitmap", isOn: $model.options.towers)
+                        Toggle("Progressive logo blur", isOn: $model.options.defocus)
+                        Toggle("Outline and ribbon trails", isOn: $model.options.orbs)
+                        Toggle("Soft-focus passes", isOn: $model.options.fog)
+                        Toggle("Field feedback glow", isOn: $model.options.trails)
+                    } else {
                     Toggle("Towers", isOn: $model.options.towers)
                     Toggle("Frame-to-frame smear", isOn: $model.options.trails)
                     Toggle("Fog", isOn: $model.options.fog)
@@ -187,6 +199,7 @@ struct Sidebar: View {
                     Toggle("Lettering", isOn: $model.options.lettering)
                     Toggle("Letterbox bars", isOn: $model.options.letterbox)
                     Toggle("8-bit overflow on tower caps", isOn: $model.options.colourWrap)
+                    }
                 }
             }
             .padding(12)
@@ -344,6 +357,7 @@ struct MetalView: NSViewRepresentable {
         private let model: AppModel
         private var renderer: Renderer?
         private var loadedAssets = -1
+        private var loadedLogo = -1
         private var lastTime = CACurrentMediaTime()
 
         init(model: AppModel) { self.model = model }
@@ -363,6 +377,10 @@ struct MetalView: NSViewRepresentable {
             if loadedAssets != model.assetsVersion, let a = model.assets {
                 renderer.setAssets(a)
                 loadedAssets = model.assetsVersion
+            }
+            if loadedLogo != model.logoVersion {
+                renderer.setLogo(animation: model.logoAnimation, bitmap: model.logoBitmap)
+                loadedLogo = model.logoVersion
             }
             if let scene = model.scene {
                 renderer.render(frame: model.frame, scene: scene, timeline: model.timeline,

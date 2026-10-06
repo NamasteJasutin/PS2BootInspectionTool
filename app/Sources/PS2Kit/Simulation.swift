@@ -127,6 +127,7 @@ public struct BootPhase {
 public enum SceneKind: String, CaseIterable, Identifiable {
     case boot = "Boot (towers)"
     case warning = "Warning (insert disc)"
+    case logo = "PlayStation 2 logo (disc boot)"
     public var id: String { rawValue }
 }
 
@@ -165,6 +166,13 @@ public struct Timeline {
             out.append(CameraState(z: z, roll: roll, stage: stage, tilt: -0.03))
         }
         return Timeline(states: out, kind: .warning, diveFrame: exitFrame, video: video)
+    }
+
+    /// The logo program: its animated fields followed by the 120-field hold.
+    public static func logo(video: VideoMode) -> Timeline {
+        let animated = (video == .pal ? 35 - 14 : 42 - 17) + 1
+        let states = [CameraState](repeating: CameraState(z: 0, roll: 0, stage: 0), count: animated + 120 + 1)
+        return Timeline(states: states, kind: .logo, diveFrame: 0, video: video)
     }
 
     private init(states: [CameraState], kind: SceneKind, diveFrame: Int, video: VideoMode) {

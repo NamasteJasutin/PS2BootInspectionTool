@@ -12,6 +12,7 @@ final class AudioPlayer {
     private var chime: [Float] = []
     private var cue: [Float] = []
     private var warning: [Float] = []
+    private var logo: [Float] = []
     private var cueOffset = 0          // in stereo frames
     private var scene = SceneKind.boot
     private var fadeStart = Int.max    // stereo frame where the warning's stop-with-release begins
@@ -42,12 +43,20 @@ final class AudioPlayer {
         ready = true
     }
 
+    func loadLogoChime(_ pcm: [Float]) {
+        os_unfair_lock_lock(&lock)
+        logo = pcm
+        os_unfair_lock_unlock(&lock)
+    }
+
     /// Mixed sample at a stereo frame index (for the visualiser), or silence.
     func sample(_ frame: Int, right: Bool) -> Float {
         guard frame >= 0 else { return 0 }
         let c = right ? 1 : 0
         var v: Float = 0
-        if scene == .warning {
+        if scene == .logo {
+            if frame * 2 + c < logo.count { v = logo[frame * 2 + c] }
+        } else if scene == .warning {
             guard !warning.isEmpty else { return 0 }
             let n = warning.count / 2
             v = warning[(frame % n) * 2 + c]
