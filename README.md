@@ -121,3 +121,16 @@ functions), `tools/peek.py <f|i|x|h|b|s> <vaddr> [n]` (read initialised data),
 * **Opening textures**: PS1 TIM-style 16-bit images (20-byte header), raw RGBA32, raw 8-bit
   intensity, raw (intensity, alpha) byte pairs, and 4-bit indexed with a CLUT in the
   executable. See the texture table in `notes/opening.md`.
+
+## Campaign: the whole boot, natively
+
+The goal has grown from "the opening" to "everything the console shows before a game starts",
+re-created from the BIOS and fully decompiled for research. Status:
+
+| Stage | Research | App |
+|---|---|---|
+| Power-on → OSDSYS (RESET, IOP modules, KERNEL, EELOAD) | in progress: `notes/boot_sequence.md`, named decompilation | planned: black-screen timing before the opening |
+| Opening (towers) | done | done, incl. chime + visualiser |
+| Warning scene (red "insert disc") | done | done |
+| `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | in progress: `notes/ps2logo.md` | next |
+| Main menu / browser (no-disc path) | not started | not started — a separate project in size |
