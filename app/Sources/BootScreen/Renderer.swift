@@ -98,6 +98,13 @@ final class Renderer {
     private(set) var size = (width: 1280, height: 960)
 
     private(set) var assets: OpeningAssets?
+    /// Per-command-buffer vertex storage: a few large buffers are rotated so the GPU never
+    /// reads one the CPU is refilling.
+    private var frameBuffers: [MTLBuffer] = []
+    private var frameBufferIndex = 0
+    private var frameBufferOffset = 0
+    private var frameBufferOwner: ObjectIdentifier?
+    private static let frameBufferSize = 24 << 20
     var logoAnimation: LogoAnimation?
     var logoCachedField: Int?
 
@@ -332,6 +339,7 @@ final class Renderer {
 
     /// Draws the finished frame into `target` (e.g. a drawable), letterboxed to 4:3.
     func present(_ cb: MTLCommandBuffer, to target: MTLTexture) {
+        currentCommandBuffer = cb
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = target
         rp.colorAttachments[0].loadAction = .clear
@@ -623,6 +631,7 @@ final class Renderer {
     enum DepthAction { case none, clear, load }
 
     func pass(_ cb: MTLCommandBuffer, color: String, clear: Bool, depth: DepthAction, _ body: (MTLRenderCommandEncoder) -> Void) {
+        currentCommandBuffer = cb
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = targets[color]
         rp.colorAttachments[0].loadAction = clear ? .clear : .load
@@ -676,11 +685,35 @@ final class Renderer {
         return p
     }
 
+    /// Copies `bytes` into the current frame's buffer and returns (buffer, offset).
+    private func upload(_ bytes: UnsafeRawBufferPointer, for cb: MTLCommandBuffer) -> (MTLBuffer, Int)? {
+        let owner = ObjectIdentifier(cb)
+        if frameBufferOwner != owner {
+            frameBufferOwner = owner
+            frameBufferIndex = (frameBufferIndex + 1) % 3
+            frameBufferOffset = 0
+            while frameBuffers.count < 3 {
+                guard let b = device.makeBuffer(length: Self.frameBufferSize, options: .storageModeShared) else { return nil }
+                frameBuffers.append(b)
+            }
+        }
+        let aligned = (frameBufferOffset + 255) & ~255
+        guard aligned + bytes.count <= Self.frameBufferSize else {
+            return device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared).map { ($0, 0) }
+        }
+        let buffer = frameBuffers[frameBufferIndex]
+        memcpy(buffer.contents() + aligned, bytes.baseAddress!, bytes.count)
+        frameBufferOffset = aligned + bytes.count
+        return (buffer, aligned)
+    }
+
+    private var currentCommandBuffer: MTLCommandBuffer?
+
     func draw(_ enc: MTLRenderCommandEncoder, _ verts: [Vertex], _ batches: [Batch], format: MTLPixelFormat, hasDepth: Bool) {
-        guard !verts.isEmpty,
-              let buffer = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<Vertex>.stride, options: .storageModeShared)
+        guard !verts.isEmpty, let cb = currentCommandBuffer,
+              let (buffer, offset) = verts.withUnsafeBytes({ upload($0, for: cb) })
         else { return }
-        enc.setVertexBuffer(buffer, offset: 0, index: 0)
+        enc.setVertexBuffer(buffer, offset: offset, index: 0)
         for b in batches where !b.range.isEmpty {
             enc.setRenderPipelineState(pipeline(vertex: "v_main", fragment: "f_tex", format: format, hasDepth: hasDepth, blend: b.blend))
             enc.setDepthStencilState(depthStates[hasDepth ? b.depth : .none])
@@ -691,11 +724,12 @@ final class Renderer {
     }
 
     func drawGlass(_ enc: MTLRenderCommandEncoder, _ verts: [GlassVertex], source: String) {
-        guard let buffer = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<GlassVertex>.stride, options: .storageModeShared)
+        guard !verts.isEmpty, let cb = currentCommandBuffer,
+              let (buffer, offset) = verts.withUnsafeBytes({ upload($0, for: cb) })
         else { return }
         enc.setRenderPipelineState(pipeline(vertex: "v_glass", fragment: "f_glass", format: .rgba8Unorm, hasDepth: false, blend: .opaque))
         enc.setDepthStencilState(depthStates[.none])
-        enc.setVertexBuffer(buffer, offset: 0, index: 0)
+        enc.setVertexBuffer(buffer, offset: offset, index: 0)
         enc.setFragmentTexture(targets[source], index: 0)
         enc.setFragmentTexture(texture("TEXOREF"), index: 1)
         enc.setFragmentTexture(texture("TEXOBLP"), index: 2)

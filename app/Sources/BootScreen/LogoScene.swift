@@ -20,6 +20,14 @@ extension Renderer {
             }
             targets["logo"] = makeTexture(width: 512, height: 128, rgba: rgba, mips: false)
         }
+        // The logo blur ping-pongs between two textures covering only the 384x96 logo region.
+        let scale = Float(size.width) / 640
+        for name in ["blurA", "blurB"] where targets[name] == nil {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: Int(384 * scale), height: Int(96 * scale), mipmapped: false)
+            d.usage = [.renderTarget, .shaderRead]
+            d.storageMode = .private
+            targets[name] = device.makeTexture(descriptor: d)
+        }
         if targets["logoPrev"] == nil {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: size.width, height: size.height, mipmapped: false)
             d.usage = [.renderTarget, .shaderRead]
@@ -37,9 +45,11 @@ extension Renderer {
         let animated = anim.lastField - anim.firstField
         let f = min(max(Int(frame), 0), animated)
         if let cached = logoCachedField, cached == f { return scene }
+        // Fields depend on the previous one: continue from the cache when moving forward
+        // (catching up over skipped fields), restart only when scrubbing backwards.
         let start: Int
-        if let cached = logoCachedField, cached == f - 1 {
-            start = f
+        if let cached = logoCachedField, cached < f {
+            start = cached + 1
         } else {
             start = 0
             pass(cb, color: "logoPrev", clear: true, depth: .none) { _ in }
@@ -52,21 +62,22 @@ extension Renderer {
         return scene
     }
 
-    // 640x512 buffer coordinates -> NDC / uv of a full-size target.
-    private func quad(_ out: inout [Vertex], dst: (Float, Float, Float, Float), src: (Float, Float, Float, Float),
-                      color: SIMD4<Float> = SIMD4(1, 1, 1, 1)) {
-        appendQuad(&out, x0: dst.0 / 320 - 1, y0: 1 - dst.3 / 256, x1: dst.2 / 320 - 1, y1: 1 - dst.1 / 256,
-                   u0: src.0 / 640, v0: src.1 / 512, u1: src.2 / 640, v1: src.3 / 512, color: color)
-    }
-
-    private func resample(_ cb: MTLCommandBuffer, from: String, to: String, src: (Float, Float, Float, Float),
-                          dst: (Float, Float, Float, Float), clear: Bool) {
+    /// A textured quad between two targets, each addressed in its own logical pixel space
+    /// (the frame is 640x512; the blur textures are the 384x96 logo region).
+    private func resample(_ cb: MTLCommandBuffer, from: String, fromSize: (Float, Float), to: String, toSize: (Float, Float),
+                          src: (Float, Float, Float, Float), dst: (Float, Float, Float, Float), clear: Bool,
+                          color: SIMD4<Float> = SIMD4(1, 1, 1, 1), blend: Blend = .opaque) {
         var v: [Vertex] = []
-        quad(&v, dst: dst, src: src)
+        appendQuad(&v, x0: dst.0 / toSize.0 * 2 - 1, y0: 1 - dst.3 / toSize.1 * 2, x1: dst.2 / toSize.0 * 2 - 1, y1: 1 - dst.1 / toSize.1 * 2,
+                   u0: src.0 / fromSize.0, v0: src.1 / fromSize.1, u1: src.2 / fromSize.0, v1: src.3 / fromSize.1, color: color)
         pass(cb, color: to, clear: clear, depth: .none) { enc in
-            self.draw(enc, v, [Batch(texture: "@" + from, blend: .opaque, range: 0 ..< 6)], format: .rgba8Unorm, hasDepth: false)
+            self.draw(enc, v, [Batch(texture: "@" + from, blend: blend, range: 0 ..< 6)], format: .rgba8Unorm, hasDepth: false)
         }
     }
+
+    private var frameSize: (Float, Float) { (640, 512) }
+    private var regionSize: (Float, Float) { (384, 96) }
+    private var regionOrigin: (Float, Float) { (120.5, 200.5) }
 
     private func renderLogoField(_ t: Int, animation anim: LogoAnimation, options: RenderOptions, cb: MTLCommandBuffer) {
         let pal = anim.video == .pal
@@ -83,13 +94,19 @@ extension Renderer {
         // 2. Progressive blur of the logo neighbourhood: n down/up resamples through the aux buffer.
         if options.defocus {
             let n = anim.logoBlurIterations(field: t)
-            let auxH: Float = pal ? 84.25 : 71.25
-            for i in 0 ..< n {
-                let s = Float(i) * 0.5
-                // The console's rectangles carry GS half-pixel offsets; Metal's texel centres differ,
-                // so the down/up pair is kept exactly symmetric to avoid a per-iteration drift.
-                resample(cb, from: "scene", to: "temp", src: (120.5, 200.5, 504.5, 296.5), dst: (0, 0, 239.25 - s, auxH - s), clear: true)
-                resample(cb, from: "temp", to: "scene", src: (0, 0, 239.25 - s, auxH - s), dst: (120.5, 200.5, 504.5, 296.5), clear: false)
+            if n > 0 {
+                let auxH: Float = pal ? 84.25 : 71.25
+                let region = (regionOrigin.0, regionOrigin.1, regionOrigin.0 + regionSize.0, regionOrigin.1 + regionSize.1)
+                let whole = (Float(0), Float(0), regionSize.0, regionSize.1)
+                resample(cb, from: "scene", fromSize: frameSize, to: "blurA", toSize: regionSize, src: region, dst: whole, clear: true)
+                for i in 0 ..< n {
+                    let s = Float(i) * 0.5
+                    // The console's rectangles carry GS half-pixel offsets; Metal's texel centres differ,
+                    // so the down/up pair is kept exactly symmetric to avoid a per-iteration drift.
+                    resample(cb, from: "blurA", fromSize: regionSize, to: "blurB", toSize: regionSize, src: whole, dst: (0, 0, 239.25 - s, auxH - s), clear: true)
+                    resample(cb, from: "blurB", fromSize: regionSize, to: "blurA", toSize: regionSize, src: (0, 0, 239.25 - s, auxH - s), dst: whole, clear: false)
+                }
+                resample(cb, from: "blurA", fromSize: regionSize, to: "scene", toSize: frameSize, src: whole, dst: region, clear: false)
             }
         }
         // 3. Layer A (outline + one ribbon), soft blur, layer B, feedback, soft blur.
@@ -99,12 +116,9 @@ extension Renderer {
         if options.trails {
             let a = Float(anim.feedbackAlpha(field: t)) / 128
             if a > 0 {
-                var fb: [Vertex] = []
                 let k: Float = Float(0x84) / 128
-                quad(&fb, dst: (2, 2, 638, 510), src: (0.5, 0.5, 640.5, 512.5), color: SIMD4(k, k, k, a))
-                pass(cb, color: "scene", clear: false, depth: .none) { enc in
-                    self.draw(enc, fb, [Batch(texture: "@logoPrev", blend: .alpha, range: 0 ..< 6)], format: .rgba8Unorm, hasDepth: false)
-                }
+                resample(cb, from: "logoPrev", fromSize: frameSize, to: "scene", toSize: frameSize, src: (0.5, 0.5, 640.5, 512.5),
+                         dst: (2, 2, 638, 510), clear: false, color: SIMD4(k, k, k, a), blend: .alpha)
             }
         }
         if options.fog, anim.screenBlurActive(field: t) { screenBlur(cb, pal: pal) }
@@ -113,8 +127,8 @@ extension Renderer {
     private func screenBlur(_ cb: MTLCommandBuffer, pal: Bool) {
         for i in 0 ..< 2 {
             let s = Float(i) * 0.5
-            resample(cb, from: "scene", to: "temp", src: (0, 0, 640, 512), dst: (0, 0, 479.25 - s, 385.25 - s), clear: true)
-            resample(cb, from: "temp", to: "scene", src: (0, 0, 479.25 - s, 385.25 - s), dst: (0, 0, 640, 512), clear: false)
+            resample(cb, from: "scene", fromSize: frameSize, to: "temp", toSize: frameSize, src: (0, 0, 640, 512), dst: (0, 0, 479.25 - s, 385.25 - s), clear: true)
+            resample(cb, from: "temp", fromSize: frameSize, to: "scene", toSize: frameSize, src: (0, 0, 479.25 - s, 385.25 - s), dst: (0, 0, 640, 512), clear: false)
         }
     }
 

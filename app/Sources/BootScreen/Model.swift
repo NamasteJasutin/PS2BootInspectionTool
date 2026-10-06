@@ -36,7 +36,12 @@ final class AppModel: ObservableObject {
     @Published var warningExitSeconds = 10.0 { didSet { rebuildTimeline() } }
     /// Black screen between power-on and the first frame (`notes/boot_sequence.md` §4).
     @Published var powerOnSeconds = 3.0 { didSet { rebuildTimeline() } }
-    @Published var frame: Float = 0
+    /// The sequence clock, published on its own so that only the views showing it update per frame.
+    let clock = Clock()
+    var frame: Float {
+        get { clock.frame }
+        set { clock.frame = newValue }
+    }
     var startFrame: Float { sceneKind == .full ? 0 : -Float(powerOnSeconds) * timeline.framesPerSecond }
     var endFrame: Float { sceneKind == .full ? Float(sequence.totalFrames - 1) : Float(timeline.endFrame) }
     var bootPhase: BootPhase? {
@@ -300,6 +305,13 @@ final class AppModel: ObservableObject {
         let c = camera
         freeCamera = FreeCamera(position: c.position, yaw: 0, pitch: 0)
     }
+}
+
+final class Clock: ObservableObject {
+    @Published var frame: Float = 0
+    /// Last frame's encode (CPU) and GPU times, for spotting stutter.
+    var cpuMs: Double = 0
+    var gpuMs: Double = 0
 }
 
 /// A fly-through camera: position plus yaw/pitch, level horizon.

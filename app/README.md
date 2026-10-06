@@ -98,7 +98,8 @@ swift run BootScreen --path [disc-seconds]                       # camera route 
 * **Chime without reverb**: the console runs every voice through the SPU2's reverb (a
   studio-style preset); the app plays the dry mix. Timing uses the nominal 60 Hz sequencer
   update (the console's timer runs ~1.7 % fast).
-* **Logo blur passes** use exactly symmetric down/up rectangles; the console's rectangles
+* **Logo blur passes** run on two small textures covering only the logo region (the console
+  resamples in its full frame buffer), and use exactly symmetric down/up rectangles; the console's rectangles
   carry GS half-pixel offsets that do not map 1:1 onto Metal texel centres.
 * The warning scene's ambient piece is rendered for its first minute and looped; the console
   plays the full 5.5-minute sequence with its own loop points.

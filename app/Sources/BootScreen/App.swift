@@ -59,26 +59,37 @@ struct ContentView: View {
                     Spacer()
                     VisualizerView(state: model.visualizer)
                 }
-                HandoffCard(model: model)
+                HandoffCard(model: model, clock: model.clock)
                 if model.assets == nil {
                     Text("Open your PS2 BIOS dump to begin.\nNothing from the BIOS is bundled with this app.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(statusLine)
-                    if let phase = model.bootPhase {
-                        Text("booting: \(phase.name)").foregroundStyle(.yellow.opacity(0.8))
-                    }
-                }
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.7))
-                .padding(8)
+                StatusOverlay(model: model, clock: model.clock)
             }
             Divider()
             Sidebar().frame(width: 310)
         }
+    }
+
+}
+
+/// The per-frame readout; observes the clock so only it redraws at frame rate.
+struct StatusOverlay: View {
+    let model: AppModel
+    @ObservedObject var clock: Clock
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(statusLine + String(format: "   cpu %4.1f ms  gpu %4.1f ms", clock.cpuMs, clock.gpuMs))
+            if let phase = model.bootPhase {
+                Text("booting: \(phase.name)").foregroundStyle(.yellow.opacity(0.8))
+            }
+        }
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(.white.opacity(0.7))
+        .padding(8)
     }
 
     private var statusLine: String {
@@ -163,8 +174,7 @@ struct Sidebar: View {
                         Button("Restart") { model.frame = model.startFrame; model.playing = true }
                         Toggle("Loop", isOn: $model.loop)
                     }
-                    Slider(value: Binding(get: { Double(model.frame) }, set: { model.frame = Float($0) }),
-                           in: Double(model.startFrame) ... Double(max(model.endFrame, 1)))
+                    TimeSlider(model: model, clock: model.clock)
                     slider("Power-on black screen", $model.powerOnSeconds, 0 ... 6, format: "%.1f s")
                     slider("Speed", $model.speed, 0.05 ... 2, format: "%.2fx")
                     if model.sceneKind == .boot || model.sceneKind == .full {
@@ -335,7 +345,8 @@ struct DiscPanel: View {
 
 /// Shown over the picture once the sequence reaches the point where the game would start.
 struct HandoffCard: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
+    @ObservedObject var clock: Clock
 
     var body: some View {
         if model.currentSegment == .end {
@@ -355,6 +366,16 @@ struct HandoffCard: View {
             .foregroundStyle(.white)
             .padding(40)
         }
+    }
+}
+
+struct TimeSlider: View {
+    let model: AppModel
+    @ObservedObject var clock: Clock
+
+    var body: some View {
+        Slider(value: Binding(get: { Double(clock.frame) }, set: { clock.frame = Float($0) }),
+               in: Double(model.startFrame) ... Double(max(model.endFrame, 1)))
     }
 }
 
@@ -478,7 +499,12 @@ struct MetalView: NSViewRepresentable {
                 renderer.present(cb, to: drawable.texture)
             }
             cb.present(drawable)
+            let clock = model.clock
+            cb.addCompletedHandler { cb in
+                clock.gpuMs = (cb.gpuEndTime - cb.gpuStartTime) * 1000
+            }
             cb.commit()
+            clock.cpuMs = (CACurrentMediaTime() - now) * 1000
         }
     }
 }
