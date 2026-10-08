@@ -142,3 +142,11 @@ re-created from the BIOS and fully decompiled for research. Status:
 | `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | done: `notes/ps2logo.md` | done (reads the lettering from your disc image) |
 | Disc boot, end to end (opening → hand-off → logo → where the ELF would start) with disc introspection | done: `notes/osdsys_flow.md` §2.5, `notes/ps2logo.md` | done: *Full boot* scene, *Disc* panel, end card |
 | Main menu / browser (no-disc path) | surveyed: `notes/menu_survey.md` (≈8k lines of behaviour for a trimmed version) | not started |
+
+## Licence and what is (not) in this repository
+
+The notes, tools and app are MIT-licensed (see `LICENSE`). The repository contains no Sony
+code or data: BIOS images, disc images, memory cards, everything extracted or decompiled from
+them, and the local Ghidra toolchain are ignored by `.gitignore`. Bring your own BIOS dump,
+memory card and disc image; the app reads them at run time. The screenshots in `docs/` are
+renders of the app.
