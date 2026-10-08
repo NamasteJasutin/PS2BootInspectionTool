@@ -121,6 +121,8 @@ For anyone who wants to check the tool's claims or extend it to another BIOS ver
 | `ps2kit/` | The portable core (Rust): every reader and the simulation, with oracle tests. |
 | `ps2bootinspect/` | The app (Rust: egui + wgpu + cpal). |
 | `tools/`, `analysis/symbols/` | Scripts that derive all of the above from a BIOS image, and symbol tables for the decompilations they produce. |
+| [ps2-bios-ghidra](https://github.com/NamasteJasutin/ps2-bios-ghidra) | The headless Ghidra set-up and symbol tables as a standalone kit, for decompiling your own BIOS. |
+| [ps2kit on crates.io](https://crates.io/crates/ps2kit) | The readers and the simulation as a Rust library. |
 
 ## Licence
 
