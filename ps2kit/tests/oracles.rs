@@ -138,3 +138,35 @@ fn walk(dir: &Path, depth: usize) -> Vec<PathBuf> {
     }
     out
 }
+
+#[test]
+fn ps1_shell_from_local_bios_and_discs() {
+    let Some(rom) = bios() else { return };
+    let shell = ps2kit::ps1::Ps1Shell::load(&rom).expect("rom0:LOGO assets");
+    assert_eq!((shell.logo.verts.len(), shell.logo.normals.len(), shell.logo.prims.len()), (337, 153, 560));
+    assert_eq!((shell.wordmark.width, shell.wordmark.height, shell.tm.width, shell.tm.height), (200, 40, 20, 8));
+    assert_eq!(shell.events.len(), 19);
+    assert_eq!(shell.translation, [0, -340, 5888]);
+    assert_eq!(shell.font.width("Sony Computer En"), 188, "the width the shell's piece positions imply");
+    let tris = shell.project(&shell.logo, 30);
+    assert!(tris.len() > 200 && tris.len() < 560, "{} front faces", tris.len());
+    let (xs, ys): (Vec<f32>, Vec<f32>) = tris.iter().flat_map(|t| t.xy).map(|p| (p[0], p[1])).unzip();
+    let (x0, x1) = (xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+    let (y0, y1) = (ys.iter().cloned().fold(f32::MAX, f32::min), ys.iter().cloned().fold(f32::MIN, f32::max));
+    assert!(x0 > 180.0 && x1 < 460.0 && y0 > 20.0 && y1 < 280.0, "logo spans {x0}..{x1} × {y0}..{y1} (the wordmark starts at y 280)");
+    let black = shell.project(&shell.logo, 0);
+    assert!(black.iter().all(|t| t.colour.iter().all(|c| *c < 0.02)), "first field is black");
+    let pcm = shell.render_sound(ps2kit::sim::VideoMode::Ntsc);
+    assert!(pcm.len() > 48000 * 2 * 3 && pcm.iter().any(|s| s.abs() > 0.01));
+    // Every PS1 disc in ~/PS2ISO must carry the shell's own logo.
+    let Some(home) = std::env::var_os("HOME") else { return };
+    for dir in std::fs::read_dir(Path::new(&home).join("PS2ISO")).into_iter().flatten().flatten() {
+        let Some(bin) = std::fs::read_dir(dir.path()).into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains("Track 01"))) else { continue };
+        if let Ok(d) = ps2kit::disc::DiscImage::open(&bin) {
+            if d.kind == ps2kit::disc::DiscKind::Ps1 {
+                let raw = ps2kit::sectors::SectorReader::open(&bin).unwrap().read(5, 7).unwrap();
+                assert_eq!(&raw[..ps2kit::ps1::LOGO_TMD_BYTES], &shell.logo_bytes[..], "{}", bin.display());
+            }
+        }
+    }
+}

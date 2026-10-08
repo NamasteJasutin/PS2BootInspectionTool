@@ -5,6 +5,7 @@ pub trait Bytes {
     fn u16(&self, o: usize) -> u16;
     fn u32(&self, o: usize) -> u32;
     fn i32(&self, o: usize) -> i32 { self.u32(o) as i32 }
+    fn i16(&self, o: usize) -> i16 { self.u16(o) as i16 }
     fn f32(&self, o: usize) -> f32 { f32::from_bits(self.u32(o)) }
     /// NUL-terminated string of at most `max` bytes.
     fn cstr(&self, o: usize, max: usize) -> String;

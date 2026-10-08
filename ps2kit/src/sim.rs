@@ -230,6 +230,11 @@ impl Timeline {
         Self { video, kind: SceneKind::Logo, states: vec![CameraState::default(); animated + 120 + 1], dive_frame: 0 }
     }
 
+    /// The PS1 licence screen: its fields followed by a hold while the game loads.
+    pub fn ps1_licence(video: VideoMode, fields: usize) -> Self {
+        Self { video, kind: SceneKind::Logo, states: vec![CameraState::default(); fields + 120 + 1], dive_frame: 0 }
+    }
+
     /// Camera at a (possibly fractional) frame; clamps outside the scene.
     pub fn camera(&self, frame: f32) -> CameraState {
         let end = self.end_frame();
@@ -388,6 +393,18 @@ impl BootSequence {
         add(Segment::Logo, logo.end_frame());
         add(Segment::End, (end_seconds * fps) as usize);
         Self { video, spans, opening, logo }
+    }
+
+    /// The same sequence with the disc-logo segment replaced by `logo` (a PS1 disc's licence screen).
+    pub fn with_logo(mut self, logo: Timeline) -> Self {
+        let mut t = 0;
+        for s in &mut self.spans {
+            if s.segment == Segment::Logo { s.length = logo.end_frame() }
+            s.start = t;
+            t += s.length;
+        }
+        self.logo = logo;
+        self
     }
 
     pub fn total_frames(&self) -> usize { self.spans.last().map(|s| s.start + s.length).unwrap_or(0) }

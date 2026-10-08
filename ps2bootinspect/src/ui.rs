@@ -16,6 +16,7 @@ pub struct App {
     last: Instant,
     loaded_assets: u32,
     loaded_logo: u32,
+    ps1_layout: Option<crate::scenes::ps1::Ps1Layout>,
 }
 
 impl App {
@@ -26,7 +27,7 @@ impl App {
         let view = SceneView::register(rs, &renderer.targets["scene"].1, renderer.size);
         let mut model = Model::new();
         model.load_defaults();
-        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX }
+        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None }
     }
 
     fn render_frame(&mut self, rs: &eframe::egui_wgpu::RenderState) {
@@ -38,6 +39,7 @@ impl App {
         if self.loaded_logo != m.logo_version {
             let bitmap = m.logo_bitmap();
             self.renderer.set_logo_bitmap(bitmap.as_ref());
+            self.ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| self.renderer.set_ps1_assets(s, &m.ps1_licence_text()));
             self.loaded_logo = m.logo_version;
         }
         let Some(assets) = &m.assets else { return };
@@ -50,13 +52,17 @@ impl App {
                 let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
                 match span.segment {
                     Segment::Opening => self.renderer.render_opening(&mut enc, local as f32 + m.frame.fract(), &m.scene, assets, &m.sequence.opening, free, &m.options),
-                    Segment::Logo => { if let Some(anim) = m.logo_animation() { self.renderer.render_logo(&mut enc, local as f32, &anim, &m.options) } }
+                    Segment::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
+                        self.renderer.render_ps1_licence(&mut enc, local as f32, shell, logo, layout, m.video, &m.options)
+                    } else if let Some(anim) = m.logo_animation() { self.renderer.render_logo(&mut enc, local as f32, &anim, &m.options) }
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
             }
             SceneKind::Boot => self.renderer.render_opening(&mut enc, m.frame, &m.scene, assets, &m.timeline, free, &m.options),
             SceneKind::Warning => self.renderer.render_warning(&mut enc, m.frame, assets, &m.timeline, free, &m.options, &warning_tex),
-            SceneKind::Logo => { if let Some(anim) = m.logo_animation() { if m.frame >= 0.0 { self.renderer.render_logo(&mut enc, m.frame, &anim, &m.options) } else { self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) } } }
+            SceneKind::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
+                self.renderer.render_ps1_licence(&mut enc, m.frame, shell, logo, layout, m.video, &m.options)
+            } else if let Some(anim) = m.logo_animation() { if m.frame >= 0.0 { self.renderer.render_logo(&mut enc, m.frame, &anim, &m.options) } else { self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) } }
         }
         self.renderer.queue.submit([enc.finish()]);
         let _ = rs;
@@ -269,7 +275,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
                 ui.small("Phase ONE (BIOS): power-on, the opening. Phase TWO (disc): hand-off to rom0:PS2LOGO, the logo, then the point where the game's ELF would start. The console is never asked to run the game.");
                 rebuild |= ui.add(egui::Slider::new(&mut m.handoff_seconds, 0.2..=4.0).text("hand-off to PS2LOGO (s)")).changed();
             }
-            SceneKind::Logo => { ui.small("What a licensed disc shows before its game starts: the lettering comes from the disc's first 12 sectors, the animation from rom0:PS2LOGO."); }
+            SceneKind::Logo => { ui.small(if m.ps1_active() { "A PlayStation disc: the licence screen the PS1 shell inside the BIOS (rom0:LOGO) draws — the logo model from the disc's sectors 5–11, the text from the licence sector, the font from rom0:KROM, the chime from the shell's sound bank." } else { "What a licensed disc shows before its game starts: the lettering comes from the disc's first 12 sectors, the animation from rom0:PS2LOGO." }); }
             SceneKind::Warning => {
                 egui::ComboBox::from_id_salt("lang").selected_text(LANGUAGES.iter().find(|l| l.0 == m.language).map(|l| l.1).unwrap_or("")).show_ui(ui, |ui| {
                     for (code, name) in LANGUAGES { ui.selectable_value(&mut m.language, code, name); }

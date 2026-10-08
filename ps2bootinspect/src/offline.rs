@@ -70,6 +70,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut r = Renderer::new(device.clone(), queue.clone());
     r.set_assets(m.assets.as_ref().unwrap());
     r.set_logo_bitmap(m.logo_bitmap().as_ref());
+    let ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| r.set_ps1_assets(s, &m.ps1_licence_text()));
+    let ps1 = |r: &mut Renderer, enc: &mut wgpu::CommandEncoder, f: f32| -> bool {
+        if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &ps1_layout) {
+            r.render_ps1_licence(enc, f, shell, logo, layout, m.video, &m.options); true
+        } else { false }
+    };
     let mut enc = device.create_command_encoder(&Default::default());
     r.begin_frame();
     let assets = m.assets.as_ref().unwrap();
@@ -77,12 +83,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     match m.scene_kind {
         SceneKind::Boot => r.render_opening(&mut enc, frame, &m.scene, assets, &m.timeline, free, &m.options),
         SceneKind::Warning => r.render_warning(&mut enc, frame, assets, &m.timeline, free, &m.options, &warning_tex),
-        SceneKind::Logo => { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options) }
+        SceneKind::Logo => if !ps1(&mut r, &mut enc, frame) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options) },
         SceneKind::Full => {
             let (span, local) = m.sequence.span_at(frame.max(0.0) as usize);
             match span.segment {
                 Segment::Opening => r.render_opening(&mut enc, local as f32, &m.scene, assets, &m.sequence.opening, free, &m.options),
-                Segment::Logo => { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options) }
+                Segment::Logo => if !ps1(&mut r, &mut enc, local as f32) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options) },
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }
         }

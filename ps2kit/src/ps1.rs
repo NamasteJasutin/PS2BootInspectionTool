@@ -1,0 +1,498 @@
+//! The PlayStation 1 licence screen as a PS2 shows it for a PS1 disc: `rom0:LOGO` is the
+//! PS1 shell (packed, R3000), and on a PS2 it shows only the licence screen — the "Sony
+//! Computer Entertainment" diamond is not in this build (`notes/ps1_boot.md`). Everything is
+//! read from the user's BIOS (the shell's model, bitmaps, font, matrices, note table and sound
+//! bank) and the disc (the logo model in sectors 5–11, which a licensed disc carries
+//! identically to the shell's own copy).
+
+use crate::bytes::Bytes;
+use crate::rom::{unpack, RomDir};
+use crate::sim::VideoMode;
+use crate::sound::{decode_adpcm, envelope, SAMPLE_RATE};
+use crate::{Error, Result};
+use std::path::Path;
+
+/// One flat triangle of a TMD (mode 0x20): a colour, one normal, three vertices.
+#[derive(Debug, Clone, Copy)]
+pub struct Prim {
+    pub colour: [u8; 3],
+    pub normal: u16,
+    pub verts: [u16; 3],
+}
+
+/// A libgs TMD with one object, as the shell parses it.
+#[derive(Debug, Clone)]
+pub struct Tmd {
+    pub verts: Vec<[i16; 3]>,
+    pub normals: Vec<[i16; 3]>,
+    pub prims: Vec<Prim>,
+}
+
+/// Bytes of the logo TMD the shell reads and compares.
+pub const LOGO_TMD_BYTES: usize = 0x3278;
+
+impl Tmd {
+    pub fn parse(d: &[u8]) -> Result<Self> {
+        let bad = |m: &str| Error::Corrupt(format!("TMD: {m}"));
+        if d.len() < 0x28 || d.u32(0) != 0x41 {
+            return Err(bad("no header"));
+        }
+        let (vert_top, n_vert, normal_top, n_normal, _prim_top, n_prim) = (d.u32(0x0C) as usize, d.u32(0x10) as usize, d.u32(0x14) as usize, d.u32(0x18) as usize, d.u32(0x1C) as usize, d.u32(0x20) as usize);
+        if n_vert > 4096 || n_normal > 4096 || n_prim > 4096 {
+            return Err(bad("implausible counts"));
+        }
+        let (vb, nb) = (0x0C + vert_top, 0x0C + normal_top);
+        if vb + n_vert * 8 > d.len() || nb + n_normal * 8 > d.len() {
+            return Err(bad("vertex or normal table past the end"));
+        }
+        let verts = (0..n_vert).map(|i| [d.i16(vb + i * 8), d.i16(vb + i * 8 + 2), d.i16(vb + i * 8 + 4)]).collect();
+        let normals = (0..n_normal).map(|i| [d.i16(nb + i * 8), d.i16(nb + i * 8 + 2), d.i16(nb + i * 8 + 4)]).collect();
+        // The shell assumes the primitives start right after the object table (file 0x28).
+        let mut prims = Vec::with_capacity(n_prim);
+        let mut p = 0x28;
+        for _ in 0..n_prim {
+            if p + 16 > d.len() { return Err(bad("primitive table past the end")) }
+            let mode = d.u8(p + 3);
+            let colour = [d.u8(p + 4), d.u8(p + 5), d.u8(p + 6)];
+            match mode {
+                0x20 => {
+                    prims.push(Prim { colour, normal: d.u16(p + 8), verts: [d.u16(p + 10), d.u16(p + 12), d.u16(p + 14)] });
+                    p += 16;
+                }
+                0x30 => {
+                    // Three normals: the shell averages them and rewrites the record as 0x20.
+                    // The first is used here; the logo does not contain any.
+                    prims.push(Prim { colour, normal: d.u16(p + 8), verts: [d.u16(p + 10), d.u16(p + 14), d.u16(p + 18)] });
+                    p += 20;
+                }
+                _ => return Err(bad("unsupported primitive mode")),
+            }
+        }
+        Ok(Self { verts, normals, prims })
+    }
+
+    /// The logo TMD a PlayStation disc carries in sectors 5–11.
+    pub fn from_disc(path: &Path) -> Result<Self> {
+        let raw = crate::sectors::SectorReader::open(path)?.read(5, 7)?;
+        if raw.len() < LOGO_TMD_BYTES {
+            return Err(Error::Corrupt("disc image is too short for the licence logo".into()));
+        }
+        Self::parse(&raw[..LOGO_TMD_BYTES])
+    }
+}
+
+/// A 4-bit TIM with its CLUT, expanded to RGBA (15-bit colour 0 = transparent).
+#[derive(Debug, Clone)]
+pub struct Tim {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+impl Tim {
+    fn parse_4bit(d: &[u8]) -> Result<Self> {
+        if d.len() < 0x14 || d.u32(0) != 0x10 || d.u32(4) != 8 {
+            return Err(Error::Corrupt("not a 4-bit TIM with CLUT".into()));
+        }
+        let clut_len = d.u32(8) as usize;
+        let (cw, ch) = (d.u16(0x10) as usize, d.u16(0x12) as usize);
+        let clut: Vec<u16> = (0..cw * ch).map(|i| d.u16(0x14 + i * 2)).collect();
+        let ib = 8 + clut_len;
+        let (iw, ih) = (d.u16(ib + 8) as usize, d.u16(ib + 10) as usize);
+        let (width, height) = (iw * 4, ih);
+        let data = ib + 12;
+        let mut rgba = vec![0u8; width * height * 4];
+        for y in 0..height {
+            for x in 0..width {
+                let byte = d.u8(data + y * iw * 2 + x / 2);
+                let idx = if x & 1 == 0 { byte & 0xF } else { byte >> 4 } as usize;
+                let c = clut.get(idx).copied().unwrap_or(0);
+                let o = (y * width + x) * 4;
+                let five = |v: u16| ((v & 31) * 255 / 31) as u8;
+                rgba[o..o + 4].copy_from_slice(&[five(c), five(c >> 5), five(c >> 10), if c == 0 { 0 } else { 255 }]);
+            }
+        }
+        Ok(Self { width, height, rgba })
+    }
+}
+
+/// The kernel's kanji font (`rom0:KROM`, 30 bytes per 16×15 glyph) with the shell's
+/// proportional-width table for digits, letters and the space.
+#[derive(Debug, Clone)]
+pub struct Font {
+    glyphs: Vec<u8>,
+    /// (left shift, advance) for glyph indexes 0x93..=0xD1.
+    prop: Vec<(u16, u16)>,
+}
+
+pub const TEXT_ROW_HEIGHT: usize = 16;
+
+impl Font {
+    /// Glyph index of an ASCII character, through the shell's Shift-JIS conversion.
+    fn index(c: u8) -> Option<usize> {
+        Some(match c {
+            b' ' => 0,
+            b'.' => 4,
+            b'(' => 0x29,
+            b')' => 0x2A,
+            b'0'..=b'9' => 0x93 + (c - b'0') as usize,
+            b'A'..=b'Z' => 0x9D + (c - b'A') as usize,
+            b'a'..=b'z' => 0xB7 + (c - b'a') as usize,
+            _ => return None,
+        })
+    }
+
+    fn metrics(&self, c: u8, index: usize) -> (u16, u16) {
+        let slot = if c == b' ' { 0xD1 } else { index };
+        if (0x93..=0xD1).contains(&slot) { self.prop[slot - 0x93] } else { (0, 16) }
+    }
+
+    /// Width in pixels of a line rendered proportionally.
+    pub fn width(&self, text: &str) -> usize {
+        text.bytes().filter_map(|c| Self::index(c).map(|i| self.metrics(c, i).1 as usize)).sum()
+    }
+
+    /// Renders a line as an 8-bit mask (0 or 255), `TEXT_ROW_HEIGHT` rows: rows shifted left
+    /// by the glyph's shift, each pixel ORed with its left neighbour (the shell's 1-px bold),
+    /// and the next glyph overwriting from its predecessor's advance on.
+    pub fn render(&self, text: &str) -> (usize, Vec<u8>) {
+        let width = self.width(text).max(1);
+        let mut mask = vec![0u8; width * TEXT_ROW_HEIGHT];
+        let mut x = 0usize;
+        for c in text.bytes() {
+            let Some(index) = Self::index(c) else { continue };
+            let (shift, advance) = self.metrics(c, index);
+            let g = &self.glyphs[index * 30..index * 30 + 30];
+            for row in 0..15 {
+                let bits = ((g[row * 2] as u32) << 8 | g[row * 2 + 1] as u32) << shift as u32;
+                let bold = bits | (bits >> 1);
+                for col in 0..16usize {
+                    let px = x + col;
+                    if px >= width { break }
+                    // The next glyph overwrites from `advance`; model that by clipping here.
+                    if col >= advance as usize { break }
+                    let on = bold >> (15 - col) & 1 != 0;
+                    mask[row * width + px] = if on { 255 } else { 0 };
+                }
+            }
+            x += advance as usize;
+        }
+        (width, mask)
+    }
+}
+
+/// One entry of the shell's note table.
+#[derive(Debug, Clone, Copy)]
+pub struct NoteEvent {
+    /// NTSC fields from the first text frame (PAL: × 5/6).
+    pub time: u32,
+    pub prog: u8,
+    pub note: u8,
+    /// 0 = key off.
+    pub vel: u8,
+    pub pan: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Tone {
+    vol: u8,
+    pan: u8,
+    centre: u8,
+    shift: u8,
+    adsr1: u16,
+    adsr2: u16,
+    vag: u8,
+}
+
+#[derive(Debug, Clone)]
+struct Program {
+    vol: u8,
+    tones: Vec<Tone>,
+}
+
+/// The shell's VAB: programs of two stereo tones over three ADPCM samples.
+#[derive(Debug, Clone)]
+pub struct Vab {
+    programs: Vec<Program>,
+    master: u8,
+    /// Decoded samples (SPU scale, 44.1 kHz) and their loop starts, index = VAG number.
+    samples: Vec<(Vec<f32>, Option<usize>)>,
+}
+
+impl Vab {
+    fn parse(d: &[u8]) -> Result<Self> {
+        if d.len() < 32 || &d[..4] != b"pBAV" {
+            return Err(Error::Bank("no pBAV header".into()));
+        }
+        let (n_prog, n_vag, master) = (d.u16(18) as usize, d.u16(22) as usize, d.u8(24));
+        let prog_tab = 32;
+        let tone_tab = prog_tab + 128 * 16;
+        let vag_tab = tone_tab + n_prog * 16 * 32;
+        let body = vag_tab + 512;
+        if body > d.len() || n_prog > 128 || n_vag > 254 {
+            return Err(Error::Bank("implausible VAB header".into()));
+        }
+        let mut programs = Vec::new();
+        for p in 0..n_prog {
+            let o = prog_tab + p * 16;
+            let (n_tones, vol) = (d.u8(o) as usize, d.u8(o + 1));
+            let tones = (0..n_tones.min(16)).map(|t| {
+                let o = tone_tab + (p * 16 + t) * 32;
+                Tone { vol: d.u8(o + 2), pan: d.u8(o + 3), centre: d.u8(o + 4), shift: d.u8(o + 5), adsr1: d.u16(o + 16), adsr2: d.u16(o + 18), vag: d.u8(o + 22) }
+            }).collect();
+            programs.push(Program { vol, tones });
+        }
+        let mut samples = vec![(Vec::new(), None)];
+        let mut off = body;
+        for v in 1..=n_vag {
+            let size = d.u16(vag_tab + v * 2) as usize * 8;
+            if off + size > d.len() { return Err(Error::Bank("VAG past the end of the bank".into())) }
+            samples.push(decode_adpcm(&d[off..off + size], 0));
+            off += size;
+        }
+        Ok(Self { programs, master, samples })
+    }
+}
+
+/// Everything the licence screen needs from `rom0:LOGO` and `rom0:KROM`, located by content.
+#[derive(Debug, Clone)]
+pub struct Ps1Shell {
+    /// The shell's own copy of the logo, compared byte for byte with the disc's.
+    pub logo: Tmd,
+    pub logo_bytes: Vec<u8>,
+    pub wordmark: Tim,
+    pub tm: Tim,
+    pub font: Font,
+    /// Light directions, 4.12, one row per light.
+    pub light_dirs: [[i16; 3]; 3],
+    /// Light colours, rows R, G, B, columns light 1..3, 4.12.
+    pub light_colours: [[i16; 3]; 3],
+    pub rotation: [[i16; 3]; 3],
+    pub translation: [i32; 3],
+    pub events: Vec<NoteEvent>,
+    pub bank: Vab,
+    pub rom_version: String,
+}
+
+fn find(d: &[u8], pat: &[u8], from: usize) -> Option<usize> {
+    d.get(from..)?.windows(pat.len()).position(|w| w == pat).map(|p| p + from)
+}
+
+fn mat3(d: &[u8], o: usize) -> [[i16; 3]; 3] {
+    let m = |i: usize| [d.i16(o + i * 6), d.i16(o + i * 6 + 2), d.i16(o + i * 6 + 4)];
+    [m(0), m(1), m(2)]
+}
+
+impl Ps1Shell {
+    pub fn load(rom: &RomDir) -> Result<Self> {
+        let module = rom.module("LOGO")?;
+        // {load address, size}, a 0x44-byte copy loader, then the LZ stream.
+        let image = unpack(module, 0x54).map_err(|_| Error::Corrupt("rom0:LOGO: no LZ stream at the expected offset".into()))?;
+        let d = &image[..];
+        let miss = |what: &str| Error::Corrupt(format!("rom0:LOGO: {what} not found"));
+
+        let t = find(d, &[0x41, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], 0).ok_or_else(|| miss("logo TMD"))?;
+        let logo_bytes = d.get(t..t + LOGO_TMD_BYTES).ok_or_else(|| miss("logo TMD"))?.to_vec();
+        let logo = Tmd::parse(&logo_bytes)?;
+
+        let mut tims = Vec::new();
+        let mut p = 0;
+        while let Some(i) = find(d, &[0x10, 0, 0, 0, 8, 0, 0, 0], p) {
+            if let Ok(t) = Tim::parse_4bit(&d[i..]) { tims.push(t) }
+            p = i + 8;
+        }
+        let wordmark = tims.iter().find(|t| t.width == 200 && t.height == 40).cloned().ok_or_else(|| miss("wordmark TIM"))?;
+        let tm = tims.iter().find(|t| t.width == 20 && t.height == 8).cloned().ok_or_else(|| miss("TM TIM"))?;
+
+        // Proportional table: '0' = {0,16}, '1' = {2,8}, '2' = {0,16}.
+        let pp = find(d, &[0, 0, 16, 0, 2, 0, 8, 0, 0, 0, 16, 0], 0).ok_or_else(|| miss("font width table"))?;
+        let prop = (0..=0xD1 - 0x93).map(|i| (d.u16(pp + i * 4), d.u16(pp + i * 4 + 2))).collect();
+        let krom = rom.module("KROM")?;
+        if krom.len() < 0xD2 * 30 { return Err(Error::Corrupt("rom0:KROM is too short".into())) }
+        let font = Font { glyphs: krom.to_vec(), prop };
+
+        let mut ld = Vec::new();
+        for v in [0i16, 0, 4000, 0, -4000, 0, -4000, 0, 0] { ld.extend_from_slice(&v.to_le_bytes()) }
+        let lo = find(d, &ld, 0).ok_or_else(|| miss("light matrix"))?;
+        let light_dirs = mat3(d, lo);
+        // Colour matrix 0x20 bytes later, rotation 0x40 bytes later, translation after it.
+        let light_colours = mat3(d, lo + 0x20);
+        let rotation = mat3(d, lo + 0x40);
+        let translation = [d.i32(lo + 0x40 + 20), d.i32(lo + 0x40 + 24), d.i32(lo + 0x40 + 28)];
+        if rotation[0][0].abs() > 4096 || translation[2] <= 0 {
+            return Err(miss("rotation matrix"));
+        }
+
+        // Note table: {u32 time, prog, note, vel, pan}, first event at time 0 with velocity ≥ 1,
+        // terminated by time 9999.
+        let eo = find(d, &[0, 0, 0, 0, 0, 31, 80, 64], 0).ok_or_else(|| miss("note table"))?;
+        let mut events = Vec::new();
+        let mut q = eo;
+        loop {
+            let time = d.u32(q);
+            if time == 9999 || events.len() > 64 { break }
+            events.push(NoteEvent { time, prog: d.u8(q + 4), note: d.u8(q + 5), vel: d.u8(q + 6), pan: d.u8(q + 7) });
+            q += 8;
+        }
+        let vo = find(d, b"pBAV", 0).ok_or_else(|| miss("VAB"))?;
+        let bank = Vab::parse(&d[vo..])?;
+        let rom_version = String::from_utf8_lossy(rom.module("ROMVER").unwrap_or(b"")).trim_end_matches('\0').to_string();
+        Ok(Self { logo, logo_bytes, wordmark, tm, font, light_dirs, light_colours, rotation, translation, events, bank, rom_version })
+    }
+
+    /// Whether the licence check is on for this console: only `A` consoles skip it.
+    pub fn checks_licence(&self) -> bool { self.rom_version.chars().nth(4) != Some('A') }
+
+    /// The four letters the licence screen shows under the text: "SCE" + the drive's region
+    /// letter (E/A/I). The letters a PS2 drive reports were not verified; this follows the ROM.
+    pub fn sce_id(&self) -> String {
+        let r = match self.rom_version.chars().nth(4) { Some('E') => 'E', Some('A') => 'A', _ => 'I' };
+        format!("SCE{r}")
+    }
+}
+
+/// Fields of each phase of the licence screen.
+#[derive(Debug, Clone, Copy)]
+pub struct LicenceTimeline {
+    pub video: VideoMode,
+}
+
+impl LicenceTimeline {
+    pub const FADE_FIELDS: usize = 31;
+    pub const TEXT_FIELDS: usize = 30;
+    pub fn new(video: VideoMode) -> Self { Self { video } }
+    /// Ticks after the text phase until the note table's terminator (NTSC 51, PAL 42 ticks in
+    /// all, so 22 / 13 more), plus the final VSync.
+    pub fn tail_fields(&self, events_end: u32) -> usize {
+        let last = if self.video == VideoMode::Pal { events_end * 5 / 6 } else { events_end };
+        (last as usize + 1).saturating_sub(Self::TEXT_FIELDS) + 1
+    }
+    pub fn total_fields(&self, shell: &Ps1Shell) -> usize {
+        let end = shell.events.iter().map(|e| e.time).max().unwrap_or(0) + 1;
+        Self::FADE_FIELDS + Self::TEXT_FIELDS + self.tail_fields(end)
+    }
+    /// The GTE fog "near" value during the fade: frame × 133 − 6980 for frames 60..=90.
+    pub fn fog_near(field: usize) -> i32 { (60 + field.min(30) as i32) * 133 - 6980 }
+    /// Brightness of the wordmark sprite over 128 during the text phase: 0, 5, … 145.
+    pub fn wordmark_level(field_in_text: usize) -> f32 { (field_in_text.min(29) * 5) as f32 / 128.0 }
+}
+
+/// A triangle projected the way the shell's GTE path does: screen position (640×480 frame),
+/// depth, lit colour before depth cueing, and the depth used for cueing.
+#[derive(Debug, Clone, Copy)]
+pub struct ScreenTri {
+    pub xy: [[f32; 2]; 3],
+    pub sz: f32,
+    pub colour: [f32; 3],
+}
+
+impl Ps1Shell {
+    /// Projects and lights the logo for one field of the fade (0..=30): flat triangles,
+    /// back faces dropped, sorted far to near, with the depth cue applied.
+    pub fn project(&self, tmd: &Tmd, field: usize) -> Vec<ScreenTri> {
+        let a = LicenceTimeline::fog_near(field) as f32;
+        let r = &self.rotation;
+        let t = &self.translation;
+        let xf = |v: [i16; 3]| -> [f32; 3] {
+            let (x, y, z) = (v[0] as i64, v[1] as i64, v[2] as i64);
+            let row = |i: usize| ((r[i][0] as i64 * x + r[i][1] as i64 * y + r[i][2] as i64 * z) >> 12) as f32 + t[i] as f32;
+            [row(0), row(1), row(2)]
+        };
+        let mut out = Vec::with_capacity(tmd.prims.len());
+        for p in &tmd.prims {
+            let Some(v) = p.verts.iter().map(|&i| tmd.verts.get(i as usize).copied()).collect::<Option<Vec<_>>>() else { continue };
+            let w: Vec<[f32; 3]> = v.into_iter().map(xf).collect();
+            if w.iter().any(|q| q[2] <= 1.0) { continue }
+            let s: Vec<[f32; 2]> = w.iter().map(|q| [320.0 + q[0] * 1024.0 / q[2], 240.0 + q[1] * 1024.0 / q[2]]).collect();
+            // NCLIP: the signed area; the GTE keeps clockwise triangles (positive here).
+            let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+            if area <= 0.0 { continue }
+            let sz = (w[0][2] + w[1][2] + w[2][2]) / 3.0;
+            // NCDS: three directional lights plus the back colour, then the TMD colour.
+            let n = tmd.normals.get(p.normal as usize).copied().unwrap_or([0, 0, 4096]);
+            let ll: Vec<f32> = (0..3).map(|i| {
+                let d = self.light_dirs[i];
+                (((d[0] as i64 * n[0] as i64 + d[1] as i64 * n[1] as i64 + d[2] as i64 * n[2] as i64) >> 12) as f32).max(0.0)
+            }).collect();
+            let lit = |c: usize| {
+                let sum: f32 = (0..3).map(|i| self.light_colours[c][i] as f32 * ll[i]).sum();
+                ((sum / 4096.0 + 100.0 * 16.0) / 4096.0).clamp(0.0, 1.0)         // back colour 100 → 1600 (4.12 of 0..255 × 16)
+            };
+            let cue = (1.25 * (1.0 - a / sz)).clamp(0.0, 1.0);
+            let colour = [0, 1, 2].map(|c| p.colour[c] as f32 / 255.0 * lit(c) * (1.0 - cue));
+            out.push(ScreenTri { xy: [s[0], s[1], s[2]], sz, colour });
+        }
+        out.sort_by(|a, b| b.sz.partial_cmp(&a.sz).unwrap_or(std::cmp::Ordering::Equal));
+        out
+    }
+
+    /// Where the text pieces go: (x of line 1, y), (x of line 2, y), and whether the
+    /// GetID letters are shown — from the licence line's length as the shell switches on it.
+    pub fn text_layout(licence_len: usize) -> ((f32, f32), (f32, f32)) {
+        let x2 = match licence_len { 64 => 154.0, 67 => 128.0, _ => 118.0 };
+        ((221.0, 336.0), (x2, 356.0))
+    }
+
+    /// The licence screen's sound: the two drone notes under the fade, then the note table
+    /// from the first text frame, as 48 kHz interleaved stereo starting at field 0.
+    pub fn render_sound(&self, video: VideoMode) -> Vec<f32> {
+        let fps = video.fps() as f64;
+        let fields_to_samples = |f: f64| (f / fps * SAMPLE_RATE as f64) as usize;
+        struct Voice { start: usize, off: Option<usize>, tone: Tone, prog_vol: u8, vel: u8, pan: u8, prog: u8, note: u8 }
+        let mut voices: Vec<Voice> = Vec::new();
+        let key = |voices: &mut Vec<Voice>, field: f64, prog: u8, note: u8, vel: u8, pan: u8| {
+            let at = fields_to_samples(field);
+            if vel == 0 {
+                for v in voices.iter_mut().filter(|v| v.prog == prog && v.note == note && v.off.is_none()) { v.off = Some(at) }
+            } else if let Some(p) = self.bank.programs.get(prog as usize) {
+                for t in &p.tones {
+                    voices.push(Voice { start: at, off: None, tone: *t, prog_vol: p.vol, vel, pan, prog, note });
+                }
+            }
+        };
+        // Phase A: the drones, keyed before the first frame and off after the 31st.
+        key(&mut voices, 0.0, 2, 31, 0x7F, 0x40);
+        key(&mut voices, 0.0, 0, 36, 0x3C, 0x40);
+        key(&mut voices, LicenceTimeline::FADE_FIELDS as f64, 2, 31, 0, 0);
+        key(&mut voices, LicenceTimeline::FADE_FIELDS as f64, 0, 36, 0, 0);
+        let scale = if video == VideoMode::Pal { 5.0 / 6.0 } else { 1.0 };
+        for e in &self.events {
+            key(&mut voices, LicenceTimeline::FADE_FIELDS as f64 + e.time as f64 * scale, e.prog, e.note, e.vel, e.pan);
+        }
+        let tail = fields_to_samples(fps * 4.0);
+        let total = voices.iter().map(|v| v.off.unwrap_or(v.start)).max().unwrap_or(0) + tail;
+        let mut mix = vec![0f32; total * 2];
+        for v in &voices {
+            let Some((pcm, lp)) = self.bank.samples.get(v.tone.vag as usize) else { continue };
+            if pcm.len() < 2 { continue }
+            let n = total.saturating_sub(v.start);
+            let env = envelope(v.tone.adsr1, v.tone.adsr2, v.off.map(|o| o - v.start).unwrap_or(n), n);
+            // libsnd: velocity × tone volume × program volume × bank master, then the tone's
+            // pan combined with the note's pan (a stereo pair: one tone hard left, one hard right).
+            let gain = v.vel as f32 / 127.0 * v.tone.vol as f32 / 127.0 * v.prog_vol as f32 / 127.0 * self.bank.master as f32 / 127.0 * (0x3FFF as f32 / 16384.0);
+            let pan = ((v.tone.pan as f32 + v.pan as f32 - 64.0) / 127.0).clamp(0.0, 1.0);
+            let (gain_l, gain_r) = (gain * (1.0 - pan).sqrt(), gain * pan.sqrt());
+            let semis = v.note as f32 - v.tone.centre as f32 + v.tone.shift as f32 / 128.0;
+            let step = (2f64.powf(semis as f64 / 12.0) * 44100.0 / SAMPLE_RATE as f64) as f64;
+            let length = pcm.len();
+            let mut pos = 0.0f64;
+            for (k, &e) in env.iter().enumerate() {
+                let mut i0 = pos as usize;
+                let frac = (pos - i0 as f64) as f32;
+                let mut i1 = i0 + 1;
+                if let Some(l) = *lp {
+                    let span = length - l;
+                    if i0 >= length { i0 = l + (i0 - l) % span }
+                    if i1 >= length { i1 = l + (i1 - l) % span }
+                } else if i1 >= length {
+                    break;
+                }
+                let s = (pcm[i0] * (1.0 - frac) + pcm[i1] * frac) * e / 32768.0 / 32768.0;
+                mix[(v.start + k) * 2] += s * gain_l;
+                mix[(v.start + k) * 2 + 1] += s * gain_r;
+                pos += step;
+            }
+        }
+        mix
+    }
+}

@@ -48,6 +48,12 @@ dolly, numpad 1/3/7 for the axis views, Home to frame everything. The route can 
    logo plays with the lettering read from the disc's first sectors; then the point where the
    game would start.
 
+For a **PlayStation 1 disc** the second phase is the PS1 licence screen instead: the PS1
+shell that lives inside the PS2 BIOS (`rom0:LOGO`) draws the logo model read from the disc's
+sectors 5–11, fades it in through the GTE depth cue, then the "PlayStation" wordmark, the
+licence line in the kernel's font and the drive's region letters, with the shell's drone and
+ascending chime — and the hand-off card follows `PS1DRV` to the PS-X EXE.
+
 The tool stops exactly there and shows what would happen next instead of doing it: the disc's
 title ID and type, `SYSTEM.CNF`, the boot executable's location, size, entry point and memory
 segments, the logo checksum, how your play history would change, and the chain of named
@@ -116,6 +122,7 @@ For anyone who wants to check the tool's claims or extend it to another BIOS ver
 | `notes/boot_sequence.md` | Power-on to the first frame: call tree and timeline. |
 | `notes/osdsys_flow.md` | The OSD program's control flow and the play-history file format. |
 | `notes/ps2logo.md` | The logo program and the disc's logo sectors. |
+| `notes/ps1_boot.md` | The PS1 shell inside the PS2 BIOS: the licence screen, the logo TMD on the disc, its sounds and region rules. |
 | `notes/sound.md` | The boot chime: driver, bank and sequence formats. |
 | `notes/menu_survey.md` | Survey of the main menu and browser (not re-created). |
 | `notes/devkit_survey.md` | What the DTL-H30101 development-kit BIOS does differently (very little). |

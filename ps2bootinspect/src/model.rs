@@ -103,6 +103,11 @@ pub struct Model {
     pub assets: Option<OpeningAssets>,
     pub scene: OpeningScene,
     pub logo_assets: Option<LogoAssets>,
+    /// The PS1 shell inside the BIOS (`rom0:LOGO`), for PlayStation discs.
+    pub ps1_shell: Option<ps2kit::ps1::Ps1Shell>,
+    /// The logo model read from a PlayStation disc's sectors 5–11.
+    pub ps1_logo: Option<ps2kit::ps1::Tmd>,
+    ps2_logo_chime: Vec<f32>,
     pub disc: Option<DiscImage>,
     pub disc_logo: Option<DiscLogo>,
     pub audio: AudioPlayer,
@@ -129,7 +134,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, scene: OpeningScene::default(), logo_assets: None, disc: None, disc_logo: None,
+            assets: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -185,8 +190,10 @@ impl Model {
                 self.assets = Some(assets);
                 self.assets_version += 1;
                 self.bios_path = Some(path.to_path_buf());
-                if let Some(l) = &logo { self.audio.load_logo_chime(l.chime(0x12)) }
+                if let Some(l) = &logo { self.ps2_logo_chime = l.chime(0x12) }
+                self.ps1_shell = ps2kit::ps1::Ps1Shell::load(&rom).map_err(|e| eprintln!("rom0:LOGO: {e}")).ok();
                 self.logo_assets = logo;
+                self.update_logo_sound();
                 self.logo_version += 1;
                 self.rebuild_scene();
                 self.rebuild_timeline();
@@ -226,7 +233,8 @@ impl Model {
     pub fn load_disc(&mut self, path: &Path, quiet: bool) {
         match DiscImage::open(path) {
             Ok(d) => {
-                self.disc_logo = DiscLogo::read(path).ok();
+                self.disc_logo = if d.kind == ps2kit::disc::DiscKind::Ps2 { DiscLogo::read(path).ok() } else { None };
+                self.ps1_logo = if d.kind == ps2kit::disc::DiscKind::Ps1 { ps2kit::ps1::Tmd::from_disc(path).ok() } else { None };
                 self.disc_status = match d.kind {
                     ps2kit::disc::DiscKind::Ps2 => format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo: {} master", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "logo: unknown master".into())),
                     ps2kit::disc::DiscKind::Ps1 => format!("{} — PlayStation disc {}, licence {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "???".into()), d.ps1_licence.as_ref().and_then(|l| l.region).unwrap_or("unknown")),
@@ -234,7 +242,8 @@ impl Model {
                 };
                 self.disc = Some(d);
                 self.disc_path = Some(path.to_path_buf());
-                self.logo_version += 1;
+                self.update_logo_sound();
+                self.rebuild_timeline();
             }
             Err(e) => {
                 eprintln!("disc {}: {e}", path.display());
@@ -283,8 +292,9 @@ impl Model {
         self.timeline = match self.scene_kind {
             SceneKind::Boot | SceneKind::Full => Timeline::boot((self.disc_seconds * fps) as usize, self.video),
             SceneKind::Warning => Timeline::warning((self.warning_exit_seconds * fps) as usize, self.video),
-            SceneKind::Logo => Timeline::logo(self.video),
+            SceneKind::Logo => self.logo_timeline(),
         };
+        if self.ps1_active() { self.sequence = self.sequence.clone().with_logo(self.logo_timeline()) }
         self.logo_version += 1;
         self.arrange_audio();
     }
@@ -347,6 +357,26 @@ impl Model {
         }
         if self.frame >= 0.0 { return None }
         Some(phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds))
+    }
+
+    /// A PlayStation disc is loaded and the BIOS's PS1 shell could be read.
+    pub fn ps1_active(&self) -> bool { self.ps1_shell.is_some() && self.disc.as_ref().is_some_and(|d| d.kind == ps2kit::disc::DiscKind::Ps1) }
+    /// The logo the licence screen shows: the disc's, else the shell's own copy.
+    pub fn ps1_logo_model(&self) -> Option<&ps2kit::ps1::Tmd> { self.ps1_logo.as_ref().or(self.ps1_shell.as_ref().map(|s| &s.logo)) }
+    /// The licence line exactly as the shell draws it (spaces included).
+    pub fn ps1_licence_text(&self) -> String { self.disc.as_ref().and_then(|d| d.ps1_licence.as_ref()).map(|l| l.line.clone()).unwrap_or_default() }
+    fn logo_timeline(&self) -> Timeline {
+        match (&self.ps1_shell, self.ps1_active()) {
+            (Some(shell), true) => Timeline::ps1_licence(self.video, ps2kit::ps1::LicenceTimeline::new(self.video).total_fields(shell)),
+            _ => Timeline::logo(self.video),
+        }
+    }
+    fn update_logo_sound(&mut self) {
+        let pcm = match (&self.ps1_shell, self.ps1_active()) {
+            (Some(shell), true) => shell.render_sound(self.video),
+            _ => self.ps2_logo_chime.clone(),
+        };
+        self.audio.load_logo_chime(pcm);
     }
 
     pub fn rom_region(&self) -> Option<char> { self.assets.as_ref().and_then(|a| a.rom_version.chars().nth(4)) }

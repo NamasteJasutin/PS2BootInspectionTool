@@ -59,6 +59,10 @@ pub struct Ps1Exe {
 /// the logo data in sectors 5–15 is present.
 #[derive(Debug, Clone)]
 pub struct Ps1Licence {
+    /// The line as the shell copies it: from byte 0 to the first newline or NUL, at most 72
+    /// characters, spaces and all (it is compared and drawn verbatim).
+    pub line: String,
+    /// The same with the padding collapsed, for display.
     pub text: String,
     /// "Japan", "America" or "Europe" from the licence text.
     pub region: Option<&'static str>,
@@ -173,13 +177,12 @@ impl DiscImage {
             let lic = sector(4, 12).unwrap_or_default();
             if lic.len() >= 2048 {
                 let data = &lic[..2048];
-                if let Some(i) = data.windows(8).position(|w| w == b"Licensed") {
-                    let text: String = data[i..(i + 80).min(2048)].iter().take_while(|&&b| b != 0).map(|&b| b as char).collect();
-                    // The Japanese master pads the line with '0' characters.
-                    let text = text.split_whitespace().take_while(|w| !w.starts_with("000")).collect::<Vec<_>>().join(" ");
+                let line: String = data.iter().take(72).take_while(|&&b| b != 0 && b != b'\n').map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '?' }).collect();
+                if line.contains("Licensed") {
+                    let text = line.split_whitespace().collect::<Vec<_>>().join(" ");
                     let region = if text.contains("Amer") { Some("America") } else if text.contains("Euro") { Some("Europe") } else if text.contains("Inc.") { Some("Japan") } else { None };
                     let logo_sectors_present = lic.len() > 2048 && lic[2048..].iter().any(|&b| b != 0);
-                    ps1_licence = Some(Ps1Licence { text, region, logo_sectors_present });
+                    ps1_licence = Some(Ps1Licence { line, text, region, logo_sectors_present });
                 }
             }
         }
