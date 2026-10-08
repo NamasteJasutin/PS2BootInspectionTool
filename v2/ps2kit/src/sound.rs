@@ -444,7 +444,7 @@ impl BootSound {
         let tables = bios
             .module("OSDSND")
             .ok()
-            .and_then(|d| DriverTables::from_driver(d, 0x1DBB0 + 0xA0, 0x1E070 + 0xA0))
+            .and_then(|d| crate::locate::driver_tables(d).and_then(|(p, q)| DriverTables::from_driver(d, p, q)))
             .unwrap_or_else(DriverTables::computed);
         let synth = Synth { bank: &bank, tables: &tables };
         let (mut a, mut b, mut w) = (Vec::new(), Vec::new(), Vec::new());

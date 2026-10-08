@@ -33,9 +33,14 @@ impl Renderer {
             Some(c) if c < f => c + 1,
             _ => { self.pass(enc, "logoPrev", true, DepthAction::None, |_, _| {}); 0 }
         };
+        // Each field is its own submission: a field can be ~250 passes, and catching up over
+        // many fields in one command buffer exceeds what some backends accept.
         for field in start..=f {
-            self.logo_field(enc, anim.first_field() + field, anim, options);
-            self.blit(enc, "scene", "logoPrev");
+            let mut e = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("logo field") });
+            self.begin_frame();
+            self.logo_field(&mut e, anim.first_field() + field, anim, options);
+            self.blit(&mut e, "scene", "logoPrev");
+            self.queue.submit([e.finish()]);
         }
         self.logo_cached_field = Some(f);
     }

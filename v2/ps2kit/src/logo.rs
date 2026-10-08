@@ -2,14 +2,13 @@
 //! (`notes/ps2logo.md`), and the lettering bitmap every licensed disc carries.
 
 use crate::bytes::Bytes;
-use crate::rom::{unpack, RomDir};
+use crate::locate::{Image, LogoLayout};
+use crate::rom::RomDir;
 use crate::sim::VideoMode;
 use crate::sound::{decode_adpcm, envelope};
 use crate::{Error, Result};
 use glam::Vec2;
 use std::collections::HashMap;
-
-const BASE: usize = 0x100000;
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -57,17 +56,16 @@ pub struct LogoAssets {
 
 impl LogoAssets {
     pub fn load(bios: &RomDir) -> Result<Self> {
-        Self::from_image(&unpack(bios.module("PS2LOGO")?, 0x1000)?)
+        Self::from_image(&Image::from_module(bios.module("PS2LOGO")?, 0x100000)?)
     }
 
-    pub fn from_image(img: &[u8]) -> Result<Self> {
-        if img.len() < 0x30B00 {
-            return Err(Error::Corrupt("PS2LOGO image too short".into()));
-        }
-        let at = |a: usize| a - BASE;
-        let u32 = |a: usize| img.u32(at(a)) as usize;
-        let i32 = |a: usize| img.i32(at(a));
-        let f32 = |a: usize| img.f32(at(a));
+    pub fn from_image(img: &Image) -> Result<Self> {
+        let lay = LogoLayout::discover(img)?;
+        let d = &img.data[..];
+        let at = |a: usize| img.at(a).unwrap_or(0);
+        let u32 = |a: usize| d.u32(at(a)) as usize;
+        let i32 = |a: usize| d.i32(at(a));
+        let f32 = |a: usize| d.f32(at(a));
         let shape = |ptr: usize, count: usize| -> Shape {
             (0..count)
                 .map(|j| {
@@ -84,7 +82,7 @@ impl LogoAssets {
                         if ty == 2 { for i in (0..6).step_by(2) { f[i] -= 128.0; f[i + 1] += 128.0 } }
                         nodes.push(Node { kind: ty, f });
                         a += 0x30;
-                        if ty == 3 || nodes.len() > 4096 {
+                        if ty == 3 || nodes.len() > 4096 || !img.contains(a) {
                             break;
                         }
                     }
@@ -93,7 +91,7 @@ impl LogoAssets {
                 .collect()
         };
         let mut objects = HashMap::new();
-        for (mode, shape_table, colour_table) in [(VideoMode::Ntsc, 0x12AFF8, 0x12B538), (VideoMode::Pal, 0x12AFD8, 0x12B518)] {
+        for (mode, shape_table, colour_table) in [(VideoMode::Ntsc, lay.shape_tables.0, lay.colour_tables.0), (VideoMode::Pal, lay.shape_tables.1, lay.colour_tables.1)] {
             let objs = (0..4)
                 .map(|o| {
                     let (kp, kn) = (u32(shape_table + o * 8), u32(shape_table + o * 8 + 4).min(16));
@@ -102,29 +100,33 @@ impl LogoAssets {
                     let colours = (0..cn)
                         .map(|k| ColourKey { t: i32(cp + k * 20), rgba: [i32(cp + k * 20 + 4) as f32, i32(cp + k * 20 + 8) as f32, i32(cp + k * 20 + 12) as f32, i32(cp + k * 20 + 16) as f32] })
                         .collect();
-                    Object { kind: i32(0x121770 + 4 * (3 - o)), layer_a: u32(0x121790 + 4 * (3 - o)) != 0, layer_b: u32(0x1217B0 + 4 * (3 - o)) != 0, keys, colours }
+                    Object { kind: i32(lay.type_table + 4 * (3 - o)), layer_a: u32(lay.type_table + 0x20 + 4 * (3 - o)) != 0, layer_b: u32(lay.type_table + 0x40 + 4 * (3 - o)) != 0, keys, colours }
                 })
                 .collect();
             objects.insert(mode, objs);
         }
-        let hd = 0x12B5C0;
+        let hd = lay.bank_header;
+        let body_size = u32(hd + 4);
         let se = hd + u32(hd + 0x2C);
         let last = u32(se + 4).min(15);
         let effects = (0..=last)
             .map(|i| {
                 let e = at(se + 0x20 + i * 0x40);
-                SoundEffect { vol_l: img.u16(e) as i64, vol_r: img.u16(e + 2) as i64, pitch: img.u16(e + 4) as i64, adsr1: img.u16(e + 8), adsr2: img.u16(e + 10), reverb: img.u16(e + 14) & 0x80 != 0, sample_offset: img.u32(e + 16) as usize }
+                SoundEffect { vol_l: d.u16(e) as i64, vol_r: d.u16(e + 2) as i64, pitch: d.u16(e + 4) as i64, adsr1: d.u16(e + 8), adsr2: d.u16(e + 10), reverb: d.u16(e + 14) & 0x80 != 0, sample_offset: d.u32(e + 16) as usize }
             })
             .collect();
+        let body_start = at(hd + 0x200);
+        let m = lay.ribbon_multipliers;
+        let r = lay.ribbon_delta;
         Ok(Self {
             objects,
-            ribbon_multipliers: [f32(0x12F228), f32(0x12F22C), f32(0x12F230), f32(0x12F234), f32(0x12F238)],
-            ribbon_delta: [f32(0x130A28), f32(0x130A24), f32(0x130A24), 0.0],
-            ribbon_rate: HashMap::from([(VideoMode::Ntsc, f32(0x130A34)), (VideoMode::Pal, f32(0x130A38))]),
-            pal_y_scale: f32(0x130A2C) / f32(0x130A30),
+            ribbon_multipliers: [f32(m), f32(m + 4), f32(m + 8), f32(m + 12), f32(m + 16)],
+            ribbon_delta: [f32(r + 4), f32(r), f32(r), 0.0],
+            ribbon_rate: HashMap::from([(VideoMode::Ntsc, f32(r + 0x10)), (VideoMode::Pal, f32(r + 0x14))]),
+            pal_y_scale: f32(r + 8) / f32(r + 12),
             effects,
             effect_master_volume: u32(se) as i64,
-            sample_body: img[at(0x12B7C0)..at(0x12B7C0) + 0x2C90].to_vec(),
+            sample_body: d[body_start..(body_start + body_size).min(d.len())].to_vec(),
         })
     }
 

@@ -104,3 +104,37 @@ fn logo_and_disc() {
     let l = DiscLogo::read(&iso).unwrap().bitmap(VideoMode::Pal);
     assert_eq!((l.width, l.height), (384, 77));
 }
+
+/// Every BIOS image in the local PCSX2 folder must load (or fail with a clear message).
+#[test]
+fn local_bios_versions_load() {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let dir = Path::new(&home).join("Library/Application Support/PCSX2/bios");
+    let mut found = Vec::new();
+    for entry in walk(&dir, 1) {
+        let ext = entry.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+        if !matches!(ext.as_deref(), Some("bin") | Some("rom0")) { continue }
+        let Ok(rom) = RomDir::new(std::fs::read(&entry).unwrap()) else { continue };
+        let Ok(version) = rom.module("ROMVER").map(|v| String::from_utf8_lossy(&v[..14]).into_owned()) else { continue };
+        // 1.00 (SCPH-10000) has a different OSD generation and is expected to be rejected clearly.
+        match OpeningAssets::load(&rom) {
+            Ok(a) => {
+                assert!(a.textures.contains_key("TEXOWAL0") && a.textures.contains_key("TEXOSCE"), "{version}: textures");
+                assert!(BootSound::load(&rom).is_ok(), "{version}: sound");
+                assert!(LogoAssets::load(&rom).is_ok(), "{version}: logo");
+                found.push(version);
+            }
+            Err(e) => assert!(version.starts_with("0100"), "{version}: {e}"),
+        }
+    }
+    eprintln!("loaded: {found:?}");
+}
+
+fn walk(dir: &Path, depth: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() { if depth > 0 { out.extend(walk(&p, depth - 1)) } } else { out.push(p) }
+    }
+    out
+}

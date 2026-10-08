@@ -6,6 +6,7 @@ pub mod bios;
 pub mod bytes;
 pub mod disc;
 pub mod history;
+pub mod locate;
 pub mod logo;
 pub mod memcard;
 pub mod rom;

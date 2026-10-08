@@ -58,6 +58,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).map_err(|e| e.to_string())?;
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
+    device.on_uncaptured_error(Arc::new(|e: wgpu::Error| eprintln!("wgpu: {e}")));
     let (device, queue) = (Arc::new(device), Arc::new(queue));
     let mut r = Renderer::new(device.clone(), queue.clone());
     r.set_assets(m.assets.as_ref().unwrap());

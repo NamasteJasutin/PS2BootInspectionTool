@@ -2,6 +2,7 @@
 //! `rom0:OSDSYS`, located per ROM version.
 
 use crate::bytes::Bytes;
+use crate::locate::{Image, OsdLayout};
 use crate::rom::{unpack, RomDir};
 use crate::{Error, Result};
 use glam::Vec3;
@@ -18,42 +19,8 @@ pub struct Texture {
     pub mip_levels: usize,
 }
 
-/// Where the opening's data sits inside one specific OSDSYS build.
-struct Layout {
-    asset_names: usize,
-    texture_table: usize,
-    texture_count: usize,
-    slot_table: usize,
-    fill_table: usize,
-    size_table: usize,
-    tower_positions: usize,
-    orb_colours: usize,
-    cube_positions: usize,
-    prism_positions: usize,
-}
-
-const LOAD_ADDRESS: usize = 0x200000;
-/// LZ stream inside the ROM's OSDSYS ELF (stub linked at 0x100000, PT_LOAD at file offset 0x80).
-const STUB_STREAM_OFFSET: usize = 0x100D80 - 0x100000 + 0x80;
-
-fn layout(rom_version: &str) -> Option<Layout> {
-    match rom_version {
-        // SCPH-70004, v2.00 Europe, 2004-06-14
-        "0200EC20040614" => Some(Layout {
-            asset_names: 0x27B4F8,
-            texture_table: 0x287700,
-            texture_count: 25,
-            slot_table: 0x2891E0,
-            fill_table: 0x289E60,
-            size_table: 0x289E98,
-            tower_positions: 0x2895F0,
-            orb_colours: 0x289080,
-            cube_positions: 0x289190,
-            prism_positions: 0x289ED0,
-        }),
-        _ => None,
-    }
-}
+/// Where the stub of a compressed OSDSYS places the program.
+const COMPRESSED_BASE: usize = 0x200000;
 
 pub const COLUMNS: usize = 14;
 pub const ROWS: usize = 9;
@@ -77,57 +44,40 @@ pub struct OpeningAssets {
 impl OpeningAssets {
     pub fn load(bios: &RomDir) -> Result<Self> {
         let version = bios.module("ROMVER")?.cstr(0, 14);
-        let lay = layout(&version).ok_or_else(|| Error::UnsupportedVersion(version.clone()))?;
-        let osd = unpack(bios.module("OSDSYS")?, STUB_STREAM_OFFSET)?;
-        let at = |v: usize| v - LOAD_ADDRESS;
+        let img = Image::from_module(bios.module("OSDSYS")?, COMPRESSED_BASE)?;
+        let (lay, names) = OsdLayout::discover(&img).map_err(|e| Error::UnsupportedVersion(format!("{version}: {e}")))?;
+        let osd = &img.data[..];
         let v3 = |o: usize| Vec3::new(osd.f32(o), osd.f32(o + 4), osd.f32(o + 8));
 
-        let mut slots = Vec::new();
-        for i in 0..crate::history::RECORD_COUNT {
+        let slots = (0..crate::history::RECORD_COUNT).map(|i| {
             let mut s = [(0usize, 0usize); 6];
             for (k, slot) in s.iter_mut().enumerate() {
-                let o = at(lay.slot_table) + i * 0x30 + k * 8;
-                let (c, r) = (osd.i32(o), osd.i32(o + 4));
-                if !(0..COLUMNS as i32).contains(&c) || !(0..ROWS as i32).contains(&r) {
-                    return Err(Error::Corrupt("tower slot table".into()));
-                }
-                *slot = (c as usize, r as usize);
+                let o = lay.slot_table + i * 0x30 + k * 8;
+                *slot = (osd.i32(o) as usize, osd.i32(o + 4) as usize);
             }
-            slots.push(s);
-        }
-        let fill = (0..14).map(|i| osd.f32(at(lay.fill_table) + i * 4)).collect();
-        let size = (0..14).map(|i| osd.f32(at(lay.size_table) + i * 4)).collect();
-        let tower_positions = (0..COLUMNS)
-            .map(|c| (0..ROWS).map(|r| v3(at(lay.tower_positions) + c * 0x90 + r * 16)).collect())
-            .collect();
-        let orb_colours = (0..4).map(|i| v3(at(lay.orb_colours) + i * 16)).collect();
-        let cube_positions = (0..5).map(|i| v3(at(lay.cube_positions) + i * 16)).collect();
-        let prism_positions = (0..5).map(|i| v3(at(lay.prism_positions) + i * 16)).collect();
-
-        // Asset names, in table order, to resolve the texture descriptors' asset indices.
-        let mut names: Vec<Option<String>> = Vec::new();
-        let mut p = at(lay.asset_names);
-        while osd.u32(p) != 0xFFFF_FFFF && names.len() < 256 {
-            let ptr = osd.u32(p) as usize;
-            names.push(if ptr == 0 { None } else { Some(osd.cstr(at(ptr), 16)) });
-            p += 16;
-        }
+            s
+        }).collect();
+        let fill = img.f32s(lay.fill_table, 14);
+        let size = img.f32s(lay.size_table, 14);
+        let tower_positions = (0..COLUMNS).map(|c| (0..ROWS).map(|r| v3(lay.tower_positions + c * 0x90 + r * 16)).collect()).collect();
+        let orb_colours = (0..4).map(|i| v3(lay.orb_colours + i * 16)).collect();
+        let cube_positions = (0..5).map(|i| v3(lay.cube_positions + i * 16)).collect();
+        let prism_positions = (0..5).map(|i| v3(lay.prism_positions + i * 16)).collect();
 
         let archive = RomDir::new(bios.module("TEXIMAGE")?.to_vec())?;
         let mut textures = HashMap::new();
         for i in 0..lay.texture_count {
-            let d = at(lay.texture_table) + i * 0xF0;
+            let d = lay.texture_table + i * 0xF0;
             let Some(Some(name)) = names.get(osd.i32(d + 4) as usize) else { continue };
             let clut = osd.u32(d + 8) as usize;
             let (w, h) = (osd.i32(d + 24) as usize, osd.i32(d + 28) as usize);
             let (mips, skip, format) = (osd.i32(d + 32) as usize, osd.i32(d + 36) as usize, osd.i32(d + 40));
             let Ok(packed) = archive.module(name) else { continue };
             let raw = unpack(packed, 0)?;
-            let palette = (clut != 0).then(|| osd[at(clut)..at(clut) + 64].to_vec());
+            let palette = img.at(clut).filter(|_| clut != 0).map(|o| osd[o..o + 64].to_vec());
             let rgba = decode_texture(&raw[skip.min(raw.len())..], w, h, format, palette.as_deref())?;
             textures.insert(name.clone(), Texture { name: name.clone(), width: w, height: h, rgba, mip_levels: mips });
         }
-
         Ok(Self { rom_version: version, slots, fill, size, tower_positions, orb_colours, cube_positions, prism_positions, textures })
     }
 }
