@@ -1,5 +1,7 @@
 # ps2kit
 
+[![crates.io](https://img.shields.io/crates/v/ps2kit.svg)](https://crates.io/crates/ps2kit) [![docs.rs](https://docs.rs/ps2kit/badge.svg)](https://docs.rs/ps2kit)
+
 Readers for PlayStation 2 BIOS dumps, PCSX2 memory cards and game disc images, and a
 re-implementation of what the console computes at start-up: the boot screen's towers from the
 play history, the camera path, the chime, the logo program's timing.
