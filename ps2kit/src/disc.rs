@@ -92,7 +92,7 @@ impl Ps1Verdict {
         if region == 'A' { return Some(Self::NotChecked) }
         let lic = licence?;
         if let Some(copy) = shell_logo {
-            if lic.logo_data.len() != copy.len() || lic.logo_data != copy { return Some(Self::LogoMismatch) }
+            if lic.logo_data != copy { return Some(Self::LogoMismatch) }
         }
         let line = lic.line.as_str();
         let ok = match region {
@@ -166,21 +166,27 @@ impl DiscImage {
         let volume_id = pvd.cstr(40, 32).trim().to_string();
         let sector_count = pvd.u32(80) as usize;
         let (root_lba, root_len) = (pvd.u32(156 + 2) as usize, pvd.u32(156 + 10) as usize);
-        let dir = sector(root_lba, (root_len + 2047).div_ceil(2048).max(1))?;
+        // A root directory is a few sectors; a corrupt length must not turn into a 4 GB read.
+        let root_sectors = root_len.div_ceil(2048).max(1);
+        if root_sectors > 256 {
+            return Err(Error::Corrupt("root directory length is implausible".into()));
+        }
+        let dir = sector(root_lba, root_sectors)?;
         let mut entries: Vec<(String, usize, usize)> = Vec::new();
         let mut p = 0;
-        while p < dir.len().min(root_len) {
+        while p + 33 <= dir.len().min(root_len) {
             let len = dir.u8(p) as usize;
             if len == 0 { p = (p / 2048 + 1) * 2048; continue }
             let name_len = dir.u8(p + 32) as usize;
-            let name = String::from_utf8_lossy(&dir[p + 33..(p + 33 + name_len).min(dir.len())]).into_owned();
-            entries.push((name, dir.u32(p + 2) as usize, dir.u32(p + 10) as usize));
+            let Some(name) = dir.get(p + 33..(p + 33 + name_len).min(dir.len())) else { break };
+            entries.push((String::from_utf8_lossy(name).into_owned(), dir.u32(p + 2) as usize, dir.u32(p + 10) as usize));
             p += len;
         }
         let mut system_cnf = HashMap::new();
         let mut text = String::new();
         if let Some(e) = entries.iter().find(|e| e.0.to_uppercase().starts_with("SYSTEM.CNF")) {
-            let raw = sector(e.1, e.2.div_ceil(2048).max(1))?;
+            // OSDSYS reads at most 1023 bytes of it: one sector.
+            let raw = sector(e.1, 1)?;
             text = String::from_utf8_lossy(&raw[..e.2.min(1023).min(raw.len())]).into_owned();
             for line in text.lines() {
                 if let Some((k, v)) = line.split_once('=') {
@@ -197,7 +203,7 @@ impl DiscImage {
         let mut ps1_licence = None;
         let ps1_boot = if system_cnf.contains_key("BOOT2") { None } else { system_cnf.get("BOOT").cloned().or_else(|| if entries.is_empty() { None } else { Some("cdrom:\\PSX.EXE;1".to_string()) }) };
         if let Some(boot) = &ps1_boot {
-            let file = boot.rsplit(|c| c == '\\' || c == ':' || c == '/').next().unwrap_or("").to_string();
+            let file = boot.rsplit(['\\', ':', '/']).next().unwrap_or("").to_string();
             if let Some(e) = entries.iter().find(|e| e.0.eq_ignore_ascii_case(&file)) {
                 let hdr = sector(e.1, 1)?;
                 if hdr.len() >= 0x80 && &hdr[..8] == b"PS-X EXE" {
@@ -224,7 +230,7 @@ impl DiscImage {
         let kind = if system_cnf.contains_key("BOOT2") { DiscKind::Ps2 } else if ps1_exe.is_some() || ps1_licence.is_some() { DiscKind::Ps1 } else { DiscKind::Unknown };
         let mut boot_elf = None;
         if let Some(boot) = system_cnf.get("BOOT2") {
-            let file = boot.rsplit(|c| c == '\\' || c == ':' || c == '/').next().unwrap_or("").to_string();
+            let file = boot.rsplit(['\\', ':', '/']).next().unwrap_or("").to_string();
             if let Some(e) = entries.iter().find(|e| e.0.eq_ignore_ascii_case(&file)) {
                 let hdr = sector(e.1, 2)?;
                 let (mut segments, mut entry, mut is_mips) = (Vec::new(), 0, false);
@@ -287,7 +293,7 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
         None => format!("new record for {id}: count 1, mask 0x01 → one tower stub appears on the next boot; written to mc0:/B?DATA-SYSTEM/history"),
         Some(r) => {
             let c = r.count as u32 + 1;
-            format!("{id}: count {} → {c}{}; written to mc0:/B?DATA-SYSTEM/history", r.count, if c >= 14 && (c - 14) % 10 == 0 { ", a new random tower bit is added" } else { "" })
+            format!("{id}: count {} → {c}{}; written to mc0:/B?DATA-SYSTEM/history", r.count, if c >= 14 && (c - 14).is_multiple_of(10) { ", a new random tower bit is added" } else { "" })
         }
     };
     s.push(step("OSDSYS HistoryUpdate (0x201E98) + save (0x204AC0)", what));
@@ -346,7 +352,7 @@ fn ps1_handoff_steps(d: &DiscImage, history: &PlayHistory, video: VideoMode, rom
     let rec = history.records.iter().find(|r| r.name == id);
     s.push(step("OSDSYS HistoryUpdate (0x201E98) + save (0x204AC0)", match rec {
         None => format!("new record for {id}: count 1, mask 0x01 → one tower stub appears on the next boot; written to mc0:/B?DATA-SYSTEM/history"),
-        Some(r) => { let c = r.count as u32 + 1; format!("{id}: count {} → {c}{}; written to mc0:/B?DATA-SYSTEM/history", r.count, if c >= 14 && (c - 14) % 10 == 0 { ", a new random tower bit is added" } else { "" }) }
+        Some(r) => { let c = r.count as u32 + 1; format!("{id}: count {} → {c}{}; written to mc0:/B?DATA-SYSTEM/history", r.count, if c >= 14 && (c - 14).is_multiple_of(10) { ", a new random tower bit is added" } else { "" }) }
     }));
     s.push(step("OSDSYS", format!("shutdown of subsystems (0x2021E8), then LoadExecPS2(\"rom0:PS1DRV\", argc 2, argv {{\"{id}\", \"{}\"}})", d.version.as_deref().unwrap_or(""))));
     s.push(step("KERNEL KLoadExec", "HardwareRestart, EELOAD re-copied to 0x82000, loads rom0:PS1DRV".into()));

@@ -147,7 +147,7 @@ pub struct Timeline {
 impl Timeline {
     pub fn fps(&self) -> f32 { self.video.fps() }
     /// First frame after the scene has ended.
-    pub fn end_frame(&self) -> usize { self.states.len() - 1 }
+    pub fn end_frame(&self) -> usize { self.states.len().saturating_sub(1) }
 
     /// The boot scene. `disc_settled_frame` is when the drive has finished identifying the
     /// disc (0 = already known); the dive needs this and at least two seconds of drift.
@@ -347,18 +347,19 @@ pub const PS1_HANDOFF_PHASES: [BootPhase; 7] = [
     BootPhase { name: "PS1 shell: SPU bank uploaded, reverb set, drone notes keyed", seconds: 0.10 },
 ];
 
-/// The phase active `elapsed` seconds into a black period of `total` seconds.
-pub fn phase_at(phases: &[BootPhase], elapsed: f32, total: f32) -> &BootPhase {
+/// The phase active `elapsed` seconds into a black period of `total` seconds; `None` for an
+/// empty list.
+pub fn phase_at(phases: &[BootPhase], elapsed: f32, total: f32) -> Option<&BootPhase> {
     let sum: f32 = phases.iter().map(|p| p.seconds).sum();
     let scaled = elapsed / total.max(0.01) * sum;
     let mut t = 0.0;
     for p in phases {
         t += p.seconds;
         if scaled < t {
-            return p;
+            return Some(p);
         }
     }
-    phases.last().unwrap()
+    phases.last()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,17 +420,21 @@ impl BootSequence {
     }
 
     pub fn total_frames(&self) -> usize { self.spans.last().map(|s| s.start + s.length).unwrap_or(0) }
-    pub fn opening_start(&self) -> usize { self.spans[1].start }
-    pub fn logo_start(&self) -> usize { self.spans[3].start }
+    /// First frame of a segment (0 when the sequence has no such segment).
+    pub fn start_of(&self, segment: Segment) -> usize { self.spans.iter().find(|s| s.segment == segment).map(|s| s.start).unwrap_or(0) }
+    pub fn opening_start(&self) -> usize { self.start_of(Segment::Opening) }
+    pub fn logo_start(&self) -> usize { self.start_of(Segment::Logo) }
     pub fn dive_frame(&self) -> usize { self.opening_start() + self.opening.dive_frame }
 
+    /// The segment at `frame` and the frame within it; past the end, the last frame of the
+    /// last segment.
     pub fn span_at(&self, frame: usize) -> (&Span, usize) {
         for s in &self.spans {
             if frame < s.start + s.length {
                 return (s, frame - s.start);
             }
         }
-        let last = self.spans.last().unwrap();
+        let last = self.spans.last().expect("a boot sequence always has its five segments");
         (last, last.length.saturating_sub(1))
     }
 }

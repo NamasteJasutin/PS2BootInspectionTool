@@ -96,10 +96,16 @@ impl Tim {
         }
         let clut_len = d.u32(8) as usize;
         let (cw, ch) = (d.u16(0x10) as usize, d.u16(0x12) as usize);
+        if cw * ch > 256 || clut_len > 8 + 512 {
+            return Err(Error::Corrupt("TIM CLUT is implausible".into()));
+        }
         let clut: Vec<u16> = (0..cw * ch).map(|i| d.u16(0x14 + i * 2)).collect();
         let ib = 8 + clut_len;
         let (iw, ih) = (d.u16(ib + 8) as usize, d.u16(ib + 10) as usize);
         let (width, height) = (iw * 4, ih);
+        if width > 1024 || height > 1024 || width == 0 || height == 0 {
+            return Err(Error::Corrupt("TIM image size is implausible".into()));
+        }
         let data = ib + 12;
         let mut rgba = vec![0u8; width * height * 4];
         for y in 0..height {
@@ -422,7 +428,7 @@ impl Ps1Shell {
             let colour = [0, 1, 2].map(|c| p.colour[c] as f32 / 255.0 * lit(c) * (1.0 - cue));
             out.push(ScreenTri { xy: [s[0], s[1], s[2]], sz, colour });
         }
-        out.sort_by(|a, b| b.sz.partial_cmp(&a.sz).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| b.sz.total_cmp(&a.sz));
         out
     }
 
@@ -473,7 +479,7 @@ impl Ps1Shell {
             let pan = ((v.tone.pan as f32 + v.pan as f32 - 64.0) / 127.0).clamp(0.0, 1.0);
             let (gain_l, gain_r) = (gain * (1.0 - pan).sqrt(), gain * pan.sqrt());
             let semis = v.note as f32 - v.tone.centre as f32 + v.tone.shift as f32 / 128.0;
-            let step = (2f64.powf(semis as f64 / 12.0) * 44100.0 / SAMPLE_RATE as f64) as f64;
+            let step = 2f64.powf(semis as f64 / 12.0) * 44100.0 / SAMPLE_RATE as f64;
             let length = pcm.len();
             let mut pos = 0.0f64;
             for (k, &e) in env.iter().enumerate() {

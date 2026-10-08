@@ -349,14 +349,14 @@ impl Model {
         if self.scene_kind == SceneKind::Full {
             let (span, local) = self.sequence.span_at(self.frame.max(0.0) as usize);
             return match span.segment {
-                Segment::PowerOn => Some(phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds)),
-                Segment::Handoff => Some(phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds)),
+                Segment::PowerOn => phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds),
+                Segment::Handoff => phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds),
                 Segment::End => Some(&END_PHASE),
                 _ => None,
             };
         }
         if self.frame >= 0.0 { return None }
-        Some(phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds))
+        phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds)
     }
 
     /// A PlayStation disc is loaded and the BIOS's PS1 shell could be read.
