@@ -288,7 +288,7 @@ final class AppModel: ObservableObject {
     func viewPathFromSide() {
         let position = SIMD3<Float>(130, -60, 25), target = SIMD3<Float>(0, 0, 60)
         let f = simd_normalize(target - position)
-        freeCamera = FreeCamera(position: position, yaw: atan2(f.x, f.z), pitch: asin(f.y))
+        freeCamera = FreeCamera(pivot: target, distance: simd_length(target - position), yaw: atan2(f.x, f.z), pitch: asin(f.y))
     }
 
     /// The route as CSV: one row per 60 Hz frame.
@@ -307,8 +307,7 @@ final class AppModel: ObservableObject {
     }
 
     func resetFreeCamera() {
-        let c = camera
-        freeCamera = FreeCamera(position: c.position, yaw: 0, pitch: 0)
+        freeCamera = .behind(camera)
     }
 }
 
@@ -319,22 +318,54 @@ final class Clock: ObservableObject {
     var gpuMs: Double = 0
 }
 
-/// A fly-through camera: position plus yaw/pitch, level horizon.
+/// Blender-style viewport camera: a pivot point, a distance, and a turntable yaw/pitch.
 struct FreeCamera {
-    var position = SIMD3<Float>(0, 0, 16)
+    var pivot = SIMD3<Float>(0, 0, 120)
+    var distance: Float = 100
     var yaw: Float = 0
     var pitch: Float = 0
 
+    /// Direction the camera looks (towards the pivot).
     var forward: SIMD3<Float> { SIMD3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) }
+    var position: SIMD3<Float> { pivot - forward * distance }
     var view: ViewCamera { ViewCamera(position: position, forward: forward, up: SIMD3(0, 1, 0)) }
 
-    mutating func look(dx: Float, dy: Float) {
-        yaw += dx * 0.005
-        pitch = min(1.5, max(-1.5, pitch + dy * 0.005))
+    /// Start behind the scripted camera, looking at the field it looks at.
+    static func behind(_ c: CameraState, distance: Float = 60) -> FreeCamera {
+        FreeCamera(pivot: c.position + c.forward * distance, distance: distance, yaw: 0, pitch: 0)
     }
 
-    mutating func move(right: Float, down: Float, forward amount: Float) {
+    mutating func orbit(dx: Float, dy: Float) {
+        yaw += dx * 0.006
+        pitch = min(1.55, max(-1.55, pitch - dy * 0.006))
+    }
+
+    /// Slides the pivot in the view plane, scaled so that a drag follows the pointer.
+    mutating func pan(dx: Float, dy: Float) {
         let b = view.basis
-        position += b.x * right + b.y * down + b.z * amount
+        let k = distance * 0.0025
+        pivot -= b.x * (dx * k)
+        pivot -= b.y * (dy * k)
+    }
+
+    /// Zooms towards the pivot; `steps` > 0 moves closer.
+    mutating func dolly(_ steps: Float) {
+        distance = min(2000, max(1, distance * pow(0.9, steps)))
+    }
+
+    /// Numpad views: 1 front, 3 right, 7 top; `opposite` gives back/left/bottom.
+    mutating func snap(_ view: Int, opposite: Bool) {
+        switch view {
+        case 1: yaw = opposite ? .pi : 0; pitch = 0
+        case 3: yaw = opposite ? -.pi / 2 : .pi / 2; pitch = 0
+        case 7: pitch = opposite ? 1.55 : -1.55; yaw = 0
+        default: break
+        }
+    }
+
+    /// Frames the tower field.
+    mutating func frameAll() {
+        pivot = SIMD3(0, 0, 150)
+        distance = 160
     }
 }

@@ -26,24 +26,46 @@ impl HistorySource {
 
 pub const LANGUAGES: [(&str, &str); 12] = [("J", "Japanese"), ("E", "English"), ("F", "French"), ("S", "Spanish"), ("G", "German"), ("I", "Italian"), ("D", "Dutch"), ("P", "Portuguese"), ("R", "Russian"), ("K", "Korean"), ("H", "Chinese (traditional)"), ("C", "Chinese (simplified)")];
 
-/// A fly-through camera: position plus yaw/pitch, level horizon.
+/// Blender-style viewport camera: a pivot point, a distance, and a turntable yaw/pitch.
 #[derive(Clone, Copy, Debug)]
 pub struct FreeCamera {
-    pub position: Vec3,
+    pub pivot: Vec3,
+    pub distance: f32,
     pub yaw: f32,
     pub pitch: f32,
 }
 
 impl FreeCamera {
+    /// Start behind the scripted camera, looking at the field it looks at.
+    pub fn behind(c: &CameraState) -> Self {
+        let distance = 60.0;
+        Self { pivot: c.position() + c.forward() * distance, distance, yaw: 0.0, pitch: 0.0 }
+    }
     pub fn forward(&self) -> Vec3 { Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos()) }
-    pub fn look(&mut self, dx: f32, dy: f32) { self.yaw += dx * 0.005; self.pitch = (self.pitch + dy * 0.005).clamp(-1.5, 1.5) }
+    pub fn position(&self) -> Vec3 { self.pivot - self.forward() * self.distance }
     pub fn view(&self, video: VideoMode) -> crate::renderer::ViewCamera {
-        crate::renderer::ViewCamera { position: self.position, forward: self.forward(), up: Vec3::Y, video }
+        crate::renderer::ViewCamera { position: self.position(), forward: self.forward(), up: Vec3::Y, video }
     }
-    pub fn slide(&mut self, right: f32, down: f32, forward: f32, video: VideoMode) {
-        let (bx, by, bz) = self.view(video).basis();
-        self.position += bx * right + by * down + bz * forward;
+    pub fn orbit(&mut self, dx: f32, dy: f32) { self.yaw += dx * 0.006; self.pitch = (self.pitch - dy * 0.006).clamp(-1.55, 1.55) }
+    /// Slides the pivot in the view plane, scaled so that a drag follows the pointer.
+    pub fn pan(&mut self, dx: f32, dy: f32, video: VideoMode) {
+        let (bx, by, _) = self.view(video).basis();
+        let k = self.distance * 0.0025;
+        self.pivot -= bx * (dx * k) + by * (dy * k);
     }
+    /// Zooms towards the pivot; `steps` > 0 moves closer.
+    pub fn dolly(&mut self, steps: f32) { self.distance = (self.distance * 0.9f32.powf(steps)).clamp(1.0, 2000.0) }
+    /// Numpad views: 1 front, 3 right, 7 top; `opposite` gives back/left/bottom.
+    pub fn snap(&mut self, view: u8, opposite: bool) {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        match view {
+            1 => { self.yaw = if opposite { PI } else { 0.0 }; self.pitch = 0.0 }
+            3 => { self.yaw = if opposite { -FRAC_PI_2 } else { FRAC_PI_2 }; self.pitch = 0.0 }
+            7 => { self.pitch = if opposite { 1.55 } else { -1.55 }; self.yaw = 0.0 }
+            _ => {}
+        }
+    }
+    pub fn frame_all(&mut self) { self.pivot = Vec3::new(0.0, 0.0, 150.0); self.distance = 160.0 }
 }
 
 pub struct Model {
@@ -104,7 +126,7 @@ impl Model {
             scene_kind: SceneKind::Full, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, free_camera: FreeCamera { position: Vec3::new(0.0, 0.0, 16.0), yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, scene: OpeningScene::default(), logo_assets: None, disc: None, disc_logo: None,
@@ -332,16 +354,13 @@ impl Model {
         self.logo_animation().map(|a| DiscLogo::synthesised(&a))
     }
 
-    pub fn reset_free_camera(&mut self) {
-        let c = self.camera();
-        self.free_camera = FreeCamera { position: c.position(), yaw: 0.0, pitch: 0.0 };
-    }
+    pub fn reset_free_camera(&mut self) { self.free_camera = FreeCamera::behind(&self.camera()) }
 
     /// Puts the free camera beside the route, looking at its middle.
     pub fn view_path_from_side(&mut self) {
-        let position = Vec3::new(130.0, -60.0, 25.0);
-        let f = (Vec3::new(0.0, 0.0, 60.0) - position).normalize();
-        self.free_camera = FreeCamera { position, yaw: f.x.atan2(f.z), pitch: f.y.asin() };
+        let (position, target) = (Vec3::new(130.0, -60.0, 25.0), Vec3::new(0.0, 0.0, 60.0));
+        let f = (target - position).normalize();
+        self.free_camera = FreeCamera { pivot: target, distance: (target - position).length(), yaw: f.x.atan2(f.z), pitch: f.y.asin() };
     }
 
     pub fn set_camera_path(&mut self, on: bool) {

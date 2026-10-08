@@ -183,7 +183,7 @@ struct Sidebar: View {
                 }
                 section("Camera") {
                     Toggle("Free camera", isOn: $model.freeCameraEnabled)
-                    Text("Drag to look, scroll to fly, Ctrl+scroll to rotate the view, right-drag to slide.")
+                    Text("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Back to the scripted position") { model.resetFreeCamera() }
                         .disabled(!model.freeCameraEnabled)
@@ -418,24 +418,49 @@ final class SceneView: MTKView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    override func mouseDragged(with e: NSEvent) {
-        guard let m = model, m.freeCameraEnabled else { return }
-        m.freeCamera.look(dx: Float(e.deltaX), dy: Float(e.deltaY))
+    // Blender viewport navigation: middle-drag orbits, Shift+middle pans, Ctrl+middle dollies;
+    // Alt+left-drag emulates the middle button; the wheel zooms, Shift/Ctrl+wheel pan.
+    private func navigate(_ e: NSEvent, dx: Float, dy: Float) {
+        guard let m = model else { return }
+        if e.modifierFlags.contains(.shift) { m.freeCamera.pan(dx: dx, dy: dy) }
+        else if e.modifierFlags.contains(.control) { m.freeCamera.dolly(dy * 0.02) }
+        else { m.freeCamera.orbit(dx: dx, dy: dy) }
     }
 
-    override func rightMouseDragged(with e: NSEvent) {
+    override func otherMouseDragged(with e: NSEvent) {
         guard let m = model, m.freeCameraEnabled else { return }
-        m.freeCamera.move(right: -Float(e.deltaX) * 0.1, down: -Float(e.deltaY) * 0.1, forward: 0)
+        navigate(e, dx: Float(e.deltaX), dy: Float(e.deltaY))
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        guard let m = model, m.freeCameraEnabled else { return }
+        navigate(e, dx: Float(e.deltaX), dy: Float(e.deltaY))
     }
 
     override func scrollWheel(with e: NSEvent) {
         guard let m = model, m.freeCameraEnabled else { return }
-        let k: Float = e.hasPreciseScrollingDeltas ? 1 : 10
-        if e.modifierFlags.contains(.control) {
-            // Ctrl + scroll rotates the view: horizontal = yaw, vertical = pitch.
-            m.freeCamera.look(dx: Float(e.scrollingDeltaX) * k, dy: Float(e.scrollingDeltaY) * k)
-        } else {
-            m.freeCamera.move(right: 0, down: 0, forward: Float(e.scrollingDeltaY) * k * 0.05)
+        let k: Float = e.hasPreciseScrollingDeltas ? 0.1 : 1
+        let (dx, dy) = (Float(e.scrollingDeltaX) * k, Float(e.scrollingDeltaY) * k)
+        if e.modifierFlags.contains(.shift) { m.freeCamera.pan(dx: 0, dy: -dy * 4) }
+        else if e.modifierFlags.contains(.control) { m.freeCamera.pan(dx: (dy + dx) * 4, dy: 0) }
+        else { m.freeCamera.dolly(dy) }
+    }
+
+    override func magnify(with e: NSEvent) {
+        guard let m = model, m.freeCameraEnabled else { return }
+        m.freeCamera.dolly(Float(e.magnification) * 10)
+    }
+
+    override func keyDown(with e: NSEvent) {
+        guard let m = model, m.freeCameraEnabled, let chars = e.charactersIgnoringModifiers else { return super.keyDown(with: e) }
+        let opposite = e.modifierFlags.contains(.control)
+        switch chars {
+        case "1": m.freeCamera.snap(1, opposite: opposite)
+        case "3": m.freeCamera.snap(3, opposite: opposite)
+        case "7": m.freeCamera.snap(7, opposite: opposite)
+        case ".": m.freeCamera.pivot = SIMD3(0, 0, 150)
+        default:
+            if e.keyCode == 115 { m.freeCamera.frameAll() } else { super.keyDown(with: e) }   // Home
         }
     }
 }

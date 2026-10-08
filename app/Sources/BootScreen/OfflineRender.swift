@@ -58,7 +58,9 @@ enum OfflineRender {
             renderer.setAssets(assets)
             var free: ViewCamera?
             if let f = named["free"]?.split(separator: ",").compactMap({ Float($0) }), f.count == 5 {
-                free = FreeCamera(position: SIMD3(f[0], f[1], f[2]), yaw: f[3], pitch: f[4]).view
+                var cam = FreeCamera(pivot: .zero, distance: 1, yaw: f[3], pitch: f[4])
+                cam.pivot = SIMD3(f[0], f[1], f[2]) + cam.forward      // position given, looking along yaw/pitch
+                free = cam.view
             }
             let video: VideoMode = named["video"] == "pal" ? .pal : .ntsc
             let fps = video.framesPerSecond

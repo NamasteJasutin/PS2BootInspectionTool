@@ -47,7 +47,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.rebuild_timeline();
     let free = named.get("free").and_then(|f| {
         let v: Vec<f32> = f.split(',').filter_map(|x| x.parse().ok()).collect();
-        (v.len() == 5).then(|| FreeCamera { position: Vec3::new(v[0], v[1], v[2]), yaw: v[3], pitch: v[4] }.view(m.video))
+        (v.len() == 5).then(|| {
+            let mut cam = FreeCamera { pivot: Vec3::ZERO, distance: 1.0, yaw: v[3], pitch: v[4] };
+            cam.pivot = Vec3::new(v[0], v[1], v[2]) + cam.forward();       // position given, looking along yaw/pitch
+            cam.view(m.video)
+        })
     });
 
     // Headless device.

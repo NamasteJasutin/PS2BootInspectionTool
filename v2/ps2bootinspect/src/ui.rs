@@ -5,6 +5,7 @@ use crate::model::{HistorySource, Model, LANGUAGES};
 use crate::renderer::Renderer;
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use glam::Vec3;
 use ps2kit::sim::{SceneKind, Segment, VideoMode};
 use std::time::Instant;
 
@@ -93,22 +94,32 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     let response = ui.allocate_rect(avail, egui::Sense::click_and_drag());
     ui.painter().image(view.texture_id, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
 
-    // Free-camera input: drag to look, scroll to fly, Ctrl+scroll to rotate, right-drag to slide.
+    // Blender viewport navigation: middle-drag orbits, Shift+middle pans, Ctrl+middle dollies;
+    // Alt+left-drag (or plain left-drag) emulates the middle button; the wheel zooms,
+    // Shift/Ctrl+wheel pan; 1/3/7 snap views, Home frames the field, "." re-centres.
     if m.free_camera_enabled {
         let video = m.video;
-        if response.dragged_by(egui::PointerButton::Primary) {
+        let mods = ui.input(|i| i.modifiers);
+        if response.dragged_by(egui::PointerButton::Middle) || response.dragged_by(egui::PointerButton::Primary) {
             let d = response.drag_delta();
-            m.free_camera.look(d.x, d.y);
-        }
-        if response.dragged_by(egui::PointerButton::Secondary) {
-            let d = response.drag_delta();
-            m.free_camera.slide(-d.x * 0.1, -d.y * 0.1, 0.0, video);
+            if mods.shift { m.free_camera.pan(d.x, d.y, video) } else if mods.ctrl { m.free_camera.dolly(d.y * 0.02) } else { m.free_camera.orbit(d.x, d.y) }
         }
         if response.hovered() {
-            let (scroll, ctrl) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.ctrl));
+            let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
             if scroll != Vec2::ZERO {
-                if ctrl { m.free_camera.look(scroll.x, scroll.y) } else { m.free_camera.slide(0.0, 0.0, scroll.y * 0.05, video) }
+                if mods.shift { m.free_camera.pan(0.0, -scroll.y * 0.4, video) }
+                else if mods.ctrl { m.free_camera.pan((scroll.y + scroll.x) * 0.4, 0.0, video) }
+                else { m.free_camera.dolly(scroll.y * 0.1) }
             }
+            if zoom != 1.0 { m.free_camera.dolly((zoom - 1.0) * 10.0) }
+            ui.input(|i| {
+                let opp = i.modifiers.ctrl;
+                if i.key_pressed(egui::Key::Num1) { m.free_camera.snap(1, opp) }
+                if i.key_pressed(egui::Key::Num3) { m.free_camera.snap(3, opp) }
+                if i.key_pressed(egui::Key::Num7) { m.free_camera.snap(7, opp) }
+                if i.key_pressed(egui::Key::Home) { m.free_camera.frame_all() }
+                if i.key_pressed(egui::Key::Period) { m.free_camera.pivot = Vec3::new(0.0, 0.0, 150.0) }
+            });
         }
     }
 
@@ -292,7 +303,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     });
     section(ui, "Camera", |ui| {
         if ui.checkbox(&mut m.free_camera_enabled, "Free camera").changed() && m.free_camera_enabled { m.reset_free_camera() }
-        ui.small("Drag to look, scroll to fly, Ctrl+scroll to rotate the view, right-drag to slide.");
+        ui.small("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.");
         if ui.add_enabled(m.free_camera_enabled, egui::Button::new("Back to the scripted position")).clicked() { m.reset_free_camera() }
         let mut path = m.options.camera_path;
         if ui.checkbox(&mut path, "Show the scripted camera path").changed() { m.set_camera_path(path) }
