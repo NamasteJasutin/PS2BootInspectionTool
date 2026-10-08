@@ -6,7 +6,7 @@
 use crate::renderer::{Batch, Blend, DepthAction, RenderOptions, Renderer, Vertex};
 use glam::{Vec2, Vec4};
 use ps2kit::ps1::{LicenceTimeline, Ps1Shell, Tmd, TEXT_ROW_HEIGHT};
-use ps2kit::sim::VideoMode;
+use ps2kit::VideoMode;
 
 /// The screen's text and bitmaps, laid out as the shell would for one licence line.
 pub struct Ps1Layout {

@@ -2,7 +2,7 @@
 
 use crate::bytes::Bytes;
 use crate::memcard::MemoryCard;
-use crate::{Error, Result};
+use crate::{Error, Format, Result};
 
 /// One slot of the play history. The layout is fixed (22 bytes), so the type is meant to be
 /// constructed by callers too, e.g. to feed [`PlayHistory::new`].
@@ -85,7 +85,7 @@ impl PlayHistory {
                 }
             }
         }
-        Err(Error::CardNotFound("B?DATA-SYSTEM/history (the BIOS creates it the first time it launches a disc itself)".into()))
+        Err(Error::NotFound(Format::MemoryCard, "B?DATA-SYSTEM/history (the BIOS creates it the first time it launches a disc itself)".into()))
     }
 
     /// A made-up history following the console's update rules: `launches[i]` is how often
@@ -108,7 +108,7 @@ impl PlayHistory {
                     if r.count >= 14 && (r.count - 14).is_multiple_of(10) {
                         let mut b;
                         loop {
-                            b = (rng.next() % 6) as u8;
+                            b = (rng.next_u64() % 6) as u8;
                             if r.mask & (1 << b) == 0 {
                                 break;
                             }
@@ -122,6 +122,21 @@ impl PlayHistory {
             recs.push(r);
         }
         Self::new(recs, Some("synthetic".into()))
+    }
+
+    /// The record `title_id` would have after the console launches it once more, and whether
+    /// that launch plants a new tower: a first launch gives count 1 with one tower; later ones
+    /// add 1 and plant a tower at counts 14, 24, 34, ... (the bit is chosen at random by the
+    /// console and is not represented here, so `mask` is left as it is).
+    #[must_use]
+    pub fn next_record(&self, title_id: &str) -> (Record, bool) {
+        match self.records.iter().find(|r| r.name == title_id) {
+            None => (Record { name: title_id.into(), count: 1, mask: 1, index: 0, date: 0 }, false),
+            Some(r) => {
+                let count = r.count.saturating_add(1);
+                (Record { count, ..r.clone() }, count >= 14 && (count - 14).is_multiple_of(10))
+            }
+        }
     }
 
     /// Title IDs of the games that have saves on a card (`BESLES-52541...` -> `SLES_525.41`).
@@ -144,19 +159,23 @@ impl PlayHistory {
     }
 }
 
-/// SplitMix64, the generator behind [`PlayHistory::synthetic`]; the field is the state.
+/// SplitMix64, the generator behind [`PlayHistory::synthetic`]; the field is the state. It
+/// is also an endless `Iterator` of `u64`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitMix(pub u64);
 
 impl SplitMix {
     /// The next 64-bit output.
-    // Named like `Iterator::next` without being one; renamed in 0.2 (see API_REVIEW.md).
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     }
+}
+
+impl Iterator for SplitMix {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> { Some(self.next_u64()) }
 }

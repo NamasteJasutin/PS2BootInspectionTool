@@ -3,10 +3,11 @@
 use ps2kit::bios::OpeningAssets;
 use ps2kit::disc::DiscImage;
 use ps2kit::history::PlayHistory;
-use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets};
+use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets, LogoMaster};
 use ps2kit::rom::{unpack, RomDir};
-use ps2kit::sim::{OpeningScene, Timeline, VideoMode};
+use ps2kit::sim::{OpeningScene, Timeline};
 use ps2kit::sound::BootSound;
+use ps2kit::VideoMode;
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("..") }
@@ -29,7 +30,7 @@ fn textures_match_tex2png() {
         let mut reader = png::Decoder::new(file).read_info().unwrap();
         let mut buf = vec![0; reader.output_buffer_size()];
         let info = reader.next_frame(&mut buf).unwrap();
-        let t = &assets.textures[name];
+        let t = assets.texture(name).expect(name);
         assert_eq!((info.width as usize, info.height as usize), (t.width, t.height), "{name} size");
         // tex2png shows 8-bit masks (format 3/4) as grey for viewing; the loader keeps them as alpha.
         let same = if name == "TEXOBLP" {
@@ -47,7 +48,7 @@ fn timelines_match_swift() {
     let p = Timeline::boot(0, VideoMode::Pal);
     assert_eq!((n.end_frame(), n.dive_frame), (248, 122));
     assert_eq!((p.end_frame(), p.dive_frame), (207, 102));
-    assert!((p.states.last().unwrap().z - 106.387).abs() < 0.01);
+    assert!((p.states().last().unwrap().z - 106.387).abs() < 0.01);
     // The console's integrator (velocity updated before the position step) parks the warning
     // camera at z = 800 after 111 NTSC frames; the notes' 103 is the closed-form estimate.
     let w = Timeline::warning(300, VideoMode::Ntsc);
@@ -100,7 +101,7 @@ fn logo_and_disc() {
     let disc = DiscImage::open(&iso).unwrap();
     assert_eq!(disc.title_id().as_deref(), Some("SLES_530.64"));
     assert_eq!(disc.boot_elf.as_ref().unwrap().entry, 0x100008);
-    assert_eq!(disc.logo_region, Some("E"));
+    assert_eq!(disc.logo_region, Some(LogoMaster::Europe));
     let l = DiscLogo::read(&iso).unwrap().bitmap(VideoMode::Pal);
     assert_eq!((l.width, l.height), (384, 77));
 }
@@ -119,7 +120,7 @@ fn local_bios_versions_load() {
         // 1.00 (SCPH-10000) has a different OSD generation and is expected to be rejected clearly.
         match OpeningAssets::load(&rom) {
             Ok(a) => {
-                assert!(a.textures.contains_key("TEXOWAL0") && a.textures.contains_key("TEXOSCE"), "{version}: textures");
+                assert!(a.texture("TEXOWAL0").is_some() && a.texture("TEXOSCE").is_some(), "{version}: textures");
                 assert!(BootSound::load(&rom).is_ok(), "{version}: sound");
                 assert!(LogoAssets::load(&rom).is_ok(), "{version}: logo");
                 found.push(version);
@@ -156,7 +157,7 @@ fn ps1_shell_from_local_bios_and_discs() {
     assert!(x0 > 180.0 && x1 < 460.0 && y0 > 20.0 && y1 < 280.0, "logo spans {x0}..{x1} × {y0}..{y1} (the wordmark starts at y 280)");
     let black = shell.project(&shell.logo, 0);
     assert!(black.iter().all(|t| t.colour.iter().all(|c| *c < 0.02)), "first field is black");
-    let pcm = shell.render_sound(ps2kit::sim::VideoMode::Ntsc);
+    let pcm = shell.render_sound(VideoMode::Ntsc);
     assert!(pcm.len() > 48000 * 2 * 3 && pcm.iter().any(|s| s.abs() > 0.01));
     // Every PS1 disc in ~/PS2ISO must carry the shell's own logo.
     let Some(home) = std::env::var_os("HOME") else { return };

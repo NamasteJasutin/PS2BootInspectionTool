@@ -1,7 +1,7 @@
 //! Playback of the synthesised sounds on the sequence clock (cpal), and the measurements
 //! behind the volume / wave / equaliser visualisers.
 
-use ps2kit::sim::SceneKind;
+use crate::model::Scene;
 use ps2kit::sound::{BootSound, SAMPLE_RATE};
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::{Arc, Mutex};
@@ -96,12 +96,12 @@ impl AudioPlayer {
     /// Places the clips for a scene; frames are converted with `fps`.
     /// `ps1_disc`: the opening stops the chime with the fast release instead of starting the
     /// PS2 transition cue (OSDSYS does that for PlayStation discs, audio CDs and DVD-Video).
-    pub fn arrange(&self, scene: SceneKind, fps: f32, dive_frame: usize, logo_start: usize, opening_start: usize, ps1_disc: bool) {
+    pub fn arrange(&self, scene: Scene, fps: f32, dive_frame: usize, logo_start: usize, opening_start: usize, ps1_disc: bool) {
         let at = |frame: usize| (frame as f64 / fps as f64 * SAMPLE_RATE as f64) as i64;
         let mut list = Vec::new();
         let clip = |start, pcm: Arc<Vec<f32>>, looped, fade_start| Clip { start, pcm, looped, fade_start };
         match scene {
-            SceneKind::Boot | SceneKind::Full => {
+            Scene::Boot | Scene::Full => {
                 if let Some(s) = &self.sounds {
                     if ps1_disc {
                         list.push(clip(at(opening_start), Arc::new(s.chime.clone()), false, Some(at(dive_frame))));
@@ -110,12 +110,12 @@ impl AudioPlayer {
                         list.push(clip(at(dive_frame), Arc::new(s.cue.clone()), false, None));
                     }
                 }
-                if scene == SceneKind::Full { list.push(clip(at(logo_start), self.logo_chime.clone(), false, None)) }
+                if scene == Scene::Full { list.push(clip(at(logo_start), self.logo_chime.clone(), false, None)) }
             }
-            SceneKind::Warning => {
+            Scene::Warning => {
                 if let Some(s) = &self.sounds { list.push(clip(0, Arc::new(s.warning.clone()), true, Some(at(dive_frame)))) }
             }
-            SceneKind::Logo => list.push(clip(0, self.logo_chime.clone(), false, None)),
+            Scene::Logo => list.push(clip(0, self.logo_chime.clone(), false, None)),
         }
         self.shared.lock().unwrap().clips = list;
     }

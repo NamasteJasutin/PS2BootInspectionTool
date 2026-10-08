@@ -2,7 +2,7 @@
 //! without the 16 spare bytes per page) or a "folder" card.
 
 use crate::bytes::Bytes;
-use crate::{Error, Result};
+use crate::{Error, Format, Result};
 use std::path::{Path, PathBuf};
 
 /// One directory entry of a card, as [`MemoryCard::list`] returns it.
@@ -39,7 +39,8 @@ enum Backing {
 
 impl MemoryCard {
     /// Opens a `.ps2` image (a file) or a PCSX2 folder card (a directory).
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let backing = if path.is_dir() {
             Backing::Folder(path.to_path_buf())
         } else {
@@ -74,18 +75,18 @@ impl MemoryCard {
         let joined = path.join("/");
         match &self.backing {
             Backing::Image(img) => {
-                let (name, dir) = path.split_last().ok_or_else(|| Error::CardNotFound("(empty path)".into()))?;
+                let (name, dir) = path.split_last().ok_or_else(|| Error::NotFound(Format::MemoryCard, "(empty path)".into()))?;
                 let d = img.resolve(dir)?;
                 let e = img
                     .list(&d)?
                     .into_iter()
                     .find(|e| e.name == *name && !e.is_directory)
-                    .ok_or_else(|| Error::CardNotFound(joined.clone()))?;
+                    .ok_or_else(|| Error::NotFound(Format::MemoryCard, joined.clone()))?;
                 img.read_chain(e.cluster, e.length)
             }
             Backing::Folder(root) => {
                 let p = path.iter().fold(root.clone(), |p, c| p.join(c));
-                std::fs::read(p).map_err(|_| Error::CardNotFound(joined))
+                std::fs::read(p).map_err(|_| Error::NotFound(Format::MemoryCard, joined))
             }
         }
     }
@@ -114,13 +115,13 @@ impl Image {
     fn new(data: Vec<u8>) -> Result<Self> {
         let magic = b"Sony PS2 Memory Card Format ";
         if data.len() < 0x154 || &data[..magic.len()] != magic {
-            return Err(Error::NotACard("superblock signature missing (unformatted card?)".into()));
+            return Err(Error::NotA(Format::MemoryCard, "superblock signature missing (unformatted card?)".into()));
         }
         let page = data.u16(0x28) as usize;
         let pages_per_cluster = data.u16(0x2A) as usize;
         let clusters = data.u32(0x30) as usize;
         if page != 512 || pages_per_cluster == 0 || clusters == 0 {
-            return Err(Error::CardCorrupt("unsupported geometry".into()));
+            return Err(Error::Corrupt(Format::MemoryCard, "unsupported geometry".into()));
         }
         let pages = clusters * pages_per_cluster;
         let raw_page = if data.len() >= pages * (page + 16) {
@@ -128,7 +129,7 @@ impl Image {
         } else if data.len() >= pages * page {
             page
         } else {
-            return Err(Error::CardCorrupt("image is shorter than the card it describes".into()));
+            return Err(Error::Corrupt(Format::MemoryCard, "image is shorter than the card it describes".into()));
         };
         Ok(Self {
             alloc_offset: data.u32(0x34),
@@ -148,7 +149,7 @@ impl Image {
         for p in 0..self.pages_per_cluster {
             let off = (n as usize * self.pages_per_cluster + p) * self.raw_page;
             if off + self.page > self.data.len() {
-                return Err(Error::CardCorrupt(format!("cluster {n} out of range")));
+                return Err(Error::Corrupt(Format::MemoryCard, format!("cluster {n} out of range")));
             }
             out.extend_from_slice(&self.data[off..off + self.page]);
         }
@@ -160,7 +161,7 @@ impl Image {
         let per = (self.cluster_size() / 4) as u32;
         let indirect = n / per;
         let ifc = (indirect / per) as usize;
-        let ifc_cluster = *self.ifc_list.get(ifc).ok_or_else(|| Error::CardCorrupt("FAT index out of range".into()))?;
+        let ifc_cluster = *self.ifc_list.get(ifc).ok_or_else(|| Error::Corrupt(Format::MemoryCard, "FAT index out of range".into()))?;
         let fat_cluster = self.cluster(ifc_cluster)?.u32(((indirect % per) * 4) as usize);
         Ok(self.cluster(fat_cluster)?.u32(((n % per) * 4) as usize))
     }
@@ -171,7 +172,7 @@ impl Image {
         let mut c = first;
         let mut guard = 0;
         while out.len() < length {
-            let n = c.checked_add(self.alloc_offset).ok_or_else(|| Error::CardCorrupt("cluster number overflows".into()))?;
+            let n = c.checked_add(self.alloc_offset).ok_or_else(|| Error::Corrupt(Format::MemoryCard, "cluster number overflows".into()))?;
             out.extend(self.cluster(n)?);
             let next = self.fat(c)?;
             if next == 0xFFFF_FFFF || next & 0x8000_0000 == 0 {
@@ -180,11 +181,11 @@ impl Image {
             c = next & 0x7FFF_FFFF;
             guard += 1;
             if guard > 0x10000 {
-                return Err(Error::CardCorrupt("FAT chain loops".into()));
+                return Err(Error::Corrupt(Format::MemoryCard, "FAT chain loops".into()));
             }
         }
         if out.len() < length {
-            return Err(Error::CardCorrupt("file chain ends early".into()));
+            return Err(Error::Corrupt(Format::MemoryCard, "file chain ends early".into()));
         }
         out.truncate(length);
         Ok(out)
@@ -192,7 +193,7 @@ impl Image {
 
     fn list(&self, dir: &Directory) -> Result<Vec<Entry>> {
         if dir.count == 0 || dir.count >= 0x10000 {
-            return Err(Error::CardCorrupt("bad directory size".into()));
+            return Err(Error::Corrupt(Format::MemoryCard, "bad directory size".into()));
         }
         let raw = self.read_chain(dir.cluster, dir.count * 512)?;
         let mut out = Vec::new();
@@ -212,14 +213,14 @@ impl Image {
     }
 
     fn resolve(&self, path: &[&str]) -> Result<Directory> {
-        let root = self.root_cluster.checked_add(self.alloc_offset).ok_or_else(|| Error::CardCorrupt("root cluster out of range".into()))?;
+        let root = self.root_cluster.checked_add(self.alloc_offset).ok_or_else(|| Error::Corrupt(Format::MemoryCard, "root cluster out of range".into()))?;
         let mut dir = Directory { cluster: self.root_cluster, count: self.cluster(root)?.u32(4) as usize };
         for part in path {
             let e = self
                 .list(&dir)?
                 .into_iter()
                 .find(|e| e.name == *part && e.is_directory)
-                .ok_or_else(|| Error::CardNotFound(path.join("/")))?;
+                .ok_or_else(|| Error::NotFound(Format::MemoryCard, path.join("/")))?;
             dir = Directory { cluster: e.cluster, count: e.length };
         }
         Ok(dir)

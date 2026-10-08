@@ -9,10 +9,61 @@ use ps2kit::history::PlayHistory;
 use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets, LogoBitmap};
 use ps2kit::memcard::MemoryCard;
 use ps2kit::rom::RomDir;
-use ps2kit::sim::{phase_at, BootPhase, BootSequence, CameraState, OpeningScene, SceneKind, Segment, Timeline, VideoMode, HANDOFF_PHASES, POWER_ON_PHASES, PS1_HANDOFF_PHASES};
+use ps2kit::sim::{phase_at, BootPhase, BootSequence, CameraState, OpeningScene, Segment, Timeline, HANDOFF_PHASES, POWER_ON_PHASES, PS1_HANDOFF_PHASES};
 use ps2kit::sound::BootSound;
+use ps2kit::{Region, VideoMode};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+
+/// What the viewport shows: one of the console's screens on its own, or the whole boot.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Scene { Full, Boot, Warning, Logo }
+
+impl Scene {
+    pub const ALL: [Self; 4] = [Self::Full, Self::Boot, Self::Warning, Self::Logo];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Full => "Full boot: BIOS → disc → hand-off",
+            Self::Boot => "Boot (towers)",
+            Self::Warning => "Warning (insert disc)",
+            Self::Logo => "PlayStation 2 logo (disc boot)",
+        }
+    }
+}
+
+pub fn video_mode_name(video: VideoMode) -> &'static str { if video == VideoMode::Pal { "PAL 50 Hz" } else { "NTSC 60 Hz" } }
+
+/// The caption shown while the console is busy with a phase (`notes/boot_sequence.md`).
+pub fn phase_caption(phase: BootPhase) -> &'static str {
+    match phase {
+        BootPhase::IopBoot => "IOP boot #1: IOPBOOT + 29 modules from ROM",
+        BootPhase::OsdsysLoad => "EELOAD loads rom0:OSDSYS (363 KB)",
+        BootPhase::OsdsysUnpack => "OSDSYS stub decompresses itself to 0x200000",
+        BootPhase::IopReboot => "IOP boot #2: rom0:UDNL rom0:OSDCNF, 39 modules",
+        BootPhase::CardMount => "Memory card mount (sceMcGetInfo, system folder)",
+        BootPhase::AssetArchives => "Asset archives: 1.7 MB read, 1.1 MB LZ-decoded",
+        BootPhase::SoundUpload => "Sound bank upload to SPU2 (410 KB)",
+        BootPhase::CdvdSetup => "CDVD S-commands, NVRAM config, history read, threads",
+        BootPhase::VideoInit => "Video init: GS reset, sync, cleared buffers",
+        BootPhase::DiscIdentified => "OSDSYS: disc thread off, disc key read twice, title ID decoded",
+        BootPhase::SystemCnfRead => "OSDSYS: cdrom0:\\SYSTEM.CNF;1 read, BOOT2 checked against the disc ID",
+        BootPhase::HistorySaved => "OSDSYS: play history updated and saved to the memory card",
+        BootPhase::Ps2LogoExec => "OSDSYS: subsystems shut down, LoadExecPS2(\"rom0:PS2LOGO\")",
+        BootPhase::Ps2LogoLoad => "KERNEL/EELOAD: PS2LOGO loaded and decompressed to 0x100000",
+        BootPhase::Ps2LogoInit => "PS2LOGO: rom0:OSDSND loaded, chime bank uploaded, GS set to 640×512",
+        BootPhase::LogoSectorsRead => "PS2LOGO: logo sectors 0–11 read from the disc and checksummed",
+        BootPhase::Ps1BootId => "OSDSYS: disc thread off; SYSTEM.CNF read, BOOT line → PS1 title ID",
+        BootPhase::Ps1DrvExec => "OSDSYS: subsystems shut down, LoadExecPS2(\"rom0:PS1DRV\", id, ver)",
+        BootPhase::Ps1DrvLoad => "KERNEL/EELOAD: PS1DRV loaded; IOP rebooted into PlayStation mode",
+        BootPhase::Ps1ShellUnpack => "TBIN: rom0:LOGO (the PS1 shell) decompressed to 0x30000",
+        BootPhase::Ps1SystemArea => "PS1 shell: GetID, licence sector 4 and logo sectors 5–11 read and checked",
+        BootPhase::Ps1SoundSetup => "PS1 shell: SPU bank uploaded, reverb set, drone notes keyed",
+        _ => "…",
+    }
+}
+
+/// Shown at the end of the full sequence, where the game would start.
+const END_CAPTION: &str = "SPU quit; LoadExecPS2(boot ELF) — the game would start here";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HistorySource { Card, Saves, Custom, Empty }
@@ -79,7 +130,7 @@ pub struct Model {
     pub custom_titles: u32,
     pub custom_launches: u32,
     pub history: PlayHistory,
-    pub scene_kind: SceneKind,
+    pub scene_kind: Scene,
     pub video: VideoMode,
     pub language: &'static str,
     pub power_on_seconds: f32,
@@ -128,7 +179,7 @@ impl Model {
             card_path: None, card_status: "No memory card loaded".into(),
             disc_path: None, disc_status: "No disc image — the lettering is filled from the BIOS outline".into(),
             history_source: HistorySource::Empty, custom_titles: 12, custom_launches: 30, history: PlayHistory::default(),
-            scene_kind: SceneKind::Full, video, language: "E",
+            scene_kind: Scene::Full, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
             options: RenderOptions::default(), free_camera_enabled: false, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
@@ -184,9 +235,9 @@ impl Model {
         });
         match result {
             Ok((rom, assets, logo)) => {
-                self.bios_status = format!("{} — ROM {}", path.file_name().unwrap_or_default().to_string_lossy(), assets.rom_version);
+                self.bios_status = format!("{} — ROM {}", path.file_name().unwrap_or_default().to_string_lossy(), assets.rom_version());
                 // ROMVER's fifth character is the region: E = Europe (50 Hz).
-                self.video = if assets.rom_version.as_bytes().get(4) == Some(&b'E') { VideoMode::Pal } else { VideoMode::Ntsc };
+                self.video = if assets.rom_version().as_bytes().get(4) == Some(&b'E') { VideoMode::Pal } else { VideoMode::Ntsc };
                 self.assets = Some(assets);
                 self.assets_version += 1;
                 self.bios_path = Some(path.to_path_buf());
@@ -236,9 +287,9 @@ impl Model {
                 self.disc_logo = if d.kind == ps2kit::disc::DiscKind::Ps2 { DiscLogo::read(path).ok() } else { None };
                 self.ps1_logo = if d.kind == ps2kit::disc::DiscKind::Ps1 { ps2kit::ps1::Tmd::from_disc(path).ok() } else { None };
                 self.disc_status = match d.kind {
-                    ps2kit::disc::DiscKind::Ps2 => format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo: {} master", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "logo: unknown master".into())),
-                    ps2kit::disc::DiscKind::Ps1 => format!("{} — PlayStation disc {}, licence {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "???".into()), d.ps1_licence.as_ref().and_then(|l| l.region).unwrap_or("unknown")),
-                    ps2kit::disc::DiscKind::Unknown => format!("{} — not a PlayStation disc", path.file_name().unwrap_or_default().to_string_lossy()),
+                    ps2kit::disc::DiscKind::Ps2 => format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo: {r} master")).unwrap_or_else(|| "logo: unknown master".into())),
+                    ps2kit::disc::DiscKind::Ps1 => format!("{} — PlayStation disc {}, licence {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "???".into()), d.ps1_licence.as_ref().and_then(|l| l.region).map(|r| r.to_string()).unwrap_or_else(|| "unknown".into())),
+                    _ => format!("{} — not a PlayStation disc", path.file_name().unwrap_or_default().to_string_lossy()),
                 };
                 self.disc = Some(d);
                 self.disc_path = Some(path.to_path_buf());
@@ -290,9 +341,9 @@ impl Model {
         let fps = self.video.fps();
         self.sequence = BootSequence::new(self.video, self.power_on_seconds, self.disc_seconds, self.handoff_seconds, 6.0);
         self.timeline = match self.scene_kind {
-            SceneKind::Boot | SceneKind::Full => Timeline::boot((self.disc_seconds * fps) as usize, self.video),
-            SceneKind::Warning => Timeline::warning((self.warning_exit_seconds * fps) as usize, self.video),
-            SceneKind::Logo => self.logo_timeline(),
+            Scene::Boot | Scene::Full => Timeline::boot((self.disc_seconds * fps) as usize, self.video),
+            Scene::Warning => Timeline::warning((self.warning_exit_seconds * fps) as usize, self.video),
+            Scene::Logo => self.logo_timeline(),
         };
         if self.ps1_active() { self.sequence = self.sequence.clone().with_logo(self.logo_timeline()) }
         self.logo_version += 1;
@@ -300,17 +351,17 @@ impl Model {
     }
 
     fn arrange_audio(&self) {
-        if self.scene_kind == SceneKind::Full {
-            self.audio.arrange(SceneKind::Full, self.timeline.fps(), self.sequence.dive_frame(), self.sequence.logo_start(), self.sequence.opening_start(), self.ps1_active());
+        if self.scene_kind == Scene::Full {
+            self.audio.arrange(Scene::Full, self.timeline.fps(), self.sequence.dive_frame(), self.sequence.logo_start(), self.sequence.opening_start(), self.ps1_active());
         } else {
             self.audio.arrange(self.scene_kind, self.timeline.fps(), self.timeline.dive_frame, 0, 0, self.ps1_active());
         }
     }
 
-    pub fn set_scene(&mut self, kind: SceneKind) { self.scene_kind = kind; self.rebuild_timeline(); self.frame = self.start_frame() }
+    pub fn set_scene(&mut self, kind: Scene) { self.scene_kind = kind; self.rebuild_timeline(); self.frame = self.start_frame() }
 
-    pub fn start_frame(&self) -> f32 { if self.scene_kind == SceneKind::Full { 0.0 } else { -self.power_on_seconds * self.timeline.fps() } }
-    pub fn end_frame(&self) -> f32 { if self.scene_kind == SceneKind::Full { (self.sequence.total_frames() - 1) as f32 } else { self.timeline.end_frame() as f32 } }
+    pub fn start_frame(&self) -> f32 { if self.scene_kind == Scene::Full { 0.0 } else { -self.power_on_seconds * self.timeline.fps() } }
+    pub fn end_frame(&self) -> f32 { if self.scene_kind == Scene::Full { (self.sequence.total_frames() - 1) as f32 } else { self.timeline.end_frame() as f32 } }
 
     /// Advances the clock by `dt` seconds of wall time.
     pub fn tick(&mut self, dt: f64) {
@@ -333,7 +384,7 @@ impl Model {
     }
 
     pub fn camera(&self) -> CameraState {
-        if self.scene_kind == SceneKind::Full {
+        if self.scene_kind == Scene::Full {
             let (span, local) = self.sequence.span_at(self.frame.max(0.0) as usize);
             return if span.segment == Segment::Opening { self.sequence.opening.camera(local as f32) } else { CameraState::default() };
         }
@@ -341,22 +392,23 @@ impl Model {
     }
 
     pub fn current_segment(&self) -> Option<Segment> {
-        (self.scene_kind == SceneKind::Full).then(|| self.sequence.span_at(self.frame.max(0.0) as usize).0.segment)
+        (self.scene_kind == Scene::Full).then(|| self.sequence.span_at(self.frame.max(0.0) as usize).0.segment)
     }
 
-    pub fn boot_phase(&self) -> Option<&'static BootPhase> {
+    /// The caption of what the console is busy with while the screen is black, if it is.
+    pub fn boot_phase(&self) -> Option<&'static str> {
         let fps = self.timeline.fps();
-        if self.scene_kind == SceneKind::Full {
+        if self.scene_kind == Scene::Full {
             let (span, local) = self.sequence.span_at(self.frame.max(0.0) as usize);
             return match span.segment {
-                Segment::PowerOn => phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds),
-                Segment::Handoff => phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds),
-                Segment::End => Some(&END_PHASE),
+                Segment::PowerOn => phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds).map(phase_caption),
+                Segment::Handoff => phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds).map(phase_caption),
+                Segment::End => Some(END_CAPTION),
                 _ => None,
             };
         }
         if self.frame >= 0.0 { return None }
-        phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds)
+        phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds).map(phase_caption)
     }
 
     /// A PlayStation disc is loaded and the BIOS's PS1 shell could be read.
@@ -379,7 +431,8 @@ impl Model {
         self.audio.load_logo_chime(pcm);
     }
 
-    pub fn rom_region(&self) -> Option<char> { self.assets.as_ref().and_then(|a| a.rom_version.chars().nth(4)) }
+    /// The console's region from the fifth `ROMVER` character.
+    pub fn rom_region(&self) -> Option<Region> { self.assets.as_ref().and_then(|a| a.rom_version().chars().nth(4)).and_then(Region::from_romver_letter) }
     pub fn handoff_steps(&self) -> Vec<HandoffStep> { handoff_steps(self.disc.as_ref(), &self.history, self.video, self.rom_region(), self.ps1_shell.as_ref().map(|s| s.logo_bytes.as_slice())) }
     /// Whether this console's PS1 shell would accept the loaded PlayStation disc.
     pub fn ps1_verdict(&self) -> Option<ps2kit::disc::Ps1Verdict> {
@@ -409,9 +462,9 @@ impl Model {
     }
 
     pub fn camera_path_csv(&self) -> String {
-        let t = if self.scene_kind == SceneKind::Full { &self.sequence.opening } else { &self.timeline };
+        let t = if self.scene_kind == Scene::Full { &self.sequence.opening } else { &self.timeline };
         let mut out = String::from("frame,seconds,x,y,z,roll_rad,up_x,up_y,up_z,stage\n");
-        for (f, s) in t.states.iter().enumerate() {
+        for (f, s) in t.states().iter().enumerate() {
             let up = s.up();
             out += &format!("{f},{:.4},0,0,{:.5},{:.6},{:.6},{:.6},0,{}\n", f as f32 / t.fps(), s.z, s.roll, -up.x, -up.y, s.stage);
         }
@@ -419,4 +472,3 @@ impl Model {
     }
 }
 
-static END_PHASE: BootPhase = BootPhase { name: "SPU quit; LoadExecPS2(boot ELF) — the game would start here", seconds: 0.0 };

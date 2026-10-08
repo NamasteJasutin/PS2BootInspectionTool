@@ -1,27 +1,36 @@
 //! Finds the opening's data tables inside an OSD program by what they contain rather than
 //! by address, so that BIOS builds other than the one studied load without a per-version
-//! address list. Every search is validated; a miss names the table.
+//! address list. Every search is validated; a miss names the table. The layouts themselves
+//! are implementation details of [`bios`](crate::bios), [`logo`](crate::logo) and
+//! [`sound`](crate::sound); only [`ProgramImage`] is public.
 
 use crate::bytes::Bytes;
 use crate::rom::unpack;
-use crate::{Error, Result};
+use crate::{Error, Format, Result};
 
 /// A program image (an unpacked EE executable) with the address it is loaded at.
 #[derive(Clone)]
-pub struct Image {
-    /// The program bytes, as they would sit in memory from `base` on.
-    pub data: Vec<u8>,
-    /// Virtual address of `data[0]`.
-    pub base: usize,
+pub struct ProgramImage {
+    data: Vec<u8>,
+    base: usize,
 }
 
-impl std::fmt::Debug for Image {
+impl std::fmt::Debug for ProgramImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Image").field("base", &format_args!("{:#x}", self.base)).field("bytes", &self.data.len()).finish()
+        f.debug_struct("ProgramImage").field("base", &format_args!("{:#x}", self.base)).field("bytes", &self.data.len()).finish()
     }
 }
 
-impl Image {
+impl ProgramImage {
+    /// Wraps program bytes that would sit in memory from virtual address `base` on.
+    #[must_use]
+    pub fn new(data: Vec<u8>, base: usize) -> Self { Self { data, base } }
+    /// The program bytes.
+    #[must_use]
+    pub fn data(&self) -> &[u8] { &self.data }
+    /// Virtual address of `data()[0]`.
+    #[must_use]
+    pub fn base(&self) -> usize { self.base }
     /// Offset into `data` of virtual address `vaddr`, if it lies inside the image.
     #[must_use]
     pub fn at(&self, vaddr: usize) -> Option<usize> { vaddr.checked_sub(self.base).filter(|&o| o < self.data.len()) }
@@ -44,7 +53,7 @@ impl Image {
     /// PT_LOAD segment of a plain ELF. `compressed_base` is where the stub puts the payload.
     pub fn from_module(module: &[u8], compressed_base: usize) -> Result<Self> {
         if module.len() < 0x34 || &module[..4] != b"\x7fELF" {
-            return Err(Error::Corrupt("OSD module is not an ELF".into()));
+            return Err(Error::Corrupt(Format::Bios, "OSD module is not an ELF".into()));
         }
         for off in (0x80..module.len().min(0x8000)).step_by(16) {
             let size = module.u32(off) as usize;
@@ -68,24 +77,24 @@ impl Image {
             let (off, vaddr, filesz, memsz) = (module.u32(o + 4) as usize, module.u32(o + 8) as usize, module.u32(o + 16) as usize, module.u32(o + 20) as usize);
             let Some(segment) = module.get(off..off.saturating_add(filesz)) else { break };
             if memsz > 64 << 20 {
-                return Err(Error::Corrupt("implausible PT_LOAD memory size".into()));
+                return Err(Error::Corrupt(Format::Bios, "implausible PT_LOAD memory size".into()));
             }
             let mut data = segment.to_vec();
             data.resize(memsz.max(filesz), 0);
             return Ok(Self { data, base: vaddr });
         }
-        Err(Error::Corrupt("OSD module has neither an LZ stream nor a PT_LOAD segment".into()))
+        Err(Error::Corrupt(Format::Bios, "OSD module has neither an LZ stream nor a PT_LOAD segment".into()))
     }
 }
 
-fn missing(what: &str) -> Error { Error::Corrupt(format!("could not locate the {what} in this BIOS version")) }
+fn missing(what: &str) -> Error { Error::Corrupt(Format::Bios, format!("could not locate the {what} in this BIOS version")) }
 
-/// Offsets (into [`Image::data`]) of the opening's tables in an OSDSYS image.
+/// Offsets (into [`ProgramImage::data`]) of the opening's tables in an OSDSYS image, plus
+/// the asset names the texture descriptors refer to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct OsdLayout {
-    /// The asset table: 16-byte entries `{name*, addr, size, flags}`.
-    pub asset_names: usize,
+pub(crate) struct OsdLayout {
+    /// Asset names in table order (`None` for a null entry).
+    pub asset_names: Vec<Option<String>>,
     /// The texture descriptors, 0xF0 bytes each.
     pub texture_table: usize,
     /// How many descriptors the texture table holds.
@@ -107,16 +116,15 @@ pub struct OsdLayout {
 }
 
 impl OsdLayout {
-    /// Finds every table by content. Also returns the asset names in table order (`None`
-    /// for a null entry). A miss names the table in [`Error::Corrupt`].
-    pub fn discover(img: &Image) -> Result<(Self, Vec<Option<String>>)> {
+    /// Finds every table by content. A miss names the table in [`Error::Corrupt`].
+    pub fn discover(img: &ProgramImage) -> Result<Self> {
         let d = &img.data[..];
         // Asset table: 16-byte entries {name*, addr, size, flags}; entry 0 names "FONTM".
         let fontm = img.find(b"FONTM\0").ok_or_else(|| missing("asset name strings"))?;
         let ptr = ((img.base + fontm) as u32).to_le_bytes();
-        let asset_names = img.find_all(&ptr, 4).into_iter().find(|&i| d.u32(i + 16 + 4) != 0xFFFF_FFFF && img.contains(d.u32(i + 16) as usize)).ok_or_else(|| missing("asset table"))?;
+        let asset_table = img.find_all(&ptr, 4).into_iter().find(|&i| d.u32(i + 16 + 4) != 0xFFFF_FFFF && img.contains(d.u32(i + 16) as usize)).ok_or_else(|| missing("asset table"))?;
         let mut names: Vec<Option<String>> = Vec::new();
-        let mut p = asset_names;
+        let mut p = asset_table;
         while d.u32(p) != 0xFFFF_FFFF && names.len() < 256 {
             let s = d.u32(p) as usize;
             names.push(if s == 0 { None } else { img.at(s).map(|o| d.cstr(o, 16)) });
@@ -172,14 +180,13 @@ impl OsdLayout {
         if !plausible(cube_positions, 6.0) { return Err(missing("glass cube positions")) }
         let prism_positions = fill_table + 0x70;
         if !plausible(prism_positions, 15.0) { return Err(missing("warning-scene prism positions")) }
-        Ok((Self { asset_names, texture_table, texture_count, slot_table, fill_table, size_table, tower_positions, orb_colours, cube_positions, prism_positions }, names))
+        Ok(Self { asset_names: names, texture_table, texture_count, slot_table, fill_table, size_table, tower_positions, orb_colours, cube_positions, prism_positions })
     }
 }
 
 /// Virtual addresses (not offsets) of the tables inside a PS2LOGO image.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct LogoLayout {
+pub(crate) struct LogoLayout {
     /// `(NTSC, PAL)` object tables: 4 x `{keyframes*, count}`.
     pub shape_tables: (usize, usize),
     /// `(NTSC, PAL)` colour keyframe tables: 4 x `{keys*, count}`.
@@ -196,7 +203,7 @@ pub struct LogoLayout {
 
 impl LogoLayout {
     /// Finds every table by content. A miss names the table in [`Error::Corrupt`].
-    pub fn discover(img: &Image) -> Result<Self> {
+    pub fn discover(img: &ProgramImage) -> Result<Self> {
         let d = &img.data[..];
         let base = img.base;
         let pat = |vals: &[f32]| vals.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
@@ -232,7 +239,7 @@ impl LogoLayout {
 /// Offsets of the pitch and pan tables of the IOP sound driver (`rom0:OSDSND`), located by
 /// their entries around the unison step; `None` when the module does not contain them.
 #[must_use]
-pub fn driver_tables(module: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn driver_tables(module: &[u8]) -> Option<(usize, usize)> {
     let unison = (0..module.len().saturating_sub(6)).step_by(2).find(|&i| {
         let (a, b, c) = (module.u16(i), module.u16(i + 2), module.u16(i + 4));
         b == 0x1000 && (0xFEE..=0xFF3).contains(&a) && (0x100D..=0x1012).contains(&c)
@@ -240,4 +247,17 @@ pub fn driver_tables(module: &[u8]) -> Option<(usize, usize)> {
     let pitch = (unison + 2).checked_sub(208 * 2)?;
     let pan = module.windows(6).position(|w| w == [0x80, 0, 0x80, 8, 0x80, 0x10])?;
     Some((pitch, pan))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::driver_tables;
+
+    #[test]
+    fn unison_entry_before_the_table_start_is_rejected() {
+        // A driver module whose unison entry sits before where the pitch table would start.
+        let mut osdsnd = vec![0u8; 64];
+        for (i, v) in [0xFF0u16, 0x1000, 0x1010].iter().enumerate() { osdsnd[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes()) }
+        assert_eq!(driver_tables(&osdsnd), None);
+    }
 }

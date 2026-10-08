@@ -7,24 +7,31 @@
 
 use crate::bytes::Bytes;
 use crate::rom::{unpack, RomDir};
-use crate::sim::VideoMode;
 use crate::sound::{decode_adpcm, envelope, SAMPLE_RATE};
-use crate::{Error, Result};
+use crate::{Error, Format, Result, VideoMode};
 use std::path::Path;
 
 /// One flat triangle of a TMD (mode 0x20): a colour, one normal, three vertices.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Prim {
+    /// RGB, 0..=255.
     pub colour: [u8; 3],
+    /// Index into [`Tmd::normals`].
     pub normal: u16,
+    /// Indexes into [`Tmd::verts`], clockwise on screen.
     pub verts: [u16; 3],
 }
 
 /// A libgs TMD with one object, as the shell parses it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Tmd {
+    /// Model-space vertices.
     pub verts: Vec<[i16; 3]>,
+    /// Normals, 4.12 fixed point.
     pub normals: Vec<[i16; 3]>,
+    /// Flat triangles in file order.
     pub prims: Vec<Prim>,
 }
 
@@ -32,8 +39,10 @@ pub struct Tmd {
 pub const LOGO_TMD_BYTES: usize = 0x3278;
 
 impl Tmd {
+    /// Parses a TMD (one object, flat triangles of mode 0x20 or 0x30). Fails with
+    /// [`Error::Corrupt`] on any other layout.
     pub fn parse(d: &[u8]) -> Result<Self> {
-        let bad = |m: &str| Error::Corrupt(format!("TMD: {m}"));
+        let bad = |m: &str| Error::Corrupt(Format::Tmd, format!("TMD: {m}"));
         if d.len() < 0x28 || d.u32(0) != 0x41 {
             return Err(bad("no header"));
         }
@@ -72,39 +81,43 @@ impl Tmd {
     }
 
     /// The logo TMD a PlayStation disc carries in sectors 5–11.
-    pub fn from_disc(path: &Path) -> Result<Self> {
+    pub fn from_disc(path: impl AsRef<Path>) -> Result<Self> {
         let raw = crate::sectors::SectorReader::open(path)?.read(5, 7)?;
         if raw.len() < LOGO_TMD_BYTES {
-            return Err(Error::Corrupt("disc image is too short for the licence logo".into()));
+            return Err(Error::Corrupt(Format::DiscImage, "disc image is too short for the licence logo".into()));
         }
         Self::parse(&raw[..LOGO_TMD_BYTES])
     }
 }
 
 /// A 4-bit TIM with its CLUT, expanded to RGBA (15-bit colour 0 = transparent).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Tim {
+    /// Width in pixels.
     pub width: usize,
+    /// Height in pixels.
     pub height: usize,
+    /// `width * height * 4` bytes, row-major.
     pub rgba: Vec<u8>,
 }
 
 impl Tim {
     fn parse_4bit(d: &[u8]) -> Result<Self> {
         if d.len() < 0x14 || d.u32(0) != 0x10 || d.u32(4) != 8 {
-            return Err(Error::Corrupt("not a 4-bit TIM with CLUT".into()));
+            return Err(Error::Corrupt(Format::Bios, "not a 4-bit TIM with CLUT".into()));
         }
         let clut_len = d.u32(8) as usize;
         let (cw, ch) = (d.u16(0x10) as usize, d.u16(0x12) as usize);
         if cw * ch > 256 || clut_len > 8 + 512 {
-            return Err(Error::Corrupt("TIM CLUT is implausible".into()));
+            return Err(Error::Corrupt(Format::Bios, "TIM CLUT is implausible".into()));
         }
         let clut: Vec<u16> = (0..cw * ch).map(|i| d.u16(0x14 + i * 2)).collect();
         let ib = 8 + clut_len;
         let (iw, ih) = (d.u16(ib + 8) as usize, d.u16(ib + 10) as usize);
         let (width, height) = (iw * 4, ih);
         if width > 1024 || height > 1024 || width == 0 || height == 0 {
-            return Err(Error::Corrupt("TIM image size is implausible".into()));
+            return Err(Error::Corrupt(Format::Bios, "TIM image size is implausible".into()));
         }
         let data = ib + 12;
         let mut rgba = vec![0u8; width * height * 4];
@@ -131,6 +144,7 @@ pub struct Font {
     prop: Vec<(u16, u16)>,
 }
 
+/// Rows of the mask [`Font::render`] produces (15 glyph rows and one blank).
 pub const TEXT_ROW_HEIGHT: usize = 16;
 
 impl Font {
@@ -188,14 +202,18 @@ impl Font {
 }
 
 /// One entry of the shell's note table.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NoteEvent {
     /// NTSC fields from the first text frame (PAL: × 5/6).
     pub time: u32,
+    /// VAB program number.
     pub prog: u8,
+    /// MIDI note number.
     pub note: u8,
-    /// 0 = key off.
+    /// Velocity, 0..=127; 0 = key off.
     pub vel: u8,
+    /// Pan, 0..=127 (64 = centre).
     pub pan: u8,
 }
 
@@ -216,7 +234,8 @@ struct Program {
     tones: Vec<Tone>,
 }
 
-/// The shell's VAB: programs of two stereo tones over three ADPCM samples.
+/// The shell's VAB: programs of two stereo tones over three ADPCM samples. Read by
+/// [`Ps1Shell::load`] and played by [`Ps1Shell::render_sound`]; it has no public fields.
 #[derive(Debug, Clone)]
 pub struct Vab {
     programs: Vec<Program>,
@@ -228,7 +247,7 @@ pub struct Vab {
 impl Vab {
     fn parse(d: &[u8]) -> Result<Self> {
         if d.len() < 32 || &d[..4] != b"pBAV" {
-            return Err(Error::Bank("no pBAV header".into()));
+            return Err(Error::Corrupt(Format::SoundBank, "no pBAV header".into()));
         }
         let (n_prog, n_vag, master) = (d.u16(18) as usize, d.u16(22) as usize, d.u8(24));
         let prog_tab = 32;
@@ -236,7 +255,7 @@ impl Vab {
         let vag_tab = tone_tab + n_prog * 16 * 32;
         let body = vag_tab + 512;
         if body > d.len() || n_prog > 128 || n_vag > 254 {
-            return Err(Error::Bank("implausible VAB header".into()));
+            return Err(Error::Corrupt(Format::SoundBank, "implausible VAB header".into()));
         }
         let mut programs = Vec::new();
         for p in 0..n_prog {
@@ -252,7 +271,7 @@ impl Vab {
         let mut off = body;
         for v in 1..=n_vag {
             let size = d.u16(vag_tab + v * 2) as usize * 8;
-            if off + size > d.len() { return Err(Error::Bank("VAG past the end of the bank".into())) }
+            if off + size > d.len() { return Err(Error::Corrupt(Format::SoundBank, "VAG past the end of the bank".into())) }
             samples.push(decode_adpcm(&d[off..off + size], 0));
             off += size;
         }
@@ -262,21 +281,31 @@ impl Vab {
 
 /// Everything the licence screen needs from `rom0:LOGO` and `rom0:KROM`, located by content.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Ps1Shell {
     /// The shell's own copy of the logo, compared byte for byte with the disc's.
     pub logo: Tmd,
+    /// The [`LOGO_TMD_BYTES`] bytes of that copy, as the comparison sees them.
     pub logo_bytes: Vec<u8>,
+    /// The 200x40 "PlayStation" wordmark.
     pub wordmark: Tim,
+    /// The 20x8 TM mark.
     pub tm: Tim,
+    /// The kernel font with the shell's proportional widths.
     pub font: Font,
     /// Light directions, 4.12, one row per light.
     pub light_dirs: [[i16; 3]; 3],
     /// Light colours, rows R, G, B, columns light 1..3, 4.12.
     pub light_colours: [[i16; 3]; 3],
+    /// The logo's rotation matrix, 4.12.
     pub rotation: [[i16; 3]; 3],
+    /// The logo's translation (model units; z is the viewing distance).
     pub translation: [i32; 3],
+    /// The note table, in time order.
     pub events: Vec<NoteEvent>,
+    /// The shell's sound bank.
     pub bank: Vab,
+    /// The 14-character `ROMVER` string of the BIOS the shell came from.
     pub rom_version: String,
 }
 
@@ -290,12 +319,14 @@ fn mat3(d: &[u8], o: usize) -> [[i16; 3]; 3] {
 }
 
 impl Ps1Shell {
+    /// Unpacks `rom0:LOGO` from a BIOS dump and locates its tables; also reads `rom0:KROM`
+    /// and `rom0:ROMVER`. Fails with [`Error::Corrupt`] naming the first table not found.
     pub fn load(rom: &RomDir) -> Result<Self> {
         let module = rom.module("LOGO")?;
         // {load address, size}, a 0x44-byte copy loader, then the LZ stream.
-        let image = unpack(module, 0x54).map_err(|_| Error::Corrupt("rom0:LOGO: no LZ stream at the expected offset".into()))?;
+        let image = unpack(module, 0x54).map_err(|_| Error::Corrupt(Format::Bios, "rom0:LOGO: no LZ stream at the expected offset".into()))?;
         let d = &image[..];
-        let miss = |what: &str| Error::Corrupt(format!("rom0:LOGO: {what} not found"));
+        let miss = |what: &str| Error::Corrupt(Format::Bios, format!("rom0:LOGO: {what} not found"));
 
         let t = find(d, &[0x41, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], 0).ok_or_else(|| miss("logo TMD"))?;
         let logo_bytes = d.get(t..t + LOGO_TMD_BYTES).ok_or_else(|| miss("logo TMD"))?.to_vec();
@@ -314,7 +345,7 @@ impl Ps1Shell {
         let pp = find(d, &[0, 0, 16, 0, 2, 0, 8, 0, 0, 0, 16, 0], 0).ok_or_else(|| miss("font width table"))?;
         let prop = (0..=0xD1 - 0x93).map(|i| (d.u16(pp + i * 4), d.u16(pp + i * 4 + 2))).collect();
         let krom = rom.module("KROM")?;
-        if krom.len() < 0xD2 * 30 { return Err(Error::Corrupt("rom0:KROM is too short".into())) }
+        if krom.len() < 0xD2 * 30 { return Err(Error::Corrupt(Format::Bios, "rom0:KROM is too short".into())) }
         let font = Font { glyphs: krom.to_vec(), prop };
 
         let mut ld = Vec::new();
@@ -358,21 +389,30 @@ impl Ps1Shell {
 }
 
 /// Fields of each phase of the licence screen.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LicenceTimeline {
+    /// The video mode, which scales the note table's times.
     pub video: VideoMode,
 }
 
 impl LicenceTimeline {
+    /// Fields of the logo fade (the GTE depth cue), before the text appears.
     pub const FADE_FIELDS: usize = 31;
+    /// Fields over which the wordmark ramps up while the text is shown.
     pub const TEXT_FIELDS: usize = 30;
+    /// The timeline for a video mode.
+    #[must_use]
     pub fn new(video: VideoMode) -> Self { Self { video } }
     /// Ticks after the text phase until the note table's terminator (NTSC 51, PAL 42 ticks in
     /// all, so 22 / 13 more), plus the final VSync.
+    #[must_use]
     pub fn tail_fields(&self, events_end: u32) -> usize {
         let last = if self.video == VideoMode::Pal { events_end * 5 / 6 } else { events_end };
         (last as usize + 1).saturating_sub(Self::TEXT_FIELDS) + 1
     }
+    /// Fields from the first logo frame until the shell's last note-table tick: the fade,
+    /// the text phase and the tail (83 NTSC, 74 PAL for the studied shell).
+    #[must_use]
     pub fn total_fields(&self, shell: &Ps1Shell) -> usize {
         let end = shell.events.iter().map(|e| e.time).max().unwrap_or(0) + 1;
         Self::FADE_FIELDS + Self::TEXT_FIELDS + self.tail_fields(end)
@@ -384,17 +424,22 @@ impl LicenceTimeline {
 }
 
 /// A triangle projected the way the shell's GTE path does: screen position (640×480 frame),
-/// depth, lit colour before depth cueing, and the depth used for cueing.
-#[derive(Debug, Clone, Copy)]
+/// depth, and the lit colour with the depth cue applied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ScreenTri {
+    /// Screen positions of the three corners in the 640x480 frame.
     pub xy: [[f32; 2]; 3],
+    /// Mean depth, used for sorting and the depth cue.
     pub sz: f32,
+    /// RGB, 0..=1.
     pub colour: [f32; 3],
 }
 
 impl Ps1Shell {
-    /// Projects and lights the logo for one field of the fade (0..=30): flat triangles,
-    /// back faces dropped, sorted far to near, with the depth cue applied.
+    /// Projects and lights the logo for one field of the fade (`field` is clamped to 30):
+    /// flat triangles, back faces dropped, sorted far to near, with the depth cue applied.
+    #[must_use]
     pub fn project(&self, tmd: &Tmd, field: usize) -> Vec<ScreenTri> {
         let a = LicenceTimeline::fog_near(field) as f32;
         let r = &self.rotation;
@@ -432,8 +477,9 @@ impl Ps1Shell {
         out
     }
 
-    /// Where the text pieces go: (x of line 1, y), (x of line 2, y), and whether the
-    /// GetID letters are shown — from the licence line's length as the shell switches on it.
+    /// Where the text pieces go: `((x of line 1, y), (x of line 2, y))` in the 640x480 frame,
+    /// from the licence line's length as the shell switches on it.
+    #[must_use]
     pub fn text_layout(licence_len: usize) -> ((f32, f32), (f32, f32)) {
         let x2 = match licence_len { 64 => 154.0, 67 => 128.0, _ => 118.0 };
         ((221.0, 336.0), (x2, 356.0))
@@ -441,6 +487,7 @@ impl Ps1Shell {
 
     /// The licence screen's sound: the two drone notes under the fade, then the note table
     /// from the first text frame, as 48 kHz interleaved stereo starting at field 0.
+    #[must_use]
     pub fn render_sound(&self, video: VideoMode) -> Vec<f32> {
         let fps = video.fps() as f64;
         let fields_to_samples = |f: f64| (f / fps * SAMPLE_RATE as f64) as usize;

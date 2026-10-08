@@ -85,10 +85,10 @@ impl Renderer {
         let near_objects = scripted.z < 73.0;
         if options.orbs && near_objects {
             let start = verts.len();
-            self.orbs(&mut verts, frame, options.orb_seed, &assets.orb_colours, &camera);
+            self.orbs(&mut verts, frame, options.orb_seed, assets.orb_colours(), &camera);
             if verts.len() > start { batches.push(Batch::new("TEXOCRBL", Blend::AddSrcAlpha, start..verts.len())) }
             let start = verts.len();
-            self.orb_trails(&mut verts, frame, options.orb_seed, &assets.orb_colours, &camera_at);
+            self.orb_trails(&mut verts, frame, options.orb_seed, assets.orb_colours(), &camera_at);
             if verts.len() > start { batches.push(Batch::new("white", Blend::AddSrcAlpha, start..verts.len())) }
         }
         self.pass(enc, "scene", true, DepthAction::Load, |r, rp| r.draw(rp, &verts, &batches, rgba8, true));
@@ -98,7 +98,7 @@ impl Renderer {
             self.blit(enc, "scene", "copy");
             for front in [false, true] {
                 let mut gv = Vec::new();
-                for (i, p) in assets.cube_positions.iter().enumerate() {
+                for (i, p) in assets.cube_positions().iter().enumerate() {
                     let params = GlassParams { half: 1.8, tint: Vec3::new(112.0, 112.0, 152.0) / 128.0, reflect_tint: Vec3::ONE, refraction: 1.0, reflection: (0.25, 0.5) };
                     self.glass_cube(&mut gv, Vec3::new(p.x * 3.5, p.y * 3.5, p.z * -15.0 + 150.0), motion::cube_rotation(i, frame), &params, &camera, front);
                 }
@@ -138,7 +138,7 @@ impl Renderer {
         if options.lettering {
             let a = motion::lettering_alpha(frame - timeline.frame_passing(18.0) as f32);
             if a > 0.0 {
-                let pal = self.video == ps2kit::sim::VideoMode::Pal;
+                let pal = self.video == ps2kit::VideoMode::Pal;
                 let (y, h) = if pal { (120.0, 18.0) } else { (105.0, 16.0) };
                 let start = verts.len();
                 let c = Vec4::new(1.0, 1.0, 1.0, a);
@@ -292,11 +292,12 @@ impl Renderer {
         let travelled = Vec4::new(1.0, 0.82, 0.25, 0.95);
         let ahead = Vec4::new(1.0, 0.82, 0.25, 0.35);
         let now = frame as usize;
+        let states = timeline.states();
         for f in 0..timeline.end_frame() {
-            self.line(out, timeline.states[f].position(), timeline.states[f + 1].position(), if f < now { travelled } else { ahead }, 3.0, camera);
+            self.line(out, states[f].position(), states[f + 1].position(), if f < now { travelled } else { ahead }, 3.0, camera);
         }
         for f in (0..=timeline.end_frame()).step_by(10) {
-            let cam = ViewCamera::scripted(timeline.states[f], video);
+            let cam = ViewCamera::scripted(states[f], video);
             let (bx, by, _) = cam.basis();
             let second = f % 60 == 0;
             let colour = Vec4::new(1.0, 1.0, 1.0, if f <= now { 0.9 } else { 0.35 });
@@ -309,7 +310,7 @@ impl Renderer {
             (timeline.end_frame(), Vec3::new(1.0, 0.25, 0.25)),
         ];
         for (f, rgb) in gates {
-            let cam = ViewCamera::scripted(timeline.states[f.min(timeline.end_frame())], video);
+            let cam = ViewCamera::scripted(states[f.min(timeline.end_frame())], video);
             let (bx, by, _) = cam.basis();
             let r = 3.0;
             let c = [cam.position - bx * r - by * r, cam.position + bx * r - by * r, cam.position + bx * r + by * r, cam.position - bx * r + by * r];

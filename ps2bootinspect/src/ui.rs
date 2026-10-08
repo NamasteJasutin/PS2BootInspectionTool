@@ -1,12 +1,13 @@
 //! The egui application: sidebar, the picture with camera input, visualiser, hand-off card.
 
 use crate::audio::{VisualizerMode, BAND_COUNT};
-use crate::model::{HistorySource, Model, LANGUAGES};
+use crate::model::{video_mode_name, HistorySource, Model, Scene, LANGUAGES};
 use crate::renderer::Renderer;
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use glam::Vec3;
-use ps2kit::sim::{SceneKind, Segment, VideoMode};
+use ps2kit::sim::Segment;
+use ps2kit::VideoMode;
 use std::time::Instant;
 
 pub struct App {
@@ -48,7 +49,7 @@ impl App {
         let free = m.free_camera_enabled.then(|| m.free_camera.view(m.video));
         let warning_tex = format!("TEXOPNG{}", m.language);
         match m.scene_kind {
-            SceneKind::Full => {
+            Scene::Full => {
                 let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
                 match span.segment {
                     Segment::Opening => self.renderer.render_opening(&mut enc, local as f32 + m.frame.fract(), &m.scene, assets, &m.sequence.opening, free, &m.options),
@@ -58,9 +59,9 @@ impl App {
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
             }
-            SceneKind::Boot => self.renderer.render_opening(&mut enc, m.frame, &m.scene, assets, &m.timeline, free, &m.options),
-            SceneKind::Warning => self.renderer.render_warning(&mut enc, m.frame, assets, &m.timeline, free, &m.options, &warning_tex),
-            SceneKind::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
+            Scene::Boot => self.renderer.render_opening(&mut enc, m.frame, &m.scene, assets, &m.timeline, free, &m.options),
+            Scene::Warning => self.renderer.render_warning(&mut enc, m.frame, assets, &m.timeline, free, &m.options, &warning_tex),
+            Scene::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
                 self.renderer.render_ps1_licence(&mut enc, m.frame, shell, logo, layout, m.video, &m.options)
             } else if let Some(anim) = m.logo_animation() { if m.frame >= 0.0 { self.renderer.render_logo(&mut enc, m.frame, &anim, &m.options) } else { self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) } }
         }
@@ -132,7 +133,7 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     // Status line and boot-phase readout.
     let c = m.camera();
     let fps = m.timeline.fps();
-    let status = if m.scene_kind == SceneKind::Full {
+    let status = if m.scene_kind == Scene::Full {
         let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
         let name = match span.segment { Segment::PowerOn => "power-on", Segment::Opening => "ONE: BIOS opening", Segment::Handoff => "hand-off", Segment::Logo => if m.ps1_active() { "TWO: PS1 licence screen" } else { "TWO: disc logo" }, Segment::End => "end" };
         format!("{name}  {:5.2} s  (segment frame {local})  camera z {:6.1}  roll {:+.2}   cpu {:4.1} ms", m.frame / fps, c.z, c.roll, m.cpu_ms)
@@ -145,7 +146,7 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     let mono = egui::FontId::monospace(12.0);
     painter.text(avail.min + Vec2::new(10.0, 8.0), egui::Align2::LEFT_TOP, status, mono.clone(), Color32::from_white_alpha(180));
     if let Some(phase) = m.boot_phase() {
-        painter.text(avail.min + Vec2::new(10.0, 26.0), egui::Align2::LEFT_TOP, format!("booting: {}", phase.name), mono.clone(), Color32::from_rgb(230, 210, 80));
+        painter.text(avail.min + Vec2::new(10.0, 26.0), egui::Align2::LEFT_TOP, format!("booting: {phase}"), mono.clone(), Color32::from_rgb(230, 210, 80));
     }
     if m.assets.is_none() {
         painter.text(avail.center(), egui::Align2::CENTER_CENTER, "Open your PS2 BIOS dump to begin.\nNothing from the BIOS is bundled with this app.", egui::FontId::proportional(16.0), Color32::GRAY);
@@ -204,8 +205,8 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
         painter.text(Pos2::new(card.min.x + 16.0, y), egui::Align2::LEFT_TOP, "End of the boot sequence — what the console would do now", egui::FontId::proportional(16.0), Color32::WHITE);
         y += 28.0;
         for s in m.handoff_steps() {
-            painter.text(Pos2::new(card.min.x + 236.0, y), egui::Align2::RIGHT_TOP, &s.who, egui::FontId::monospace(11.0), Color32::from_white_alpha(230));
-            let galley = painter.layout(s.what.clone(), egui::FontId::monospace(11.0), Color32::WHITE, card.width() - 270.0);
+            painter.text(Pos2::new(card.min.x + 236.0, y), egui::Align2::RIGHT_TOP, s.who(), egui::FontId::monospace(11.0), Color32::from_white_alpha(230));
+            let galley = painter.layout(s.to_string(), egui::FontId::monospace(11.0), Color32::WHITE, card.width() - 270.0);
             let h = galley.size().y;
             painter.galley(Pos2::new(card.min.x + 246.0, y), galley, Color32::WHITE);
             y += h + 6.0;
@@ -266,27 +267,27 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         let before = m.scene_kind;
         let mut kind = m.scene_kind;
         egui::ComboBox::from_id_salt("scene").selected_text(kind.name()).show_ui(ui, |ui| {
-            for s in SceneKind::ALL { ui.selectable_value(&mut kind, s, s.name()); }
+            for s in Scene::ALL { ui.selectable_value(&mut kind, s, s.name()); }
         });
         if kind != before { m.set_scene(kind) }
         let mut rebuild = false;
         match m.scene_kind {
-            SceneKind::Full => {
+            Scene::Full => {
                 ui.small("Phase ONE (BIOS): power-on, the opening. Phase TWO (disc): hand-off to rom0:PS2LOGO, the logo, then the point where the game's ELF would start. The console is never asked to run the game.");
                 rebuild |= ui.add(egui::Slider::new(&mut m.handoff_seconds, 0.2..=4.0).text("hand-off to PS2LOGO (s)")).changed();
             }
-            SceneKind::Logo => { ui.small(if m.ps1_active() { "A PlayStation disc: the licence screen the PS1 shell inside the BIOS (rom0:LOGO) draws — the logo model from the disc's sectors 5–11, the text from the licence sector, the font from rom0:KROM, the chime from the shell's sound bank." } else { "What a licensed disc shows before its game starts: the lettering comes from the disc's first 12 sectors, the animation from rom0:PS2LOGO." }); }
-            SceneKind::Warning => {
+            Scene::Logo => { ui.small(if m.ps1_active() { "A PlayStation disc: the licence screen the PS1 shell inside the BIOS (rom0:LOGO) draws — the logo model from the disc's sectors 5–11, the text from the licence sector, the font from rom0:KROM, the chime from the shell's sound bank." } else { "What a licensed disc shows before its game starts: the lettering comes from the disc's first 12 sectors, the animation from rom0:PS2LOGO." }); }
+            Scene::Warning => {
                 egui::ComboBox::from_id_salt("lang").selected_text(LANGUAGES.iter().find(|l| l.0 == m.language).map(|l| l.1).unwrap_or("")).show_ui(ui, |ui| {
                     for (code, name) in LANGUAGES { ui.selectable_value(&mut m.language, code, name); }
                 });
                 rebuild |= ui.add(egui::Slider::new(&mut m.warning_exit_seconds, 3.0..=60.0).text("drive reports a change after (s)")).changed();
             }
-            SceneKind::Boot => {}
+            Scene::Boot => {}
         }
         ui.horizontal(|ui| {
             for v in [VideoMode::Ntsc, VideoMode::Pal] {
-                if ui.selectable_label(m.video == v, v.name()).clicked() && m.video != v { m.video = v; rebuild = true }
+                if ui.selectable_label(m.video == v, video_mode_name(v)).clicked() && m.video != v { m.video = v; rebuild = true }
             }
         });
         if rebuild { m.rebuild_timeline() }
@@ -302,7 +303,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         ui.add(egui::Slider::new(&mut m.speed, 0.05..=2.0).text("speed").logarithmic(true));
         let mut rebuild = false;
         rebuild |= ui.add(egui::Slider::new(&mut m.power_on_seconds, 0.0..=6.0).text("power-on black (s)")).changed();
-        if matches!(m.scene_kind, SceneKind::Boot | SceneKind::Full) {
+        if matches!(m.scene_kind, Scene::Boot | Scene::Full) {
             rebuild |= ui.add(egui::Slider::new(&mut m.disc_seconds, 0.0..=10.5).text("disc identified after (s)")).changed();
         }
         if rebuild { m.rebuild_timeline() }
@@ -326,7 +327,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Disc", |ui| {
         if let Some(d) = &m.disc {
             ui.small(format!("Volume: {} ({} sectors, {} MiB, {})", d.volume_id, d.sector_count, d.byte_size() >> 20, if d.is_dvd() { "DVD" } else { "CD" }));
-            let kind = match d.kind { ps2kit::disc::DiscKind::Ps2 => "PlayStation 2 disc", ps2kit::disc::DiscKind::Ps1 => "PlayStation disc", ps2kit::disc::DiscKind::Unknown => "not a PlayStation disc" };
+            let kind = match d.kind { ps2kit::disc::DiscKind::Ps2 => "PlayStation 2 disc", ps2kit::disc::DiscKind::Ps1 => "PlayStation disc", _ => "not a PlayStation disc" };
             ui.small(format!("{kind}   Title ID: {}   register 0x{:02X} → state 0x{:02X}", d.title_id().unwrap_or_else(|| "—".into()), d.disc_type_register(), d.disc_state_code()));
             if !d.system_cnf_text.trim().is_empty() { ui.monospace(d.system_cnf_text.trim()); }
             if let Some(b) = &d.boot_elf {
@@ -336,7 +337,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
                 ui.small(format!("PS-X EXE: {} — LBA {}, {} bytes, text 0x{:08X} ({} bytes), PC 0x{:08X}", b.file_name, b.lba, b.size, b.text_addr, b.text_size, b.initial_pc));
             }
             match d.kind {
-                ps2kit::disc::DiscKind::Ps2 => { ui.small(d.logo_region.map(|r| format!("Logo sectors: {} master (checked by J/H and E consoles only)", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())); }
+                ps2kit::disc::DiscKind::Ps2 => { ui.small(d.logo_region.map(|r| format!("Logo sectors: {r} master (checked by J/H and E consoles only)")).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())); }
                 ps2kit::disc::DiscKind::Ps1 => {
                     ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" ({} chars) — logo data {}", l.text, l.line.len(), if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into()));
                     ui.small(match m.ps1_verdict() {
@@ -344,13 +345,13 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
                         Some(ps2kit::disc::Ps1Verdict::Accepted) => "This console's PS1 shell accepts the licence line and the logo.",
                         Some(ps2kit::disc::Ps1Verdict::TextMismatch) => "This console's PS1 shell would not accept the licence line (black screen, endless re-read). Shown anyway.",
                         Some(ps2kit::disc::Ps1Verdict::LogoMismatch) => "The logo differs from the shell's copy: the console would hang. Shown anyway.",
-                        None => "Licence check: unknown.",
+                        _ => "Licence check: unknown.",
                     });
                 }
-                ps2kit::disc::DiscKind::Unknown => { ui.small("No SYSTEM.CNF and no licence sector."); }
+                _ => { ui.small("No SYSTEM.CNF and no licence sector."); }
             }
             ui.collapsing("What the console would do next", |ui| {
-                for s in m.handoff_steps() { ui.small(format!("{}  {}", s.who, s.what)); }
+                for s in m.handoff_steps() { ui.small(format!("{}  {s}", s.who())); }
             });
         } else {
             ui.small("Open a game disc image (.iso) to see what the console would load.");
@@ -364,7 +365,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     });
     section(ui, "Layers", |ui| {
         let o = &mut m.options;
-        if m.scene_kind == SceneKind::Logo {
+        if m.scene_kind == Scene::Logo {
             ui.checkbox(&mut o.towers, "Logo bitmap");
             ui.checkbox(&mut o.defocus, "Progressive logo blur");
             ui.checkbox(&mut o.orbs, "Outline and ribbon trails");

@@ -2,9 +2,10 @@
 //! `rom0:OSDSYS`, located per ROM version.
 
 use crate::bytes::Bytes;
-use crate::locate::{Image, OsdLayout};
+use crate::history::RECORD_COUNT;
+use crate::locate::{OsdLayout, ProgramImage};
 use crate::rom::{unpack, RomDir};
-use crate::{Error, Result};
+use crate::{Error, Format, Result};
 use glam::Vec3;
 use std::collections::HashMap;
 
@@ -31,63 +32,103 @@ const COMPRESSED_BASE: usize = 0x200000;
 pub const COLUMNS: usize = 14;
 /// Rows of the tower grid.
 pub const ROWS: usize = 9;
+/// Towers a history record owns.
+pub const SLOTS_PER_RECORD: usize = 6;
+/// Steps of the growing tower's fill and size tables.
+pub const GROWTH_STEPS: usize = 14;
+
+/// A cell of the tower grid: `column < COLUMNS`, `row < ROWS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Slot {
+    /// Column, 0..14.
+    pub column: usize,
+    /// Row, 0..9.
+    pub row: usize,
+}
 
 /// The opening's data tables and textures, read from `rom0:OSDSYS` and `rom0:TEXIMAGE`.
+/// The tables have the sizes the OSD program assumes, so the accessors never fail for an
+/// index in range.
 #[derive(Clone)]
-#[non_exhaustive]
 pub struct OpeningAssets {
-    /// The 14-character `ROMVER` string (`0200EC20040614`).
-    pub rom_version: String,
-    /// `slots[record][k]` = (column, row) of the k-th tower owned by a history record.
-    pub slots: Vec<[(usize, usize); 6]>,
-    /// Indexed by launch-count step: how solid / how long the growing tower is.
-    pub fill: Vec<f32>,
-    /// Indexed by launch-count step: length factor of the growing tower.
-    pub size: Vec<f32>,
-    /// Model-space base position per slot, `[column][row]`.
-    pub tower_positions: Vec<Vec<Vec3>>,
-    /// Colours of the four light orbs, 0..=255 per channel.
-    pub orb_colours: Vec<Vec3>,
-    /// Model-space positions of the five glass cubes of the boot scene.
-    pub cube_positions: Vec<Vec3>,
-    /// Glass prisms of the warning scene (model units; z maps as (z - 2.5) * 128 + 788).
-    pub prism_positions: Vec<Vec3>,
-    /// Every texture the opening draws, by asset name.
-    pub textures: HashMap<String, Texture>,
+    rom_version: String,
+    slots: Box<[[Slot; SLOTS_PER_RECORD]; RECORD_COUNT]>,
+    fill: [f32; GROWTH_STEPS],
+    size: [f32; GROWTH_STEPS],
+    tower_positions: Box<[[Vec3; ROWS]; COLUMNS]>,
+    orb_colours: [Vec3; 4],
+    cube_positions: [Vec3; 5],
+    prism_positions: [Vec3; 5],
+    textures: HashMap<String, Texture>,
 }
 
 impl std::fmt::Debug for OpeningAssets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut names: Vec<&String> = self.textures.keys().collect();
         names.sort();
-        f.debug_struct("OpeningAssets").field("rom_version", &self.rom_version).field("slots", &self.slots.len()).field("textures", &names).finish_non_exhaustive()
+        f.debug_struct("OpeningAssets").field("rom_version", &self.rom_version).field("textures", &names).finish_non_exhaustive()
     }
 }
 
 impl OpeningAssets {
+    /// The 14-character `ROMVER` string (`0200EC20040614`); its fifth character is the
+    /// region letter ([`Region::from_romver_letter`](crate::Region::from_romver_letter)).
+    #[must_use]
+    pub fn rom_version(&self) -> &str { &self.rom_version }
+    /// `slots()[record][k]` is the grid cell of the k-th tower owned by history record `record`.
+    #[must_use]
+    pub fn slots(&self) -> &[[Slot; SLOTS_PER_RECORD]; RECORD_COUNT] { &self.slots }
+    /// `(fill, size)` of the growing tower at launch-count `step` (0..14): how solid and how
+    /// long it is, 0..=1 each. `None` past the last step.
+    #[must_use]
+    pub fn growth(&self, step: usize) -> Option<(f32, f32)> { Some((*self.fill.get(step)?, *self.size.get(step)?)) }
+    /// Model-space base position of a grid cell; `None` outside the 14 x 9 grid.
+    #[must_use]
+    pub fn tower_position(&self, column: usize, row: usize) -> Option<Vec3> { self.tower_positions.get(column)?.get(row).copied() }
+    /// Colours of the four light orbs, 0..=255 per channel.
+    #[must_use]
+    pub fn orb_colours(&self) -> &[Vec3; 4] { &self.orb_colours }
+    /// Model-space positions of the five glass cubes of the boot scene.
+    #[must_use]
+    pub fn cube_positions(&self) -> &[Vec3; 5] { &self.cube_positions }
+    /// Glass prisms of the warning scene (model units; z maps as (z - 2.5) * 128 + 788).
+    #[must_use]
+    pub fn prism_positions(&self) -> &[Vec3; 5] { &self.prism_positions }
+    /// The texture called `name` (`TEXOWAL0`), if the ROM has it.
+    #[must_use]
+    pub fn texture(&self, name: &str) -> Option<&Texture> { self.textures.get(name) }
+    /// Every texture the opening draws, in no particular order.
+    pub fn textures(&self) -> impl Iterator<Item = &Texture> { self.textures.values() }
+
     /// Locates and decodes everything from a BIOS dump. Fails with
     /// [`Error::UnsupportedVersion`] when a table cannot be found in this ROM.
     pub fn load(bios: &RomDir) -> Result<Self> {
         let version = bios.module("ROMVER")?.cstr(0, 14);
-        let img = Image::from_module(bios.module("OSDSYS")?, COMPRESSED_BASE)?;
-        let (lay, names) = OsdLayout::discover(&img).map_err(|e| Error::UnsupportedVersion(format!("{version}: {e}")))?;
-        let osd = &img.data[..];
+        let img = ProgramImage::from_module(bios.module("OSDSYS")?, COMPRESSED_BASE)?;
+        let lay = OsdLayout::discover(&img).map_err(|e| Error::UnsupportedVersion(format!("{version}: {e}")))?;
+        let names = &lay.asset_names;
+        let osd = img.data();
         let v3 = |o: usize| Vec3::new(osd.f32(o), osd.f32(o + 4), osd.f32(o + 8));
 
-        let slots = (0..crate::history::RECORD_COUNT).map(|i| {
-            let mut s = [(0usize, 0usize); 6];
-            for (k, slot) in s.iter_mut().enumerate() {
+        let mut slots = Box::new([[Slot { column: 0, row: 0 }; SLOTS_PER_RECORD]; RECORD_COUNT]);
+        for (i, record) in slots.iter_mut().enumerate() {
+            for (k, slot) in record.iter_mut().enumerate() {
                 let o = lay.slot_table + i * 0x30 + k * 8;
-                *slot = (osd.i32(o) as usize, osd.i32(o + 4) as usize);
+                // The layout search accepted this table only with every pair inside the grid.
+                *slot = Slot { column: osd.i32(o) as usize, row: osd.i32(o + 4) as usize };
             }
-            s
-        }).collect();
-        let fill = img.f32s(lay.fill_table, 14);
-        let size = img.f32s(lay.size_table, 14);
-        let tower_positions = (0..COLUMNS).map(|c| (0..ROWS).map(|r| v3(lay.tower_positions + c * 0x90 + r * 16)).collect()).collect();
-        let orb_colours = (0..4).map(|i| v3(lay.orb_colours + i * 16)).collect();
-        let cube_positions = (0..5).map(|i| v3(lay.cube_positions + i * 16)).collect();
-        let prism_positions = (0..5).map(|i| v3(lay.prism_positions + i * 16)).collect();
+        }
+        let mut fill = [0f32; GROWTH_STEPS];
+        let mut size = [0f32; GROWTH_STEPS];
+        fill.copy_from_slice(&img.f32s(lay.fill_table, GROWTH_STEPS));
+        size.copy_from_slice(&img.f32s(lay.size_table, GROWTH_STEPS));
+        let mut tower_positions = Box::new([[Vec3::ZERO; ROWS]; COLUMNS]);
+        for (c, column) in tower_positions.iter_mut().enumerate() {
+            for (r, p) in column.iter_mut().enumerate() { *p = v3(lay.tower_positions + c * 0x90 + r * 16) }
+        }
+        let orb_colours = std::array::from_fn(|i| v3(lay.orb_colours + i * 16));
+        let cube_positions = std::array::from_fn(|i| v3(lay.cube_positions + i * 16));
+        let prism_positions = std::array::from_fn(|i| v3(lay.prism_positions + i * 16));
 
         let archive = RomDir::new(bios.module("TEXIMAGE")?.to_vec())?;
         let mut textures = HashMap::new();
@@ -100,7 +141,7 @@ impl OpeningAssets {
             let Ok(packed) = archive.module(name) else { continue };
             let raw = unpack(packed, 0)?;
             let palette = match img.at(clut).filter(|_| clut != 0) {
-                Some(o) => Some(osd.get(o..o + 64).ok_or_else(|| Error::Corrupt(format!("palette of {name} is truncated")))?.to_vec()),
+                Some(o) => Some(osd.get(o..o + 64).ok_or_else(|| Error::Corrupt(Format::Bios, format!("palette of {name} is truncated")))?.to_vec()),
                 None => None,
             };
             let rgba = decode_texture(&raw[skip.min(raw.len())..], w, h, format, palette.as_deref())?;
@@ -115,10 +156,10 @@ impl OpeningAssets {
 /// through a 16-entry RGBA `palette`. PS2 alpha (0x80 = opaque) is rescaled to 255.
 pub fn decode_texture(src: &[u8], w: usize, h: usize, format: i32, palette: Option<&[u8]>) -> Result<Vec<u8>> {
     if w > 4096 || h > 4096 {
-        return Err(Error::Corrupt(format!("implausible texture size {w}x{h}")));
+        return Err(Error::Corrupt(Format::Bios, format!("implausible texture size {w}x{h}")));
     }
     let mut out = vec![0u8; w * h * 4];
-    let need = |n: usize| if src.len() < n { Err(Error::Corrupt("texture data too short".into())) } else { Ok(()) };
+    let need = |n: usize| if src.len() < n { Err(Error::Corrupt(Format::Bios, "texture data too short".into())) } else { Ok(()) };
     let scale_alpha = |a: u8| ((a as u32 * 2).min(255)) as u8;
     match format {
         0 => {
@@ -155,9 +196,9 @@ pub fn decode_texture(src: &[u8], w: usize, h: usize, format: i32, palette: Opti
         }
         0x14 => {
             need((w * h).div_ceil(2))?;
-            let pal = palette.ok_or_else(|| Error::Corrupt("palette missing".into()))?;
+            let pal = palette.ok_or_else(|| Error::Corrupt(Format::Bios, "palette missing".into()))?;
             if pal.len() < 64 {
-                return Err(Error::Corrupt("palette too short".into()));
+                return Err(Error::Corrupt(Format::Bios, "palette too short".into()));
             }
             for i in 0..w * h {
                 let idx = if i & 1 == 0 { src[i / 2] & 15 } else { src[i / 2] >> 4 } as usize;
@@ -165,7 +206,7 @@ pub fn decode_texture(src: &[u8], w: usize, h: usize, format: i32, palette: Opti
                 out[i * 4 + 3] = scale_alpha(pal[idx * 4 + 3]);
             }
         }
-        f => return Err(Error::Corrupt(format!("unknown texture format {f}"))),
+        f => return Err(Error::Corrupt(Format::Bios, format!("unknown texture format {f}"))),
     }
     Ok(out)
 }

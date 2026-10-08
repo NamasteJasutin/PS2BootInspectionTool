@@ -5,7 +5,8 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3, Vec4};
 use ps2kit::bios::OpeningAssets;
-use ps2kit::sim::{CameraState, VideoMode};
+use ps2kit::sim::CameraState;
+use ps2kit::VideoMode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -244,7 +245,7 @@ impl Renderer {
     }
 
     pub fn set_assets(&mut self, assets: &OpeningAssets) {
-        for t in assets.textures.values() {
+        for t in assets.textures() {
             self.upload_texture(&t.name, t.width, t.height, &t.rgba, t.mip_levels > 0);
         }
         self.assets_loaded = true;

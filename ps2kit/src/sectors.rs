@@ -2,7 +2,7 @@
 //! 2352-byte-sector BIN (MODE1 or MODE2/XA form 1, as CD rips usually are). A `.cue` is
 //! resolved to its BIN.
 
-use crate::{Error, Result};
+use crate::{Error, Format, Result};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -11,16 +11,14 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct SectorReader {
     file: File,
-    /// Bytes per sector in the file: 2048 (ISO) or 2352 (raw BIN).
-    pub sector_size: u64,
-    /// Offset of the 2048 data bytes within a raw sector: 16 (MODE1) or 24 (MODE2 form 1).
-    pub data_offset: u64,
+    sector_size: u64,
+    data_offset: u64,
 }
 
 impl SectorReader {
     /// Opens an `.iso`, `.bin`/`.img`, or a `.cue` (resolved to the BIN it names).
-    pub fn open(path: &Path) -> Result<Self> {
-        let path = Self::resolve_cue(path)?;
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = Self::resolve_cue(path.as_ref())?;
         let mut file = File::open(&path)?;
         let mut head = [0u8; 16];
         let n = file.read(&mut head)?;
@@ -56,11 +54,19 @@ impl SectorReader {
                 if let Some(b) = bins.iter().find(|b| lower(b) == format!("{stem}.bin") || lower(b) == format!("{stem}.img")) { return Ok(b.clone()) }
                 if let Some(b) = bins.iter().find(|b| { let n = lower(b); n.contains("track 01") || n.contains("track 1)") || n.contains("track01") }) { return Ok(b.clone()) }
                 if bins.len() == 1 { return Ok(bins.remove(0)) }
-                return Err(Error::Corrupt(format!("cue sheet names {name}, which is not next to it")));
+                return Err(Error::Corrupt(Format::DiscImage, format!("cue sheet names {name}, which is not next to it")));
             }
         }
-        Err(Error::Corrupt("cue sheet has no FILE line".into()))
+        Err(Error::Corrupt(Format::DiscImage, "cue sheet has no FILE line".into()))
     }
+
+    /// Bytes per sector in the file: 2048 (ISO) or 2352 (raw BIN).
+    #[must_use]
+    pub fn sector_size(&self) -> u64 { self.sector_size }
+
+    /// Offset of the 2048 data bytes within a raw sector: 16 (MODE1) or 24 (MODE2 form 1), 0 for an ISO.
+    #[must_use]
+    pub fn data_offset(&self) -> u64 { self.data_offset }
 
     /// True for a 2352-byte-sector image (a CD rip) rather than a plain ISO.
     #[must_use]
@@ -75,7 +81,7 @@ impl SectorReader {
                 .checked_add(i as u64)
                 .and_then(|s| s.checked_mul(self.sector_size))
                 .and_then(|o| o.checked_add(self.data_offset))
-                .ok_or_else(|| Error::Corrupt(format!("sector {lba} + {i} is beyond any disc")))?;
+                .ok_or_else(|| Error::Corrupt(Format::DiscImage, format!("sector {lba} + {i} is beyond any disc")))?;
             self.file.seek(SeekFrom::Start(offset))?;
             let mut buf = vec![0u8; 2048];
             let got = self.file.read(&mut buf)?;
@@ -89,6 +95,6 @@ impl SectorReader {
 
 /// True for the file extensions the readers accept (`iso`, `bin`, `cue`, `img`).
 #[must_use]
-pub fn is_disc_image(path: &Path) -> bool {
-    path.extension().is_some_and(|e| ["iso", "bin", "cue", "img"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+pub fn is_disc_image(path: impl AsRef<Path>) -> bool {
+    path.as_ref().extension().is_some_and(|e| ["iso", "bin", "cue", "img"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }

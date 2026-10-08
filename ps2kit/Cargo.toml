@@ -3,12 +3,13 @@ name = "ps2kit"
 description = "Readers for PlayStation 2 BIOS dumps, PCSX2 memory cards and disc images, and a re-implementation of the console's boot screen — no Sony data included"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
 keywords = ["playstation", "ps2", "pcsx2", "memory-card", "bios"]
 categories = ["parser-implementations", "emulators", "games"]
-include = ["src/**", "tests/synthetic.rs", "README.md", "LICENSE"]
+include = ["src/**", "tests/synthetic.rs", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependencies]
 glam = "0.29"

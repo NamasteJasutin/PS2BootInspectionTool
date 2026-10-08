@@ -6,7 +6,8 @@ use crate::renderer::*;
 use glam::{Vec2, Vec3, Vec4};
 use ps2kit::bios::OpeningAssets;
 use ps2kit::history::SplitMix;
-use ps2kit::sim::{motion, Timeline, VideoMode};
+use ps2kit::sim::{motion, Timeline};
+use ps2kit::VideoMode;
 
 impl Renderer {
     pub fn render_warning(&mut self, enc: &mut wgpu::CommandEncoder, frame: f32, assets: &OpeningAssets, timeline: &Timeline, free: Option<ViewCamera>, options: &RenderOptions, warning_texture: &str) {
@@ -64,7 +65,7 @@ impl Renderer {
             self.blit(enc, "scene", "copy");
             for front in [false, true] {
                 let mut gv = Vec::new();
-                for (i, p) in assets.prism_positions.iter().enumerate() {
+                for (i, p) in assets.prism_positions().iter().enumerate() {
                     let params = GlassParams { half: 1.2, tint: Vec3::ONE, reflect_tint: Vec3::new(1.0, 1.0 / 3.0, 1.0 / 3.0), refraction: 0.8, reflection: (0.0, 0.5) };
                     self.glass_cube(&mut gv, Vec3::new(p.x, p.y, (p.z - 2.5) * 128.0 + 788.0), motion::prism_rotation(i, frame), &params, &camera, front);
                 }
@@ -161,10 +162,10 @@ impl Renderer {
     fn smoke(out: &mut Vec<Vertex>, frame: f32, camera_z: f32, camera: &ViewCamera) {
         let mut rng = SplitMix(0x5EED);
         for k in 0..128usize {
-            let x = ((rng.next() % 4800) as i32 - 2400) as f32 * 0.01;
-            let y = ((rng.next() % 4800) as i32 - 2400) as f32 * 0.01;
-            let z0 = 477.0 + (rng.next() % 805) as f32;
-            let r = (64 + rng.next() % 64) as f32;
+            let x = ((rng.next_u64() % 4800) as i32 - 2400) as f32 * 0.01;
+            let y = ((rng.next_u64() % 4800) as i32 - 2400) as f32 * 0.01;
+            let z0 = 477.0 + (rng.next_u64() % 805) as f32;
+            let r = (64 + rng.next_u64() % 64) as f32;
             let speed = ((k + 1) as f32 * 0.02 + 1.2).floor();
             let band = 805.0 - 32.0;
             let rel = (z0 - 672.0 - 32.0 - speed * frame).rem_euclid(band);

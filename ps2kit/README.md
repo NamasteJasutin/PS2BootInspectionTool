@@ -11,13 +11,13 @@ supply at run time; the crate's CI tests run on synthetic inputs only.
 
 ```toml
 [dependencies]
-ps2kit = "0.1"
+ps2kit = "0.2"
 ```
 
 ```rust
 use ps2kit::{memcard::MemoryCard, history::PlayHistory};
 
-let card = MemoryCard::open(std::path::Path::new("Mcd001.ps2"))?;
+let card = MemoryCard::open("Mcd001.ps2")?;
 for r in &PlayHistory::from_card(&card)?.records {
     if !r.is_empty() {
         println!("{} launched {} times, towers {:06b}", r.name, r.count, r.mask);
@@ -42,6 +42,10 @@ Supported BIOS versions for `bios`/`logo`/`sound`: ROM 1.50–2.00 of the OSD ge
 generation and is rejected with a clear error. The other readers do not depend on a BIOS.
 
 `ps2history <card>` (a small binary in the crate) lists a card and dumps its history.
+
+Requires Rust 1.87. `cargo test` runs the synthetic tests; `tests/oracles.rs` (not in the
+published crate) also checks against a BIOS and discs on the developer's machine and passes
+trivially without them. Breaking changes are listed in `CHANGELOG.md`.
 
 The formats are documented in the `notes/` directory of the
 [PS2 Boot Inspection Tool](https://github.com/NamasteJasutin/PS2BootInspectionTool), the app

@@ -2,19 +2,42 @@
 //! (`notes/ps2logo.md`), and the lettering bitmap every licensed disc carries.
 
 use crate::bytes::Bytes;
-use crate::locate::{Image, LogoLayout};
+use crate::locate::{LogoLayout, ProgramImage};
 use crate::rom::RomDir;
-use crate::sim::VideoMode;
 use crate::sound::{decode_adpcm, envelope};
-use crate::{Error, Result};
+use crate::{Error, Format, Result, VideoMode};
 use glam::Vec2;
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
+use std::path::Path;
+
+/// What a [`Node`] does with the pen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeKind {
+    /// Move to `(f[0], f[1])` without drawing.
+    Move,
+    /// Straight line to `(f[0], f[1])`.
+    Line,
+    /// Cubic curve through control points `(f[0], f[1])`, `(f[2], f[3])` to `(f[4], f[5])`.
+    Cubic,
+    /// End of the polyline.
+    End,
+}
+
+impl NodeKind {
+    /// The kind behind the program's node type word (0 move, 1 line, 2 cubic, 3 end);
+    /// `None` for any other value.
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        Some(match v { 0 => Self::Move, 1 => Self::Line, 2 => Self::Cubic, 3 => Self::End, _ => return None })
+    }
+}
 
 /// One node of a vector path, in centred logo coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
-    /// 0 = move to, 1 = line to, 2 = cubic to (`f` holds both control points and the end), 3 = end.
-    pub kind: i32,
+    /// What the node does.
+    pub kind: NodeKind,
     /// Up to three `(x, y)` pairs, depending on `kind`.
     pub f: [f32; 6],
 }
@@ -30,11 +53,20 @@ pub struct ColourKey {
     pub rgba: [f32; 4],
 }
 
+/// How an [`Object`] is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    /// Anti-aliased line strips along the shape.
+    LineStrips,
+    /// Five copies of the shape at earlier fields, joined into a ribbon.
+    Ribbon,
+}
+
 /// One of the four animated objects of a video mode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Object {
-    /// 0 = line strips, 1 = ribbon.
-    pub kind: i32,
+    /// How the object is drawn.
+    pub kind: ObjectKind,
     /// Drawn into the first feedback layer.
     pub layer_a: bool,
     /// Drawn into the second feedback layer.
@@ -83,8 +115,7 @@ pub struct LogoAssets {
     pub effects: Vec<SoundEffect>,
     /// Master volume of the effects, 0..=0x3FFF.
     pub effect_master_volume: i64,
-    /// The bank's ADPCM body.
-    pub sample_body: Vec<u8>,
+    sample_body: Vec<u8>,
 }
 
 impl std::fmt::Debug for LogoAssets {
@@ -103,15 +134,19 @@ impl std::fmt::Debug for LogoAssets {
 }
 
 impl LogoAssets {
+    /// The bank's ADPCM body; [`SoundEffect::sample_offset`] indexes into it.
+    #[must_use]
+    pub fn sample_body(&self) -> &[u8] { &self.sample_body }
+
     /// Unpacks `rom0:PS2LOGO` from a BIOS dump and reads its tables.
     pub fn load(bios: &RomDir) -> Result<Self> {
-        Self::from_image(&Image::from_module(bios.module("PS2LOGO")?, 0x100000)?)
+        Self::from_image(&ProgramImage::from_module(bios.module("PS2LOGO")?, 0x100000)?)
     }
 
     /// Reads the tables from an already unpacked PS2LOGO image.
-    pub fn from_image(img: &Image) -> Result<Self> {
+    pub fn from_image(img: &ProgramImage) -> Result<Self> {
         let lay = LogoLayout::discover(img)?;
-        let d = &img.data[..];
+        let d = img.data();
         let at = |a: usize| img.at(a).unwrap_or(0);
         let u32 = |a: usize| d.u32(at(a)) as usize;
         let i32 = |a: usize| d.i32(at(a));
@@ -122,17 +157,21 @@ impl LogoAssets {
                     let mut a = u32(ptr + 4 * j);
                     let mut nodes = Vec::new();
                     loop {
-                        let ty = i32(a + 0x20);
+                        // An unknown type word ends the polyline (none occur in a real build).
+                        let kind = NodeKind::from_i32(i32(a + 0x20)).unwrap_or(NodeKind::End);
                         let mut f = [0f32; 6];
                         for (i, v) in f.iter_mut().enumerate() {
                             *v = f32(a + 4 * i);
                         }
                         // One-time fix-up at init: authoring canvas -> centred coordinates.
-                        if ty == 0 || ty == 1 { f[0] -= 128.0; f[1] += 128.0 }
-                        if ty == 2 { for i in (0..6).step_by(2) { f[i] -= 128.0; f[i + 1] += 128.0 } }
-                        nodes.push(Node { kind: ty, f });
+                        match kind {
+                            NodeKind::Move | NodeKind::Line => { f[0] -= 128.0; f[1] += 128.0 }
+                            NodeKind::Cubic => for i in (0..6).step_by(2) { f[i] -= 128.0; f[i + 1] += 128.0 },
+                            NodeKind::End => {}
+                        }
+                        nodes.push(Node { kind, f });
                         a += 0x30;
-                        if ty == 3 || nodes.len() > 4096 || !img.contains(a) {
+                        if kind == NodeKind::End || nodes.len() > 4096 || !img.contains(a) {
                             break;
                         }
                     }
@@ -150,7 +189,7 @@ impl LogoAssets {
                     let colours = (0..cn)
                         .map(|k| ColourKey { t: i32(cp + k * 20), rgba: [i32(cp + k * 20 + 4) as f32, i32(cp + k * 20 + 8) as f32, i32(cp + k * 20 + 12) as f32, i32(cp + k * 20 + 16) as f32] })
                         .collect();
-                    Object { kind: i32(lay.type_table + 4 * (3 - o)), layer_a: u32(lay.type_table + 0x20 + 4 * (3 - o)) != 0, layer_b: u32(lay.type_table + 0x40 + 4 * (3 - o)) != 0, keys, colours }
+                    Object { kind: if i32(lay.type_table + 4 * (3 - o)) == 0 { ObjectKind::LineStrips } else { ObjectKind::Ribbon }, layer_a: u32(lay.type_table + 0x20 + 4 * (3 - o)) != 0, layer_b: u32(lay.type_table + 0x40 + 4 * (3 - o)) != 0, keys, colours }
                 })
                 .collect();
             objects.insert(mode, objs);
@@ -233,12 +272,17 @@ impl<'a> LogoAnimation<'a> {
     /// The four objects of this video mode (empty if the assets lack the mode).
     #[must_use]
     pub fn objects(&self) -> &[Object] { self.assets.objects.get(&self.video).map(Vec::as_slice).unwrap_or(&[]) }
+    /// The fields the program animates: 17..=42 (NTSC) or 14..=35 (PAL), counted from the
+    /// program's start; before the first the screen is black, after the last the picture is
+    /// held for [`HOLD_FIELDS`](Self::HOLD_FIELDS).
+    #[must_use]
+    pub fn animated_fields(video: VideoMode) -> RangeInclusive<i32> { if video == VideoMode::Pal { 14..=35 } else { 17..=42 } }
     /// First animated field (17 NTSC, 14 PAL).
     #[must_use]
-    pub fn first_field(&self) -> i32 { if self.video == VideoMode::Pal { 14 } else { 17 } }
+    pub fn first_field(&self) -> i32 { *Self::animated_fields(self.video).start() }
     /// Last animated field (42 NTSC, 35 PAL).
     #[must_use]
-    pub fn last_field(&self) -> i32 { if self.video == VideoMode::Pal { 35 } else { 42 } }
+    pub fn last_field(&self) -> i32 { *Self::animated_fields(self.video).end() }
     /// Fields the last frame is held for before the game starts.
     pub const HOLD_FIELDS: usize = 120;
 
@@ -330,9 +374,9 @@ impl<'a> LogoAnimation<'a> {
             let mut prev = Vec2::ZERO;
             for n in nodes {
                 match n.kind {
-                    0 => { prev = Vec2::new(n.f[0], n.f[1]); pts.push(prev) }
-                    1 => { pts.push(prev); prev = Vec2::new(n.f[0], n.f[1]) }
-                    2 => {
+                    NodeKind::Move => { prev = Vec2::new(n.f[0], n.f[1]); pts.push(prev) }
+                    NodeKind::Line => { pts.push(prev); prev = Vec2::new(n.f[0], n.f[1]) }
+                    NodeKind::Cubic => {
                         pts.push(prev);
                         let steps = match counts { Some(c) => { let s = c.get(ci).copied().unwrap_or(4); ci += 1; s } None => Self::subdivisions(prev, &n.f) };
                         let (c1, c2, p3) = (Vec2::new(n.f[0], n.f[1]), Vec2::new(n.f[2], n.f[3]), Vec2::new(n.f[4], n.f[5]));
@@ -349,8 +393,7 @@ impl<'a> LogoAnimation<'a> {
                         }
                         prev = p3;
                     }
-                    3 => pts.push(prev),
-                    _ => {}
+                    NodeKind::End => pts.push(prev),
                 }
             }
             pts
@@ -365,8 +408,11 @@ impl<'a> LogoAnimation<'a> {
         for pl in self.shape(obj, t) {
             let mut prev = Vec2::ZERO;
             for n in pl {
-                if n.kind == 0 || n.kind == 1 { prev = Vec2::new(n.f[0], n.f[1]) }
-                if n.kind == 2 { counts.push(Self::subdivisions(prev, &n.f)); prev = Vec2::new(n.f[4], n.f[5]) }
+                match n.kind {
+                    NodeKind::Move | NodeKind::Line => prev = Vec2::new(n.f[0], n.f[1]),
+                    NodeKind::Cubic => { counts.push(Self::subdivisions(prev, &n.f)); prev = Vec2::new(n.f[4], n.f[5]) }
+                    NodeKind::End => {}
+                }
             }
         }
         counts
@@ -400,27 +446,44 @@ pub struct LogoBitmap {
     pub grey: Vec<u8>,
 }
 
+/// Which master a disc's logo bitmap was pressed from. The bitmap is mastered per region:
+/// E discs carry the PAL picture, J and A discs share one, so a US disc matches the "J"
+/// checksum. `Display` gives the label the console's check implies: `E` or `J/A`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LogoMaster {
+    /// Checksum 0x78134705, accepted by E consoles.
+    Europe,
+    /// Checksum 0x62DB1E66, accepted by J and H consoles (A consoles never check).
+    JapanAmerica,
+}
+
+impl std::fmt::Display for LogoMaster {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self { Self::Europe => "E", Self::JapanAmerica => "J/A" })
+    }
+}
+
 /// The lettering bitmap every licensed disc carries in its first 12 sectors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DiscLogo {
     /// The 24,576 descrambled bytes.
     pub pixels: Vec<u8>,
-    /// "E" or "J" when the checksum matched a known master.
-    pub region: Option<&'static str>,
+    /// The master whose checksum the data matched, if any.
+    pub region: Option<LogoMaster>,
 }
 
 impl DiscLogo {
     /// Reads sectors 0-11 of a disc image and descrambles them as the drive does.
-    pub fn read(path: &std::path::Path) -> Result<Self> {
+    pub fn read(path: impl AsRef<Path>) -> Result<Self> {
         let raw = crate::sectors::SectorReader::open(path)?.read(0, 12)?;
         if raw.len() != 12 * 2048 {
-            return Err(Error::Corrupt("disc image is too short for the logo sectors".into()));
+            return Err(Error::Corrupt(Format::DiscImage, "disc image is too short for the logo sectors".into()));
         }
         let key = raw[0];
         let out: Vec<u8> = raw.iter().map(|&b| (b ^ key).rotate_left(3)).collect();
         let sum = out.chunks_exact(4).fold(0u32, |s, c| s.wrapping_add(u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
-        let region = if sum == 0x7813_4705 { Some("E") } else if sum == 0x62DB_1E66 { Some("J") } else { None };
+        let region = if sum == 0x7813_4705 { Some(LogoMaster::Europe) } else if sum == 0x62DB_1E66 { Some(LogoMaster::JapanAmerica) } else { None };
         Ok(Self { pixels: out, region })
     }
 

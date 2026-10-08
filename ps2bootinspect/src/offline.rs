@@ -2,12 +2,13 @@
 //!  [--scene boot|warning|logo|full] [--pal] [--iso f] [--disc s] [--exit s] [--free x,y,z,yaw,pitch]`
 //! renders one frame without a window (headless wgpu).
 
-use crate::model::{FreeCamera, Model};
+use crate::model::{FreeCamera, Model, Scene};
 use crate::renderer::Renderer;
 use glam::Vec3;
 use ps2kit::history::PlayHistory;
 use ps2kit::memcard::MemoryCard;
-use ps2kit::sim::{SceneKind, Segment, VideoMode};
+use ps2kit::sim::Segment;
+use ps2kit::VideoMode;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -30,7 +31,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.load_bios(Path::new(bios), false);
     if m.assets.is_none() { return Err(m.bios_status) }
     if let Some(card) = named.get("card") {
-        let c = MemoryCard::open(Path::new(card)).map_err(|e| e.to_string())?;
+        let c = MemoryCard::open(card).map_err(|e| e.to_string())?;
         m.history = PlayHistory::from_card(&c).map_err(|e| e.to_string())?;
     } else if let Some(t) = named.get("titles") {
         let n: usize = t.parse().map_err(|_| "bad --titles")?;
@@ -43,14 +44,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.video = if named.get("video").map(String::as_str) == Some("pal") { VideoMode::Pal } else { VideoMode::Ntsc };
     m.disc_seconds = named.get("disc").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     m.warning_exit_seconds = named.get("exit").and_then(|v| v.parse().ok()).unwrap_or(10.0);
-    m.scene_kind = match named.get("scene").map(String::as_str) { Some("warning") => SceneKind::Warning, Some("logo") => SceneKind::Logo, Some("full") => SceneKind::Full, _ => SceneKind::Boot };
+    m.scene_kind = match named.get("scene").map(String::as_str) { Some("warning") => Scene::Warning, Some("logo") => Scene::Logo, Some("full") => Scene::Full, _ => Scene::Boot };
     m.rebuild_timeline();
     if named.contains_key("handoff") {
         // `--handoff 1`: print what the sidebar's hand-off card would show.
         println!("bios: {}  video: {:?}", m.bios_status, m.video);
         println!("disc: {}", m.disc_status);
-        for s in m.handoff_steps() { println!("  {:<44} {}", s.who, s.what) }
-        for sp in &m.sequence.spans { println!("segment {:?}: frames {}..{}", sp.segment, sp.start, sp.start + sp.length) }
+        for s in m.handoff_steps() { println!("  {:<44} {s}", s.who()) }
+        for sp in m.sequence.spans() { println!("segment {:?}: frames {}..{}", sp.segment, sp.start, sp.start + sp.length) }
     }
     let free = named.get("free").and_then(|f| {
         let v: Vec<f32> = f.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -81,10 +82,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let assets = m.assets.as_ref().unwrap();
     let warning_tex = format!("TEXOPNG{}", m.language);
     match m.scene_kind {
-        SceneKind::Boot => r.render_opening(&mut enc, frame, &m.scene, assets, &m.timeline, free, &m.options),
-        SceneKind::Warning => r.render_warning(&mut enc, frame, assets, &m.timeline, free, &m.options, &warning_tex),
-        SceneKind::Logo => if !ps1(&mut r, &mut enc, frame) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options) },
-        SceneKind::Full => {
+        Scene::Boot => r.render_opening(&mut enc, frame, &m.scene, assets, &m.timeline, free, &m.options),
+        Scene::Warning => r.render_warning(&mut enc, frame, assets, &m.timeline, free, &m.options, &warning_tex),
+        Scene::Logo => if !ps1(&mut r, &mut enc, frame) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options) },
+        Scene::Full => {
             let (span, local) = m.sequence.span_at(frame.max(0.0) as usize);
             match span.segment {
                 Segment::Opening => r.render_opening(&mut enc, local as f32, &m.scene, assets, &m.sequence.opening, free, &m.options),

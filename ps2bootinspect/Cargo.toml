@@ -3,6 +3,7 @@ name = "ps2bootinspect"
 description = "PS2 Boot Inspection Tool: replays the PlayStation 2 start-up from your own BIOS, memory card and disc, with a free camera, time control and a readout of every step"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "../README.md"
@@ -11,7 +12,7 @@ categories = ["emulators", "games", "visualization"]
 publish = false
 
 [dependencies]
-ps2kit = { version = "0.1.0", path = "../ps2kit" }
+ps2kit = { version = "0.2.0", path = "../ps2kit" }
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
 egui = "0.36"
 egui-wgpu = "0.36"

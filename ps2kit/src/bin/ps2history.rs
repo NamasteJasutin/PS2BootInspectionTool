@@ -5,7 +5,6 @@
 use ps2kit::history::PlayHistory;
 use ps2kit::memcard::MemoryCard;
 use std::io::Write;
-use std::path::Path;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -25,15 +24,15 @@ fn run(args: &[String]) -> ps2kit::Result<()> {
         let path = args.get(2).unwrap_or_else(|| { eprintln!("missing BIOS path"); std::process::exit(2) });
         let rom = ps2kit::rom::RomDir::new(std::fs::read(path)?)?;
         let assets = ps2kit::bios::OpeningAssets::load(&rom)?;
-        println!("ROM {}: {} textures, {} history records x 6 slots", assets.rom_version, assets.textures.len(), assets.slots.len());
-        let mut names: Vec<_> = assets.textures.values().collect();
+        println!("ROM {}: {} textures, {} history records x {} slots", assets.rom_version(), assets.textures().count(), assets.slots().len(), ps2kit::bios::SLOTS_PER_RECORD);
+        let mut names: Vec<_> = assets.textures().collect();
         names.sort_by(|a, b| a.name.cmp(&b.name));
         for t in names {
             println!("  {:9} {}x{}", t.name, t.width, t.height);
         }
         return Ok(());
     }
-    let card = MemoryCard::open(Path::new(first))?;
+    let card = MemoryCard::open(first)?;
     match args.get(2).map(String::as_str) {
         Some("ls") => {
             let path: Vec<&str> = args.get(3).map(|p| p.split('/').filter(|s| !s.is_empty()).collect()).unwrap_or_default();

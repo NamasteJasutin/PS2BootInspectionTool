@@ -3,8 +3,9 @@
 
 use crate::bytes::Bytes;
 use crate::rom::{unpack, RomDir};
-use crate::{Error, Result};
+use crate::{Error, Format, Result};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Output sample rate of every renderer in this crate, in Hz.
 pub const SAMPLE_RATE: usize = 48000;
@@ -23,7 +24,7 @@ pub struct Tone {
     pub root: i32,
     /// Fine tuning in 1/16 semitone steps.
     pub fine: i32,
-    /// Start of the sample in [`SoundBank::body`].
+    /// Start of the sample in [`SoundBank::body`](SoundBank::body).
     pub sample_offset: usize,
     /// SPU ADSR register 1.
     pub adsr1: u16,
@@ -70,8 +71,7 @@ pub struct SoundBank {
     pub programs: HashMap<i32, Program>,
     /// 128-entry velocity curve.
     pub velocity: Vec<i32>,
-    /// The headerless ADPCM body.
-    pub body: Vec<u8>,
+    body: Vec<u8>,
 }
 
 impl std::fmt::Debug for SoundBank {
@@ -81,10 +81,14 @@ impl std::fmt::Debug for SoundBank {
 }
 
 impl SoundBank {
+    /// The headerless ADPCM body; [`Tone::sample_offset`] indexes into it.
+    #[must_use]
+    pub fn body(&self) -> &[u8] { &self.body }
+
     /// Parses a bank `header` (the `SShd` block) and takes ownership of its ADPCM `body`.
     pub fn new(header: &[u8], body: Vec<u8>) -> Result<Self> {
         if header.len() <= 0x30 || &header[0xC..0x10] != b"SShd" {
-            return Err(Error::Bank("signature".into()));
+            return Err(Error::Corrupt(Format::SoundBank, "signature".into()));
         }
         let mut programs = HashMap::new();
         let base = header.u32(0x10) as usize;
@@ -97,7 +101,7 @@ impl SoundBank {
                 }
                 let h = base + off;
                 if h + 8 > header.len() {
-                    return Err(Error::Bank(format!("program {p} out of range")));
+                    return Err(Error::Corrupt(Format::SoundBank, format!("program {p} out of range")));
                 }
                 let mode = header.u8(h);
                 let kind = if mode == 0xFF { ProgramKind::Drum } else if mode & 0x80 != 0 { ProgramKind::Layer } else { ProgramKind::Split };
@@ -106,7 +110,7 @@ impl SoundBank {
                 for t in 0..count {
                     let o = h + 8 + 16 * t;
                     if o + 16 > header.len() {
-                        return Err(Error::Bank("tone out of range".into()));
+                        return Err(Error::Corrupt(Format::SoundBank, "tone out of range".into()));
                     }
                     tones.push(Tone {
                         low: header.u8(o) as i32,
@@ -253,7 +257,7 @@ impl SoundSequence {
     /// Parses an `SSsq` block (header, 16 channel records, then the event stream).
     pub fn new(d: &[u8]) -> Result<Self> {
         if d.len() <= 0x110 || &d[0xC..0x10] != b"SSsq" {
-            return Err(Error::Sequence("signature".into()));
+            return Err(Error::Corrupt(Format::Sequence, "signature".into()));
         }
         let resolution = d.u16(2) as i64;
         let bpm = d.u16(4) as i64;
@@ -280,7 +284,7 @@ impl SoundSequence {
                     break;
                 }
                 _ if status == 0xFF && d1 == 0x51 => { let t = d.u16(pos + 2) as i32; pos += 4; EventKind::Tempo(t) }
-                _ => return Err(Error::Sequence(format!("unknown event {status:#x} at {pos}"))),
+                _ => return Err(Error::Corrupt(Format::Sequence, format!("unknown event {status:#x} at {pos}"))),
             };
             events.push(SequenceEvent { kind, channel: ch, tick, update: 0 });
             let mut delta = 0i64;
@@ -290,7 +294,7 @@ impl SoundSequence {
                 pos += 1;
                 bytes += 1;
                 if bytes > 4 {
-                    return Err(Error::Sequence(format!("delta time longer than 4 bytes at {pos}")));
+                    return Err(Error::Corrupt(Format::Sequence, format!("delta time longer than 4 bytes at {pos}")));
                 }
                 delta = delta << 7 | (b & 0x7F);
                 if b & 0x80 == 0 {
@@ -307,7 +311,7 @@ impl SoundSequence {
             last = e.tick;
             let step = ((resolution * bpm_now) << 12) / 60 / 60;
             if step <= 0 {
-                return Err(Error::Sequence("tempo or resolution is zero".into()));
+                return Err(Error::Corrupt(Format::Sequence, "tempo or resolution is zero".into()));
             }
             // Closed form of `while acc >= 1 { acc -= step; update += 1 }`.
             if acc >= 1 {
@@ -344,10 +348,11 @@ impl DriverTables {
         }
     }
 
-    /// The tables as the driver module `d` holds them, at the offsets
-    /// [`locate::driver_tables`](crate::locate::driver_tables) found; `None` if `d` is too short.
+    /// The tables as the driver module `d` (`rom0:OSDSND`) holds them, located by content;
+    /// `None` when the module does not contain them.
     #[must_use]
-    pub fn from_driver(d: &[u8], pitch_offset: usize, pan_offset: usize) -> Option<Self> {
+    pub fn from_driver(d: &[u8]) -> Option<Self> {
+        let (pitch_offset, pan_offset) = crate::locate::driver_tables(d)?;
         if pitch_offset + 608 * 2 > d.len() || pan_offset + 64 > d.len() {
             return None;
         }
@@ -551,11 +556,7 @@ impl BootSound {
         let archive = RomDir::new(bios.module("SNDIMAGE")?.to_vec())?;
         let asset = |n: &str| -> Result<Vec<u8>> { unpack(archive.module(n)?, 0) };
         let bank = SoundBank::new(&asset("SNDBOOTH")?, asset("SNDBOOTB")?)?;
-        let tables = bios
-            .module("OSDSND")
-            .ok()
-            .and_then(|d| crate::locate::driver_tables(d).and_then(|(p, q)| DriverTables::from_driver(d, p, q)))
-            .unwrap_or_else(DriverTables::computed);
+        let tables = bios.module("OSDSND").ok().and_then(DriverTables::from_driver).unwrap_or_else(DriverTables::computed);
         let synth = Synth { bank: &bank, tables: &tables };
         let (mut a, mut b, mut w) = (Vec::new(), Vec::new(), Vec::new());
         // The chime and the cue are a few seconds; the cap keeps a damaged sequence from
@@ -568,7 +569,7 @@ impl BootSound {
 }
 
 /// Writes interleaved stereo float PCM as a 16-bit WAV file.
-pub fn write_wav(path: &std::path::Path, pcm: &[f32], rate: u32) -> std::io::Result<()> {
+pub fn write_wav(path: impl AsRef<Path>, pcm: &[f32], rate: u32) -> Result<()> {
     let mut data = Vec::with_capacity(44 + pcm.len() * 2);
     let bytes = (pcm.len() * 2) as u32;
     data.extend_from_slice(b"RIFF");
@@ -586,5 +587,5 @@ pub fn write_wav(path: &std::path::Path, pcm: &[f32], rate: u32) -> std::io::Res
     for &v in pcm {
         data.extend_from_slice(&((v * 32767.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes());
     }
-    std::fs::write(path, data)
+    Ok(std::fs::write(path, data)?)
 }

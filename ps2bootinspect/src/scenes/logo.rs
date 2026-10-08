@@ -3,8 +3,8 @@
 
 use crate::renderer::*;
 use glam::{Vec2, Vec4};
-use ps2kit::logo::{LogoAnimation, LogoBitmap};
-use ps2kit::sim::VideoMode;
+use ps2kit::logo::{LogoAnimation, LogoBitmap, ObjectKind};
+use ps2kit::VideoMode;
 
 const FRAME: (f32, f32) = (640.0, 512.0);
 const REGION: (f32, f32) = (384.0, 96.0);
@@ -113,7 +113,7 @@ impl Renderer {
             if !(if layer_a { obj.layer_a } else { obj.layer_b }) { continue }
             let c = anim.colour(obj, t);
             let colour = Vec4::new(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0, 1.0);
-            if obj.kind == 0 {
+            if obj.kind == ObjectKind::LineStrips {
                 for strip in anim.flatten(&anim.shape(obj, t), None) {
                     let pts: Vec<Vec2> = strip.iter().map(|&p| anim.to_screen(p)).collect();
                     for w in pts.windows(2) {
