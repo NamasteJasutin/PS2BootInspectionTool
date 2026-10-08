@@ -1,0 +1,15 @@
+== The PS2 logo sectors (disc sectors 0–11) ==
+''Suggested page: Disc format / Copy protection → PS2 logo.''
+
+The "PlayStation 2" lettering shown after the boot screen is '''not in the BIOS''': rom0:PS2LOGO reads it from the first 12 sectors (24,576 bytes) of the game disc, with the drive's decryption enabled (<code>sceCdDecSet(1, 1, 5)</code>: XOR on, rotate on, shift 5). Each raw byte ''b'' becomes <code>rotl(b ^ key, 3)</code> with ''key'' = the first raw byte of sector 0 (so the first decoded byte is always 0).
+
+The decoded image is 8-bit greyscale, one byte per pixel, row-major: 384 × 64 for NTSC consoles; PAL consoles re-read the same bytes as 71 rows of 344 and place them at row 3 of a 384 × 77 frame.
+
+Checksum: the sum of the 0x1800 little-endian 32-bit words of the decoded data must equal
+
+* 0x78134705 on E (Europe) consoles,
+* 0x62DB1E66 on J/H (Japan) consoles.
+
+A and C consoles never check. Japanese and American discs carry the same logo master (a US disc satisfies the J checksum); European discs carry a different one. On a J/H or E console a mismatch skips the logo animation and PS2LOGO goes straight to <code>LoadExecPS2</code> of the game. Nothing in PS2LOGO depends on the disc type (CD/DVD) or on the disc's own region: the console's ROMVER alone selects the checksum and the PAL/NTSC presentation (animation fields 14–35 PAL, 17–42 NTSC, then 120 fields hold).
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/ps2logo.md §2.''

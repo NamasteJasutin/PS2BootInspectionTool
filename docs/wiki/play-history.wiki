@@ -1,0 +1,30 @@
+== Play history (B?DATA-SYSTEM/history) ==
+''Suggested page: Memory Card → system folders, or Boot screen.''
+
+The towers in the PlayStation 2 boot screen are a picture of the console's '''play history''', which OSDSYS keeps in a 462-byte file <code>mc0:/B?DATA-SYSTEM/history</code> (port 0, then port 1). The '''?''' is the console region letter from ROMVER: I (Japan), A (America), E (Europe), C (China). The file is a raw image of a 21-record table, no header, no checksum:
+
+{| class="wikitable"
+! offset !! size !! field
+|-
+| 0x00 || 16 || title ID, NUL-padded: the disc ID for PS2 titles (<code>SLES_123.45</code>), the SYSTEM.CNF BOOT file name for PS1 titles, the fixed name <code>DVDVIDEO</code> for DVD-Video. First byte 0 = empty record.
+|-
+| 0x10 || 1 || launch count, starts at 1
+|-
+| 0x11 || 1 || 6-bit mask of the towers this title owns (bits 0–5), starts at 0x01
+|-
+| 0x12 || 1 || index (0–5) of the bit added most recently — the tower still "growing"; 7 = record frozen
+|-
+| 0x13 || 1 || unused, never written
+|-
+| 0x14 || 2 || date of the latest launch, little-endian: day + (month << 5) + ((year − 2000) << 9)
+|}
+
+Rules, as implemented in OSDSYS of ROM 2.00 (the file format is the same in the other ROMs the tool reads):
+* A title's first launch creates a record with one tower. A new random tower bit is added at launches 14, 24, 34, 44 and 54, so a title reaches all six towers after 54 launches. The counter continues to 63; on the 64th launch the record is frozen (count 63, index 7) and only the date changes.
+* The opening draws one tower per set mask bit; each of the 21 records owns six fixed slots in a 14 × 9 grid, and ''index'' names the tower drawn as still growing, with ''count'' giving how far it has got.
+* A new title takes a random empty record. If all 21 are occupied, the record with the lowest count (ties: the oldest date) is evicted; the evicted 22 bytes are appended to <code>history.old</code>, which OSDSYS never reads back. If all 21 records are frozen, the new title is not recorded.
+* The file is written just before <code>LoadExecPS2("rom0:PS2LOGO", …)</code>; a failed save is ignored. <code>icon.sys</code> in the folder is rewritten on every save. Audio CDs and failed launches are not recorded.
+* Which tower bit a title gets and which empty record it lands in are random, so the same history gives a different skyline on different consoles.
+* PCSX2's fast boot skips OSDSYS, so a card used only with fast boot never gets a history file and shows no towers under full boot.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/osdsys_flow.md §5 and notes/opening.md.''

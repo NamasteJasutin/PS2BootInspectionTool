@@ -1,0 +1,19 @@
+== OSD LZ compression (OSDSYS, PS2LOGO) ==
+''Suggested page: BIOS → rom0 modules, or a new page "OSD LZ format".''
+
+The OSD programs ('''rom0:OSDSYS''', '''rom0:PS2LOGO''') and several of their assets are not stored as plain ELFs. The module begins with a small loader stub (0xE00 bytes for OSDSYS and 0x1000 for PS2LOGO in ROM 2.00) followed by a compressed stream; the stub decompresses it to its load address (0x200000 for OSDSYS, 0x100000 for PS2LOGO) and jumps to it. ROM 1.00 stores OSDSYS as a plain ELF instead.
+
+Stream layout:
+
+ u32 LE   decompressed size
+ repeat until the output is full:
+   u32 BE  descriptor: bits 31..2 are flags for the next 30 tokens (MSB first),
+                       bits 1..0 = n, which selects the offset/length split
+   30 tokens, in order:
+     flag 0 → one literal byte
+     flag 1 → u16 BE h:  offset = (h & (0x3FFF >> n)) + 1   (distance back into the output)
+                         length = (h >> (14 − n)) + 3
+
+So with n = 0 a match reaches back up to 16 KiB and copies 3–6 bytes; n = 3 trades distance for length (up to 2 KiB back, 3–34 bytes). The decoder is about twenty lines; a reference implementation (Python and Rust) is in the repository below. Streams can also sit at an offset inside an asset (the font and some textures of the OSD are compressed the same way).
+
+''Source: PS2BootInspectionTool notes, [https://github.com/NamasteJasutin/PS2BootInspectionTool notes/opening.md] and [https://github.com/NamasteJasutin/ps2-bios-ghidra ps2-bios-ghidra] (tools/osd_unpack.py).''

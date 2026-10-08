@@ -1,0 +1,16 @@
+== ROMDIR EXTINFO records ==
+''Suggested page: BIOS → ROMDIR (addition to the existing table description).''
+
+Each 16-byte ROMDIR entry (name[10], u16 extinfo_size, u32 size) owns ''extinfo_size'' bytes of the '''EXTINFO''' module, consumed in ROMDIR order. EXTINFO is a sequence of records:
+
+ u16 value
+ u8  size      (bytes of data following the 4-byte header)
+ u8  type
+   1   date: 4 bytes, BCD, little-endian yyyymmdd (e.g. 14 06 04 20 → 2004-06-14)
+   2   version: ''value'' is the version, high byte major, low byte minor (0x0200 → 2.00)
+   3   comment: ''size'' bytes of ASCII text
+   7F  null record (padding; ''value'' only)
+
+The ROMDIR entry itself carries a comment naming the build configuration and the path the image was assembled from on Sony's ROM server; on a development-kit ROM this is the "sdex" tree, on retail a "g" tree. Module dates in EXTINFO are repackaging dates: byte-identical modules can carry different dates in different ROMs.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/devkit_survey.md and tools/extinfo.py.''
