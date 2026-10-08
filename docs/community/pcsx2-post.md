@@ -12,6 +12,6 @@ Things PCSX2 users may not know, which the tool makes visible:
 
 Binaries for Windows, Linux and macOS: https://github.com/NamasteJasutin/PS2BootInspectionTool/releases
 Rust crate with the readers (memory card, history, ROMDIR/LZ, ISO/BIN sectors, logo): https://crates.io/crates/ps2kit
-Write-up of the whole boot path: <link to the published write-up>
+Write-up of the whole boot path: https://github.com/NamasteJasutin/PS2BootInspectionTool/blob/main/docs/writeup.md
 
 Nothing from Sony ships with it — you need your own BIOS, as with PCSX2 itself. Happy to answer questions about any of the formats; the notes in the repository go into the details.

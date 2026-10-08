@@ -110,6 +110,7 @@ For anyone who wants to check the tool's claims or extend it to another BIOS ver
 
 | | |
 |---|---|
+| `docs/writeup.md` | The whole boot path in one article, for reading rather than reference. |
 | `notes/opening.md` | The tower scene: data, camera, every stage of the frame. |
 | `notes/opening_scene1.md` | The warning scene. |
 | `notes/boot_sequence.md` | Power-on to the first frame: call tree and timeline. |

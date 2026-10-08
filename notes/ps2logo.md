@@ -75,9 +75,10 @@ fragments of newlib's `assertion "%s" failed` and `rom0:OSDSND`.
    enable XOR, enable rotate, shift 5), `sceCdRead(lbn 0, 12 sectors, buf, mode {try 16,
    spindle 4, pattern 2048})`, poll `sceCdSync(1)`, `sceCdDecSet(0, 0, 0)`.
    → 24,576 bytes at `0x1C1420`: the "PS2 logo" that every licensed disc carries in sectors 0–11.
-   The drive descrambles it; **[I]** per emulator sources the raw sector bytes are
-   `rotl(b ^ key, 5)`/`rotr(b ^ key, 3)` with `key = byte 0 of sector 0` — the app can validate
-   its decryption with the checksums below.
+   The drive descrambles it; per emulator sources the raw sector bytes are
+   `rotl(b ^ key, 3)` with `key = byte 0 of sector 0` — **[V]** confirmed by the checksums
+   below on real images: a European disc gives the E sum and the American pressing of the
+   same title gives the J sum, i.e. J and A discs carry one logo master and E discs another.
 2. Checksum (only J/H and E consoles): `sum of the 0x1800 little-endian u32 words`, XOR
    `0x62DB1E66` (J/H) or **`0x78134705` (E)**, must be 0 (`0x130B40`). A and C consoles skip it.
 3. PAL re-wrap (`isPAL`): the 24,576 bytes are re-read as **71 rows of 344 bytes** and copied

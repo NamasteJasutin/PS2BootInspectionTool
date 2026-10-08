@@ -188,7 +188,7 @@ Put together with the update rules: a factory-fresh console (or one booted witho
 memory card) shows no towers at all. A title's first tower fades in over launches 1–4 as a
 small stub and grows to full length by launch 13; at launch 14 it becomes permanent and a
 second stub appears in another of the title's six slots, and so on every 10 launches until
-all six stand (launch 63).
+all six stand (the sixth bit is added at launch 54; the counter runs on to 63).
 
 **Placement.** Slot base positions come from a 14×9 table of model coordinates (`0x2895F0`,
 columns 1.3 apart in X, rows 1.3 apart in Y, with hand-tuned Z offsets for some slots),
