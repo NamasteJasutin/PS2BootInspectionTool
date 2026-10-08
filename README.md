@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="160" alt=""></p>
+
 # PS2 Boot Inspection Tool
 
 A native macOS app that replays the PlayStation 2 start-up from **your own** BIOS dump, memory

@@ -18,6 +18,7 @@
 /.venv/
 __pycache__/
 /app/.build/
+/app/Icon/AppIcon.iconset/
 /app/BootScreen.app/
 /app/PS2 Boot Inspection Tool.app/
 .DS_Store
