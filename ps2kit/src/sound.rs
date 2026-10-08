@@ -239,7 +239,7 @@ impl SoundSequence {
 
 /// The driver's lookup tables, read from the IOP module when a layout is known.
 pub struct DriverTables {
-    /// 608 entries, 16 steps per semitone, [208] = 0x1000.
+    /// 608 entries, 16 steps per semitone, entry 208 = 0x1000.
     pub pitch: Vec<i64>,
     /// 32 (left, right) gain pairs indexed by pan >> 2.
     pub pan: Vec<(i64, i64)>,

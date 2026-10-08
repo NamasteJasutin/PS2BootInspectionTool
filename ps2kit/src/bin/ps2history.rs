@@ -1,5 +1,7 @@
-//! usage: ps2history <card.ps2 | folder-card> [ls [dir] | cat <file>]
-//!        ps2history --bios <bios image>          (check that the opening's data can be read)
+//! ```text
+//! ps2history <card.ps2 | folder-card> [ls [dir] | cat <file>]
+//! ps2history --bios <bios image>          (check that the opening's data can be read)
+//! ```
 use ps2kit::history::PlayHistory;
 use ps2kit::memcard::MemoryCard;
 use std::io::Write;
