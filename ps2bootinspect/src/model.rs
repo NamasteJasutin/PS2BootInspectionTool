@@ -9,7 +9,7 @@ use ps2kit::history::PlayHistory;
 use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets, LogoBitmap};
 use ps2kit::memcard::MemoryCard;
 use ps2kit::rom::RomDir;
-use ps2kit::sim::{phase_at, BootPhase, BootSequence, CameraState, OpeningScene, SceneKind, Segment, Timeline, VideoMode, HANDOFF_PHASES, POWER_ON_PHASES};
+use ps2kit::sim::{phase_at, BootPhase, BootSequence, CameraState, OpeningScene, SceneKind, Segment, Timeline, VideoMode, HANDOFF_PHASES, POWER_ON_PHASES, PS1_HANDOFF_PHASES};
 use ps2kit::sound::BootSound;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -350,7 +350,7 @@ impl Model {
             let (span, local) = self.sequence.span_at(self.frame.max(0.0) as usize);
             return match span.segment {
                 Segment::PowerOn => Some(phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds)),
-                Segment::Handoff => Some(phase_at(&HANDOFF_PHASES, local as f32 / fps, self.handoff_seconds)),
+                Segment::Handoff => Some(phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds)),
                 Segment::End => Some(&END_PHASE),
                 _ => None,
             };
@@ -380,7 +380,12 @@ impl Model {
     }
 
     pub fn rom_region(&self) -> Option<char> { self.assets.as_ref().and_then(|a| a.rom_version.chars().nth(4)) }
-    pub fn handoff_steps(&self) -> Vec<HandoffStep> { handoff_steps(self.disc.as_ref(), &self.history, self.video, self.rom_region()) }
+    pub fn handoff_steps(&self) -> Vec<HandoffStep> { handoff_steps(self.disc.as_ref(), &self.history, self.video, self.rom_region(), self.ps1_shell.as_ref().map(|s| s.logo_bytes.as_slice())) }
+    /// Whether this console's PS1 shell would accept the loaded PlayStation disc.
+    pub fn ps1_verdict(&self) -> Option<ps2kit::disc::Ps1Verdict> {
+        let d = self.disc.as_ref()?;
+        ps2kit::disc::Ps1Verdict::judge(self.rom_region(), d.ps1_licence.as_ref(), self.ps1_shell.as_ref().map(|s| s.logo_bytes.as_slice()))
+    }
 
     pub fn logo_animation(&self) -> Option<LogoAnimation<'_>> { self.logo_assets.as_ref().map(|a| LogoAnimation::new(a, self.video)) }
 

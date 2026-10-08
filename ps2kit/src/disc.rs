@@ -67,6 +67,40 @@ pub struct Ps1Licence {
     /// "Japan", "America" or "Europe" from the licence text.
     pub region: Option<&'static str>,
     pub logo_sectors_present: bool,
+    /// The 0x3278 bytes of sectors 5–11 the shell compares with its own copy of the logo.
+    pub logo_data: Vec<u8>,
+}
+
+/// What the PS1 shell inside the console does with a disc's licence sector and logo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ps1Verdict {
+    /// `A` consoles never check: the disc's text and logo are shown as they are.
+    NotChecked,
+    Accepted,
+    /// The logo differs from the shell's copy: `SystemErrorBootOrDiskFailure`, a black screen for ever.
+    LogoMismatch,
+    /// The licence line is not the one this console accepts: the shell re-reads the disc for ever, black screen.
+    TextMismatch,
+}
+
+impl Ps1Verdict {
+    /// The rule the shell applies from the ROM's region letter (`notes/ps1_boot.md` §5): `E`
+    /// accepts the 70-character "Euro pe" or 67-character "(Europe)" line, `A` checks nothing,
+    /// every other letter accepts the 64-character "Inc." line. The logo is compared first.
+    pub fn judge(rom_region: Option<char>, licence: Option<&Ps1Licence>, shell_logo: Option<&[u8]>) -> Option<Self> {
+        let region = rom_region?;
+        if region == 'A' { return Some(Self::NotChecked) }
+        let lic = licence?;
+        if let Some(copy) = shell_logo {
+            if lic.logo_data.len() != copy.len() || lic.logo_data != copy { return Some(Self::LogoMismatch) }
+        }
+        let line = lic.line.as_str();
+        let ok = match region {
+            'E' => (line.len() == 70 && line.ends_with("Euro pe   ")) || (line.len() == 67 && line.ends_with("(Europe)")),
+            _ => line.len() == 64 && line.ends_with("Inc."),
+        };
+        Some(if ok { Self::Accepted } else { Self::TextMismatch })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +216,8 @@ impl DiscImage {
                     let text = line.split_whitespace().collect::<Vec<_>>().join(" ");
                     let region = if text.contains("Amer") { Some("America") } else if text.contains("Euro") { Some("Europe") } else if text.contains("Inc.") { Some("Japan") } else { None };
                     let logo_sectors_present = lic.len() > 2048 && lic[2048..].iter().any(|&b| b != 0);
-                    ps1_licence = Some(Ps1Licence { line, text, region, logo_sectors_present });
+                    let logo_data = lic.get(2048..2048 + 0x3278).map(|b| b.to_vec()).unwrap_or_default();
+                    ps1_licence = Some(Ps1Licence { line, text, region, logo_sectors_present, logo_data });
                 }
             }
         }
@@ -221,12 +256,14 @@ pub struct HandoffStep {
 
 /// The hand-off the console would perform after the logo, as a list of steps the app can
 /// show instead of doing. Every line names the function in the notes that does it.
-pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: VideoMode, rom_region: Option<char>) -> Vec<HandoffStep> {
+/// `ps1_shell_logo` is the BIOS's own copy of the PS1 logo (`ps1::Ps1Shell::logo_bytes`), used
+/// to say whether the PS1 shell would accept a PlayStation disc; `None` skips that comparison.
+pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: VideoMode, rom_region: Option<char>, ps1_shell_logo: Option<&[u8]>) -> Vec<HandoffStep> {
     let step = |who: &str, what: String| HandoffStep { who: who.into(), what };
     let Some(d) = disc else {
         return vec![step("OSDSYS", "No disc: OpeningDecideNext → ctx[0x5E8] = 2, the clock/main-menu module is woken (not re-created here).".into())];
     };
-    if d.kind == DiscKind::Ps1 { return ps1_handoff_steps(d, history, rom_region) }
+    if d.kind == DiscKind::Ps1 { return ps1_handoff_steps(d, history, video, rom_region, ps1_shell_logo) }
     if d.kind == DiscKind::Unknown {
         return vec![step("CDVD (disc thread 0x20F478)", "the disc has no SYSTEM.CNF and no PlayStation licence sector: the drive reports it as unknown media (register 0x05, state 0x69); OpeningDecideNext leaves it to the browser, which shows it as a data disc".into())];
     }
@@ -284,16 +321,19 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
 /// The hand-off for a PlayStation 1 disc: OSDSYS records it and starts `rom0:PS1DRV`, which
 /// brings up the PS1 environment; the PS1 shell (`rom0:LOGO`, see notes/hidden_features.md §6
 /// and notes/ps1_boot.md) shows its own screens and runs the PS-X EXE.
-fn ps1_handoff_steps(d: &DiscImage, history: &PlayHistory, rom_region: Option<char>) -> Vec<HandoffStep> {
+fn ps1_handoff_steps(d: &DiscImage, history: &PlayHistory, video: VideoMode, rom_region: Option<char>, shell_logo: Option<&[u8]>) -> Vec<HandoffStep> {
     let step = |who: &str, what: String| HandoffStep { who: who.into(), what };
     let id = d.title_id().unwrap_or_else(|| "???".into());
     let console = rom_region.map(|r| match r { 'J' | 'H' => "Japan", 'A' => "America", 'E' => "Europe", 'C' => "China", _ => "unknown" });
     let lic = d.ps1_licence.as_ref();
+    let verdict = Ps1Verdict::judge(rom_region, lic, shell_logo);
     let mut s = vec![
-        step("Region", match (lic.and_then(|l| l.region), console) {
-            (Some(l), Some(c)) if l == c => format!("licence sector says {l}, console ROM is {c}: the PS1 shell accepts it"),
-            (Some(l), Some(c)) => format!("licence sector says {l}, console ROM is {c}: the PS1 shell would refuse it (the tool does not enforce region locks)"),
-            (l, c) => format!("licence region {}, console region {} (not checked)", l.unwrap_or("unknown"), c.unwrap_or("unknown")),
+        step("Region", match (lic.and_then(|l| l.region), console, verdict) {
+            (_, Some(c), Some(Ps1Verdict::NotChecked)) => format!("console ROM is {c}: an A console's PS1 shell checks neither the licence line nor the logo — the disc is shown as it is"),
+            (Some(l), Some(c), Some(Ps1Verdict::Accepted)) => format!("licence sector says {l}, console ROM is {c}: the PS1 shell accepts the line and the logo"),
+            (Some(l), Some(c), Some(Ps1Verdict::TextMismatch)) => format!("licence sector says {l}, console ROM is {c}: the PS1 shell would re-read the disc for ever on a black screen (the tool does not enforce region locks)"),
+            (_, Some(c), Some(Ps1Verdict::LogoMismatch)) => format!("console ROM is {c}: the logo in sectors 5–11 differs from the shell's copy — SystemErrorBootOrDiskFailure, black screen (the tool draws the disc's logo anyway)"),
+            (l, c, _) => format!("licence region {}, console region {} (not checked)", l.unwrap_or("unknown"), c.unwrap_or("unknown")),
         }),
         step("CDVD (disc thread 0x20F478)", format!("disc type register 0x{:02X} → state 0x{:02X} (PlayStation CD{})", d.disc_type_register(), d.disc_state_code(), if d.has_cdda { " with CD-DA" } else { "" })),
         step("OSDSYS OpeningDecideNext (0x2165A0)", "latched state → ctx[0x14] = 2 (launch request: PlayStation disc)".into()),
@@ -312,10 +352,11 @@ fn ps1_handoff_steps(d: &DiscImage, history: &PlayHistory, rom_region: Option<ch
     s.push(step("KERNEL KLoadExec", "HardwareRestart, EELOAD re-copied to 0x82000, loads rom0:PS1DRV".into()));
     s.push(step("PS1DRV / TBIN", "the EE side of PlayStation compatibility: the IOP is rebooted in PS1 mode and TBIN loads rom0:LOGO — the PS1 BIOS shell (stub + LZ stream → 0x30000, i.e. the PS1's 0x80030000)".into()));
     match lic {
-        Some(l) => s.push(step("PS1 shell: system area", format!("sectors 4–15 read; licence text \"{}\"; logo data in sectors 5–15 {}", l.text, if l.logo_sectors_present { "present" } else { "absent (the licence screen would show no logo)" }))),
+        Some(l) => s.push(step("PS1 shell: system area", format!("sectors 4–15 read; licence line {} characters: \"{}\"; logo TMD in sectors 5–11 {}", l.line.len(), l.text, match (l.logo_sectors_present, shell_logo) { (false, _) => "absent (the licence screen would show no logo)".to_string(), (true, Some(c)) if c == l.logo_data.as_slice() => "identical to the shell's own copy".into(), (true, Some(_)) => "differs from the shell's copy".into(), (true, None) => "present".into() }))),
         None => s.push(step("PS1 shell: system area", "sectors 4–15 carry no licence text: an original PS1 shell reports \"Not PS Disk\"".into())),
     }
-    s.push(step("PS1 shell", "the Sony Computer Entertainment screen with its chime, then the licence screen with the logo read from the disc (timings in notes/ps1_boot.md once verified)".into()));
+    let (tail, total) = if video == VideoMode::Pal { (13, 74) } else { (22, 83) };
+    s.push(step("PS1 shell: licence screen", format!("no Sony Computer Entertainment screen in this shell; the logo fades in over 31 fields through the GTE depth cue under two drone notes, then the wordmark ramps up over 30 fields with the licence line, the TM mark and the drive's SCE letters while the ascending chime plays, {tail} more fields until the note table ends: {total} fields ≈ {:.2} s, then the screen stays while the game loads", total as f32 / video.fps())));
     if let Some(b) = &d.ps1_exe {
         s.push(step("PS1 shell → PS-X EXE", format!("{} at LBA {}, {} bytes: text {} bytes to 0x{:08X}, initial PC 0x{:08X}, GP 0x{:08X}, SP 0x{:08X}{}", b.file_name, b.lba, b.size, b.text_size, b.text_addr, b.initial_pc, b.initial_gp, b.stack, if b.marker.is_empty() { String::new() } else { format!("; header marker \"{}\"", b.marker) })));
     } else {

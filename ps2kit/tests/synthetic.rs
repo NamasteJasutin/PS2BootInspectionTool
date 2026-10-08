@@ -424,14 +424,21 @@ fn ps1_disc_with_system_cnf() {
     assert_eq!((e.lba, e.initial_pc, e.initial_gp, e.text_addr, e.text_size, e.stack), (20, 0x8001_0000, 0x8001_8000, 0x8001_0000, 0x800, 0x801F_FF00));
     assert!(e.marker.contains("North America"));
     let h = PlayHistory::synthetic(&[], &[], 1);
-    let steps = ps2kit::disc::handoff_steps(Some(&d), &h, Vm::Ntsc, Some('A'));
+    let steps = ps2kit::disc::handoff_steps(Some(&d), &h, Vm::Ntsc, Some('A'), None);
     let text: Vec<String> = steps.iter().map(|s| format!("{} {}", s.who, s.what)).collect();
-    assert!(text[0].contains("licence sector says America, console ROM is America: the PS1 shell accepts it"), "{}", text[0]);
+    assert!(text[0].contains("an A console's PS1 shell checks neither"), "{}", text[0]);
+    // The rule from the shell: E wants the 70/67-character European line, J the 64-character "Inc." line.
+    use ps2kit::disc::Ps1Verdict;
+    let lic = d.ps1_licence.as_ref().unwrap();
+    assert_eq!(Ps1Verdict::judge(Some('A'), Some(lic), None), Some(Ps1Verdict::NotChecked));
+    assert_eq!(Ps1Verdict::judge(Some('E'), Some(lic), None), Some(Ps1Verdict::TextMismatch), "an American line on a European console");
+    assert_eq!(Ps1Verdict::judge(Some('E'), Some(lic), Some(&lic.logo_data)), Some(Ps1Verdict::TextMismatch));
+    assert_eq!(Ps1Verdict::judge(Some('E'), Some(lic), Some(&[0u8; 0x3278])), Some(Ps1Verdict::LogoMismatch), "the logo is compared before the text");
     assert!(text.iter().any(|t| t.contains("LoadExecPS2(\"rom0:PS1DRV\", argc 2, argv {\"SLUS_005.94\", \"1.1\"}")), "{text:?}");
     assert!(text.iter().any(|t| t.contains("rom0:LOGO")));
     assert!(text.iter().any(|t| t.contains("new record for SLUS_005.94")));
-    let steps_e = ps2kit::disc::handoff_steps(Some(&d), &h, Vm::Pal, Some('E'));
-    assert!(steps_e[0].what.contains("would refuse"));
+    let steps_e = ps2kit::disc::handoff_steps(Some(&d), &h, Vm::Pal, Some('E'), None);
+    assert!(steps_e[0].what.contains("re-read the disc for ever"), "{}", steps_e[0].what);
 }
 
 #[test]
@@ -446,6 +453,10 @@ fn ps1_disc_without_system_cnf_and_with_cdda() {
     assert_eq!(d.title_id().as_deref(), Some("???"), "PSX.EXE is recorded as ???");
     assert_eq!(d.ps1_licence.as_ref().and_then(|l| l.region), Some("Europe"));
     assert_eq!(d.ps1_exe.as_ref().map(|e| e.file_name.as_str()), Some("PSX.EXE;1"));
+    let lic = d.ps1_licence.as_ref().unwrap();
+    assert_eq!(lic.line.len(), 70, "the synthetic European line is the 70-character variant");
+    assert_eq!(ps2kit::disc::Ps1Verdict::judge(Some('E'), Some(lic), None), Some(ps2kit::disc::Ps1Verdict::Accepted));
+    assert_eq!(ps2kit::disc::Ps1Verdict::judge(Some('J'), Some(lic), None), Some(ps2kit::disc::Ps1Verdict::TextMismatch));
 }
 
 #[test]
@@ -464,6 +475,6 @@ fn iso_without_boot_is_unknown_media() {
     let d = DiscImage::open(&p).unwrap();
     assert_eq!(d.kind, DiscKind::Unknown);
     assert_eq!(d.disc_state_code(), 0x69);
-    let steps = ps2kit::disc::handoff_steps(Some(&d), &PlayHistory::synthetic(&[], &[], 1), Vm::Ntsc, Some('E'));
+    let steps = ps2kit::disc::handoff_steps(Some(&d), &PlayHistory::synthetic(&[], &[], 1), Vm::Ntsc, Some('E'), None);
     assert_eq!(steps.len(), 1);
 }

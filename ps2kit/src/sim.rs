@@ -336,6 +336,17 @@ pub const HANDOFF_PHASES: [BootPhase; 7] = [
     BootPhase { name: "PS2LOGO: logo sectors 0–11 read from the disc and checksummed", seconds: 0.20 },
 ];
 
+/// The hand-off for a PlayStation disc: OSDSYS to PS1DRV to the PS1 shell's first frame.
+pub const PS1_HANDOFF_PHASES: [BootPhase; 7] = [
+    BootPhase { name: "OSDSYS: disc thread off; SYSTEM.CNF read, BOOT line → PS1 title ID", seconds: 0.15 },
+    BootPhase { name: "OSDSYS: play history updated and saved to the memory card", seconds: 0.20 },
+    BootPhase { name: "OSDSYS: subsystems shut down, LoadExecPS2(\"rom0:PS1DRV\", id, ver)", seconds: 0.10 },
+    BootPhase { name: "KERNEL/EELOAD: PS1DRV loaded; IOP rebooted into PlayStation mode", seconds: 0.40 },
+    BootPhase { name: "TBIN: rom0:LOGO (the PS1 shell) decompressed to 0x30000", seconds: 0.10 },
+    BootPhase { name: "PS1 shell: GetID, licence sector 4 and logo sectors 5–11 read and checked", seconds: 0.25 },
+    BootPhase { name: "PS1 shell: SPU bank uploaded, reverb set, drone notes keyed", seconds: 0.10 },
+];
+
 /// The phase active `elapsed` seconds into a black period of `total` seconds.
 pub fn phase_at(phases: &[BootPhase], elapsed: f32, total: f32) -> &BootPhase {
     let sum: f32 = phases.iter().map(|p| p.seconds).sum();

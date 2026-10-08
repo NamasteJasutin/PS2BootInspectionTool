@@ -336,10 +336,19 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
                 ui.small(format!("PS-X EXE: {} — LBA {}, {} bytes, text 0x{:08X} ({} bytes), PC 0x{:08X}", b.file_name, b.lba, b.size, b.text_addr, b.text_size, b.initial_pc));
             }
             match d.kind {
-                ps2kit::disc::DiscKind::Ps2 => ui.small(d.logo_region.map(|r| format!("Logo sectors: {} master (checked by J/H and E consoles only)", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())),
-                ps2kit::disc::DiscKind::Ps1 => ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" — logo data {}", l.text, if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into())),
-                ps2kit::disc::DiscKind::Unknown => ui.small("No SYSTEM.CNF and no licence sector."),
-            };
+                ps2kit::disc::DiscKind::Ps2 => { ui.small(d.logo_region.map(|r| format!("Logo sectors: {} master (checked by J/H and E consoles only)", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())); }
+                ps2kit::disc::DiscKind::Ps1 => {
+                    ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" ({} chars) — logo data {}", l.text, l.line.len(), if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into()));
+                    ui.small(match m.ps1_verdict() {
+                        Some(ps2kit::disc::Ps1Verdict::NotChecked) => "This console (A) does not check the licence or the logo.",
+                        Some(ps2kit::disc::Ps1Verdict::Accepted) => "This console's PS1 shell accepts the licence line and the logo.",
+                        Some(ps2kit::disc::Ps1Verdict::TextMismatch) => "This console's PS1 shell would not accept the licence line (black screen, endless re-read). Shown anyway.",
+                        Some(ps2kit::disc::Ps1Verdict::LogoMismatch) => "The logo differs from the shell's copy: the console would hang. Shown anyway.",
+                        None => "Licence check: unknown.",
+                    });
+                }
+                ps2kit::disc::DiscKind::Unknown => { ui.small("No SYSTEM.CNF and no licence sector."); }
+            }
             ui.collapsing("What the console would do next", |ui| {
                 for s in m.handoff_steps() { ui.small(format!("{}  {}", s.who, s.what)); }
             });
