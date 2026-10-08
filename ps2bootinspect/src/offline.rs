@@ -45,6 +45,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.warning_exit_seconds = named.get("exit").and_then(|v| v.parse().ok()).unwrap_or(10.0);
     m.scene_kind = match named.get("scene").map(String::as_str) { Some("warning") => SceneKind::Warning, Some("logo") => SceneKind::Logo, Some("full") => SceneKind::Full, _ => SceneKind::Boot };
     m.rebuild_timeline();
+    if named.contains_key("handoff") {
+        // `--handoff 1`: print what the sidebar's hand-off card would show.
+        println!("bios: {}  video: {:?}", m.bios_status, m.video);
+        println!("disc: {}", m.disc_status);
+        for s in m.handoff_steps() { println!("  {:<44} {}", s.who, s.what) }
+        for sp in &m.sequence.spans { println!("segment {:?}: frames {}..{}", sp.segment, sp.start, sp.start + sp.length) }
+    }
     let free = named.get("free").and_then(|f| {
         let v: Vec<f32> = f.split(',').filter_map(|x| x.parse().ok()).collect();
         (v.len() == 5).then(|| {

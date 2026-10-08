@@ -227,7 +227,7 @@ impl Model {
         match DiscImage::open(path) {
             Ok(d) => {
                 self.disc_logo = DiscLogo::read(path).ok();
-                self.disc_status = format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo checksum region {r}")).unwrap_or_else(|| "logo checksum: no E/J match".into()));
+                self.disc_status = format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo: {} master", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "logo: unknown master".into()));
                 self.disc = Some(d);
                 self.disc_path = Some(path.to_path_buf());
                 self.logo_version += 1;

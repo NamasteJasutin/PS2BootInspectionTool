@@ -325,7 +325,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
             if let Some(b) = &d.boot_elf {
                 ui.small(format!("Boot ELF: {} — LBA {}, {} bytes, entry 0x{:08X}, {} segment(s)", b.file_name, b.lba, b.size, b.entry, b.segments.len()));
             }
-            ui.small(d.logo_region.map(|r| format!("Logo sectors: checksum matches region {r}")).unwrap_or_else(|| "Logo sectors: checksum has no E/J match".into()));
+            ui.small(d.logo_region.map(|r| format!("Logo sectors: {} master (checked by J/H and E consoles only)", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into()));
             ui.collapsing("What the console would do next", |ui| {
                 for s in m.handoff_steps() { ui.small(format!("{}  {}", s.who, s.what)); }
             });
@@ -337,7 +337,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         ui.checkbox(&mut m.sound_enabled, "Boot chime");
         ui.add(egui::Slider::new(&mut m.sound_volume, 0.0..=1.0).text("volume"));
         ui.horizontal(|ui| { for v in VisualizerMode::ALL { ui.selectable_value(&mut m.visualizer, v, v.name()); } });
-        ui.small(&m.sound_status);
+        ui.small(format!("{} · device {} Hz", m.sound_status, m.audio.device_rate as u32));
     });
     section(ui, "Layers", |ui| {
         let o = &mut m.options;

@@ -147,7 +147,17 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
     s.push(step("OSDSYS", format!("shutdown of subsystems (0x2021E8), then LoadExecPS2(\"rom0:PS2LOGO\", argc 1, argv {{\"{boot2}\"}})")));
     s.push(step("KERNEL KLoadExec", "HardwareRestart, EELOAD re-copied to 0x82000, loads rom0:PS2LOGO (stub + LZ stream → 0x100000, main 0x102040)".into()));
     s.push(step("PS2LOGO", "rom0:ROMVER → region; load rom0:OSDSND and the embedded one-sample bank; GS 640×512 interlaced FIELD mode".into()));
-    s.push(step("PS2LOGO LoadImage (0x101540)", format!("sceCdDecSet(1,1,5), sceCdRead(lba 0, 12 sectors) → 24,576 bytes; checksum {}", d.logo_region.map(|r| format!("matches region {r}")).unwrap_or_else(|| "does not match E/J (A/C consoles skip it)".into()))));
+    // The logo bitmap is mastered per region: E discs carry the PAL logo, J and A discs share
+    // the same one, so a US disc matches the "J" checksum. Only J/H and E consoles check it.
+    let master = d.logo_region.map(|r| if r == "J" { "the J/A master".to_string() } else { format!("the {r} master") }).unwrap_or_else(|| "neither known master".into());
+    let verdict = match rom_region {
+        Some('A') | Some('C') => "this console never checks it".to_string(),
+        Some('E') if d.logo_region == Some("E") => "accepted".into(),
+        Some('J') | Some('H') if d.logo_region == Some("J") => "accepted".into(),
+        Some(_) => "mismatch: the animation is skipped and PS2LOGO exits straight to the game".into(),
+        None => "console region unknown".into(),
+    };
+    s.push(step("PS2LOGO LoadImage (0x101540)", format!("sceCdDecSet(1,1,5), sceCdRead(lba 0, 12 sectors) → 24,576 bytes; logo data matches {master}; checksum {verdict}")));
     s.push(step("PS2LOGO", format!("chime (cmd 0x5200 ×5), animation fields {}, then the last frame is held for 120 fields", if video == VideoMode::Pal { "14–35" } else { "17–42" })));
     if let Some(b) = &d.boot_elf {
         let total: u64 = b.segments.iter().map(|s| s.mem_size as u64).sum();
