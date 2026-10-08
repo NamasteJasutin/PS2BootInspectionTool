@@ -1,8 +1,9 @@
 //! Tests that need no Sony files: every input is built here, so they run on CI.
 //! `tests/oracles.rs` holds the checks against a real BIOS, which skip when none is present.
 
-use ps2kit::disc::DiscImage;
+use ps2kit::disc::{DiscImage, DiscKind};
 use ps2kit::history::{PlayHistory, RECORD_SIZE};
+use ps2kit::sim::VideoMode as Vm;
 use ps2kit::logo::DiscLogo;
 use ps2kit::memcard::MemoryCard;
 use ps2kit::rom::{unpack, RomDir};
@@ -251,6 +252,7 @@ fn write_bin_cue(dir: &PathBuf, sectors: &[Vec<u8>]) -> PathBuf {
 
 fn check_disc(path: &PathBuf, raw: bool, region: &str) {
     let d = DiscImage::open(path).unwrap();
+    assert_eq!(d.kind, DiscKind::Ps2);
     assert_eq!(d.raw_sectors, raw);
     assert_eq!(d.volume_id.trim(), "TESTDISC");
     assert_eq!(d.title_id().as_deref(), Some("SLUS_123.45"));
@@ -357,4 +359,111 @@ fn adpcm_silence_and_envelope_shape() {
     assert!(env[0] <= env[100] && env[100] <= env[3000], "attack rises");
     assert!(env[11999] < env[3000], "release falls");
     assert!(env.iter().all(|v| (0.0..=32767.0).contains(v)), "SPU level scale");
+}
+
+// --- PlayStation 1 discs -----------------------------------------------------------------
+
+/// A minimal PlayStation disc: licence sector 4, logo data in 5–15, SYSTEM.CNF with `BOOT`,
+/// and a PS-X EXE. `with_cnf = false` leaves SYSTEM.CNF out, so the shell falls back to PSX.EXE.
+fn synthetic_ps1_disc(region_text: &str, with_cnf: bool) -> Vec<Vec<u8>> {
+    let mut sectors: Vec<Vec<u8>> = vec![vec![0u8; 2048]; 24];
+    let lic = format!("          Licensed  by          Sony Computer Entertainment {region_text}");
+    sectors[4][0..lic.len()].copy_from_slice(lic.as_bytes());
+    for (i, s) in sectors[5..16].iter_mut().enumerate() { s[0] = 0x10 + i as u8; s[100] = 0x7F; }
+    let pvd = &mut sectors[16];
+    pvd[0] = 1; pvd[1..6].copy_from_slice(b"CD001"); pvd[6] = 1;
+    pvd[40..40 + 8].copy_from_slice(b"PSXDISC ");
+    pvd[80..84].copy_from_slice(&24u32.to_le_bytes());
+    pvd[156] = 34; pvd[158..162].copy_from_slice(&18u32.to_le_bytes()); pvd[166..170].copy_from_slice(&2048u32.to_le_bytes());
+    let cnf = b"BOOT = cdrom:\\SLUS_005.94;1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801fff00\r\nVER = 1.1\r\n".to_vec();
+    let exe_name = if with_cnf { "SLUS_005.94;1" } else { "PSX.EXE;1" };
+    let mut exe = vec![0u8; 2048 + 0x800];
+    exe[..8].copy_from_slice(b"PS-X EXE");
+    exe[0x10..0x14].copy_from_slice(&0x8001_0000u32.to_le_bytes());
+    exe[0x14..0x18].copy_from_slice(&0x8001_8000u32.to_le_bytes());
+    exe[0x18..0x1C].copy_from_slice(&0x8001_0000u32.to_le_bytes());
+    exe[0x1C..0x20].copy_from_slice(&0x800u32.to_le_bytes());
+    exe[0x30..0x34].copy_from_slice(&0x801F_FF00u32.to_le_bytes());
+    let marker = b"Sony Computer Entertainment Inc. for North America area";
+    exe[0x4C..0x4C + marker.len()].copy_from_slice(marker);
+    let mut dir = Vec::new();
+    let mut files: Vec<(&str, u32, u32)> = vec![(exe_name, 20, exe.len() as u32)];
+    if with_cnf { files.insert(0, ("SYSTEM.CNF;1", 19, cnf.len() as u32)) }
+    for (name, lba, size) in files {
+        let len = 33 + name.len() + (name.len() + 1) % 2;
+        let mut e = vec![0u8; len];
+        e[0] = len as u8;
+        e[2..6].copy_from_slice(&lba.to_le_bytes());
+        e[10..14].copy_from_slice(&size.to_le_bytes());
+        e[32] = name.len() as u8;
+        e[33..33 + name.len()].copy_from_slice(name.as_bytes());
+        dir.extend(e);
+    }
+    sectors[18][..dir.len()].copy_from_slice(&dir);
+    if with_cnf { sectors[19][..cnf.len()].copy_from_slice(&cnf) }
+    sectors[20][..2048].copy_from_slice(&exe[..2048]);
+    sectors[21][..exe.len() - 2048].copy_from_slice(&exe[2048..]);
+    sectors
+}
+
+#[test]
+fn ps1_disc_with_system_cnf() {
+    let dir = scratch("ps1");
+    let p = write_iso(&dir, &synthetic_ps1_disc("Amer  ica ", true));
+    let d = DiscImage::open(&p).unwrap();
+    assert_eq!(d.kind, DiscKind::Ps1);
+    assert!(d.boot_elf.is_none() && d.logo_region.is_none());
+    assert_eq!(d.title_id().as_deref(), Some("SLUS_005.94"));
+    assert_eq!(d.version.as_deref(), Some("1.1"));
+    assert_eq!((d.disc_type_register(), d.disc_state_code()), (0x10, 0x6A));
+    let l = d.ps1_licence.as_ref().expect("licence sector");
+    assert_eq!(l.region, Some("America"));
+    assert!(l.text.starts_with("Licensed by Sony Computer Entertainment"));
+    assert!(l.logo_sectors_present);
+    let e = d.ps1_exe.as_ref().expect("PS-X EXE");
+    assert_eq!((e.lba, e.initial_pc, e.initial_gp, e.text_addr, e.text_size, e.stack), (20, 0x8001_0000, 0x8001_8000, 0x8001_0000, 0x800, 0x801F_FF00));
+    assert!(e.marker.contains("North America"));
+    let h = PlayHistory::synthetic(&[], &[], 1);
+    let steps = ps2kit::disc::handoff_steps(Some(&d), &h, Vm::Ntsc, Some('A'));
+    let text: Vec<String> = steps.iter().map(|s| format!("{} {}", s.who, s.what)).collect();
+    assert!(text[0].contains("licence sector says America, console ROM is America: the PS1 shell accepts it"), "{}", text[0]);
+    assert!(text.iter().any(|t| t.contains("LoadExecPS2(\"rom0:PS1DRV\", argc 2, argv {\"SLUS_005.94\", \"1.1\"}")), "{text:?}");
+    assert!(text.iter().any(|t| t.contains("rom0:LOGO")));
+    assert!(text.iter().any(|t| t.contains("new record for SLUS_005.94")));
+    let steps_e = ps2kit::disc::handoff_steps(Some(&d), &h, Vm::Pal, Some('E'));
+    assert!(steps_e[0].what.contains("would refuse"));
+}
+
+#[test]
+fn ps1_disc_without_system_cnf_and_with_cdda() {
+    let dir = scratch("ps1cdda");
+    let cue = write_bin_cue(&dir, &synthetic_ps1_disc("Euro pe   ", false));
+    std::fs::write(&cue, "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 00 01:00:00\n").unwrap();
+    let d = DiscImage::open(&cue).unwrap();
+    assert_eq!(d.kind, DiscKind::Ps1);
+    assert!(d.has_cdda);
+    assert_eq!((d.disc_type_register(), d.disc_state_code()), (0x11, 0x6B));
+    assert_eq!(d.title_id().as_deref(), Some("???"), "PSX.EXE is recorded as ???");
+    assert_eq!(d.ps1_licence.as_ref().and_then(|l| l.region), Some("Europe"));
+    assert_eq!(d.ps1_exe.as_ref().map(|e| e.file_name.as_str()), Some("PSX.EXE;1"));
+}
+
+#[test]
+fn iso_without_boot_is_unknown_media() {
+    let dir = scratch("datadisc");
+    let mut sectors = synthetic_ps1_disc("Inc.", true);
+    sectors[4] = vec![0u8; 2048];                       // no licence
+    sectors[19] = vec![0u8; 2048];                      // SYSTEM.CNF present but empty
+    let p = write_iso(&dir, &sectors);
+    let d = DiscImage::open(&p).unwrap();
+    assert_eq!(d.kind, DiscKind::Unknown, "an empty SYSTEM.CNF falls back to PSX.EXE, which this disc does not have");
+    let mut sectors = synthetic_ps1_disc("Inc.", false);
+    sectors[4] = vec![0u8; 2048];
+    sectors[18] = vec![0u8; 2048];                      // empty root: nothing to boot
+    let p = write_iso(&dir, &sectors);
+    let d = DiscImage::open(&p).unwrap();
+    assert_eq!(d.kind, DiscKind::Unknown);
+    assert_eq!(d.disc_state_code(), 0x69);
+    let steps = ps2kit::disc::handoff_steps(Some(&d), &PlayHistory::synthetic(&[], &[], 1), Vm::Ntsc, Some('E'));
+    assert_eq!(steps.len(), 1);
 }

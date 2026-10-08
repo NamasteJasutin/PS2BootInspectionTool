@@ -27,9 +27,54 @@ pub struct BootElf {
     pub is_mips: bool,
 }
 
+/// What the drive's disc-type register would say about the disc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscKind {
+    /// `SYSTEM.CNF` has `BOOT2` (register 0x12/0x14, states 0x6C/0x6E).
+    Ps2,
+    /// `SYSTEM.CNF` has `BOOT` only, or no `SYSTEM.CNF` but a PlayStation licence sector
+    /// (register 0x10/0x11, states 0x6A/0x6B).
+    Ps1,
+    /// Neither: an ISO the console would not launch.
+    Unknown,
+}
+
+/// A PlayStation 1 boot executable ("PS-X EXE" header, 2048 bytes before the text).
+#[derive(Debug, Clone)]
+pub struct Ps1Exe {
+    pub path: String,      // as written in SYSTEM.CNF `BOOT`, or `cdrom:\PSX.EXE;1`
+    pub file_name: String,
+    pub lba: usize,
+    pub size: usize,
+    pub initial_pc: u32,
+    pub initial_gp: u32,
+    pub text_addr: u32,
+    pub text_size: u32,
+    pub stack: u32,
+    /// The "Sony Computer Entertainment Inc. for … area" marker at 0x4C, if present.
+    pub marker: String,
+}
+
+/// The licence sector a PlayStation disc carries (sector 4 of the system area) and whether
+/// the logo data in sectors 5–15 is present.
+#[derive(Debug, Clone)]
+pub struct Ps1Licence {
+    pub text: String,
+    /// "Japan", "America" or "Europe" from the licence text.
+    pub region: Option<&'static str>,
+    pub logo_sectors_present: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiscImage {
     pub path: PathBuf,
+    pub kind: DiscKind,
+    pub ps1_exe: Option<Ps1Exe>,
+    pub ps1_licence: Option<Ps1Licence>,
+    /// `VER` from SYSTEM.CNF (PS1 discs: passed to PS1DRV as the second argument).
+    pub version: Option<String>,
+    /// The cue sheet lists audio tracks (register 0x11/0x13: "with CD-DA").
+    pub has_cdda: bool,
     pub volume_id: String,
     pub sector_count: usize,
     pub system_cnf: HashMap<String, String>,
@@ -44,9 +89,33 @@ impl DiscImage {
     pub fn byte_size(&self) -> usize { self.sector_count * 2048 }
     /// CD if the volume fits a CD (OSDSYS's state 0x6C), otherwise DVD (0x6E).
     pub fn is_dvd(&self) -> bool { self.byte_size() > 800 << 20 }
-    pub fn disc_state_code(&self) -> u32 { if self.is_dvd() { 0x6E } else { 0x6C } }
-    /// Title ID as the history file and the browser spell it (`SLES_530.64`).
-    pub fn title_id(&self) -> Option<String> { self.boot_elf.as_ref().map(|b| b.file_name.split(';').next().unwrap_or("").to_string()) }
+    pub fn disc_state_code(&self) -> u32 {
+        match self.kind {
+            DiscKind::Ps1 => if self.has_cdda { 0x6B } else { 0x6A },
+            DiscKind::Ps2 => if self.is_dvd() { 0x6E } else if self.has_cdda { 0x6D } else { 0x6C },
+            DiscKind::Unknown => 0x69,
+        }
+    }
+    /// The drive's disc-type register value behind [`disc_state_code`](Self::disc_state_code).
+    pub fn disc_type_register(&self) -> u8 {
+        match self.kind {
+            DiscKind::Ps1 => if self.has_cdda { 0x11 } else { 0x10 },
+            DiscKind::Ps2 => if self.is_dvd() { 0x14 } else if self.has_cdda { 0x13 } else { 0x12 },
+            DiscKind::Unknown => 0x05,
+        }
+    }
+    /// Title ID as the history file and the browser spell it (`SLES_530.64`). For a PS1 disc
+    /// OSDSYS takes the file name of the `BOOT` line; `PSX.EXE` becomes `???`.
+    pub fn title_id(&self) -> Option<String> {
+        match self.kind {
+            DiscKind::Ps2 => self.boot_elf.as_ref().map(|b| b.file_name.split(';').next().unwrap_or("").to_string()),
+            DiscKind::Ps1 => self.ps1_exe.as_ref().map(|b| {
+                let name = b.file_name.split(';').next().unwrap_or("").to_string();
+                if name.eq_ignore_ascii_case("PSX.EXE") { "???".to_string() } else { name }
+            }),
+            DiscKind::Unknown => None,
+        }
+    }
 
     pub fn open(path: &Path) -> Result<Self> {
         let mut reader = crate::sectors::SectorReader::open(path)?;
@@ -81,6 +150,39 @@ impl DiscImage {
                 }
             }
         }
+        let has_cdda = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue"))
+            && std::fs::read_to_string(path).map(|t| t.lines().any(|l| l.trim().starts_with("TRACK") && l.contains("AUDIO"))).unwrap_or(false);
+        let version = system_cnf.get("VER").cloned();
+        // A PlayStation disc: `BOOT` (no `BOOT2`), or no SYSTEM.CNF at all but the licence
+        // sector; the executable then defaults to PSX.EXE.
+        let mut ps1_exe = None;
+        let mut ps1_licence = None;
+        let ps1_boot = if system_cnf.contains_key("BOOT2") { None } else { system_cnf.get("BOOT").cloned().or_else(|| if entries.is_empty() { None } else { Some("cdrom:\\PSX.EXE;1".to_string()) }) };
+        if let Some(boot) = &ps1_boot {
+            let file = boot.rsplit(|c| c == '\\' || c == ':' || c == '/').next().unwrap_or("").to_string();
+            if let Some(e) = entries.iter().find(|e| e.0.eq_ignore_ascii_case(&file)) {
+                let hdr = sector(e.1, 1)?;
+                if hdr.len() >= 0x80 && &hdr[..8] == b"PS-X EXE" {
+                    ps1_exe = Some(Ps1Exe {
+                        path: boot.clone(), file_name: e.0.clone(), lba: e.1, size: e.2,
+                        initial_pc: hdr.u32(0x10), initial_gp: hdr.u32(0x14), text_addr: hdr.u32(0x18), text_size: hdr.u32(0x1C), stack: hdr.u32(0x30),
+                        marker: hdr.cstr(0x4C, 0x7B4 - 0x4C).trim().to_string(),
+                    });
+                }
+            }
+            let lic = sector(4, 12).unwrap_or_default();
+            if lic.len() >= 2048 {
+                let data = &lic[..2048];
+                if let Some(i) = data.windows(8).position(|w| w == b"Licensed") {
+                    let text: String = data[i..(i + 80).min(2048)].iter().take_while(|&&b| b != 0).map(|&b| b as char).collect();
+                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let region = if text.contains("Amer") { Some("America") } else if text.contains("Euro") { Some("Europe") } else if text.contains("Inc.") { Some("Japan") } else { None };
+                    let logo_sectors_present = lic.len() > 2048 && lic[2048..].iter().any(|&b| b != 0);
+                    ps1_licence = Some(Ps1Licence { text, region, logo_sectors_present });
+                }
+            }
+        }
+        let kind = if system_cnf.contains_key("BOOT2") { DiscKind::Ps2 } else if ps1_exe.is_some() || ps1_licence.is_some() { DiscKind::Ps1 } else { DiscKind::Unknown };
         let mut boot_elf = None;
         if let Some(boot) = system_cnf.get("BOOT2") {
             let file = boot.rsplit(|c| c == '\\' || c == ':' || c == '/').next().unwrap_or("").to_string();
@@ -102,8 +204,8 @@ impl DiscImage {
                 boot_elf = Some(BootElf { path: boot.clone(), file_name: e.0.clone(), lba: e.1, size: e.2, entry, segments, is_mips });
             }
         }
-        let logo_region = DiscLogo::read(path).ok().and_then(|l| l.region);
-        Ok(Self { path: path.to_path_buf(), volume_id, sector_count, system_cnf, system_cnf_text: text, boot_elf, logo_region, raw_sectors })
+        let logo_region = if kind == DiscKind::Ps2 { DiscLogo::read(path).ok().and_then(|l| l.region) } else { None };
+        Ok(Self { path: path.to_path_buf(), kind, ps1_exe, ps1_licence, version, has_cdda, volume_id, sector_count, system_cnf, system_cnf_text: text, boot_elf, logo_region, raw_sectors })
     }
 }
 
@@ -120,6 +222,10 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
     let Some(d) = disc else {
         return vec![step("OSDSYS", "No disc: OpeningDecideNext → ctx[0x5E8] = 2, the clock/main-menu module is woken (not re-created here).".into())];
     };
+    if d.kind == DiscKind::Ps1 { return ps1_handoff_steps(d, history, rom_region) }
+    if d.kind == DiscKind::Unknown {
+        return vec![step("CDVD (disc thread 0x20F478)", "the disc has no SYSTEM.CNF and no PlayStation licence sector: the drive reports it as unknown media (register 0x05, state 0x69); OpeningDecideNext leaves it to the browser, which shows it as a data disc".into())];
+    }
     let id = d.title_id().unwrap_or_else(|| "?".into());
     let kind = if d.is_dvd() { "DVD" } else { "CD" };
     let boot2 = d.system_cnf.get("BOOT2").cloned().unwrap_or_default();
@@ -168,5 +274,45 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
         }
     }
     s.push(step("— stop —", "This is where the game takes over the console. The app ends the sequence here.".into()));
+    s
+}
+
+/// The hand-off for a PlayStation 1 disc: OSDSYS records it and starts `rom0:PS1DRV`, which
+/// brings up the PS1 environment; the PS1 shell (`rom0:LOGO`, see notes/hidden_features.md §6
+/// and notes/ps1_boot.md) shows its own screens and runs the PS-X EXE.
+fn ps1_handoff_steps(d: &DiscImage, history: &PlayHistory, rom_region: Option<char>) -> Vec<HandoffStep> {
+    let step = |who: &str, what: String| HandoffStep { who: who.into(), what };
+    let id = d.title_id().unwrap_or_else(|| "???".into());
+    let console = rom_region.map(|r| match r { 'J' | 'H' => "Japan", 'A' => "America", 'E' => "Europe", 'C' => "China", _ => "unknown" });
+    let lic = d.ps1_licence.as_ref();
+    let mut s = vec![
+        step("Region", match (lic.and_then(|l| l.region), console) {
+            (Some(l), Some(c)) if l == c => format!("licence sector says {l}, console ROM is {c}: the PS1 shell accepts it"),
+            (Some(l), Some(c)) => format!("licence sector says {l}, console ROM is {c}: the PS1 shell would refuse it (the tool does not enforce region locks)"),
+            (l, c) => format!("licence region {}, console region {} (not checked)", l.unwrap_or("unknown"), c.unwrap_or("unknown")),
+        }),
+        step("CDVD (disc thread 0x20F478)", format!("disc type register 0x{:02X} → state 0x{:02X} (PlayStation CD{})", d.disc_type_register(), d.disc_state_code(), if d.has_cdda { " with CD-DA" } else { "" })),
+        step("OSDSYS OpeningDecideNext (0x2165A0)", "latched state → ctx[0x14] = 2 (launch request: PlayStation disc)".into()),
+        step("OSDSYS LaunchPs1Disc (0x202D50 → Ps1GetBootId 0x203390)", format!("SYSTEM.CNF BOOT = {}; VER = {}; title ID = the file name between the last \\ or : and ; → {id}{}", d.ps1_exe.as_ref().map(|b| b.path.as_str()).unwrap_or("(none: PSX.EXE)"), d.version.as_deref().unwrap_or("(none)"), if id == "???" { " (PSX.EXE is recorded as \"???\")" } else { "" })),
+    ];
+    let rec = history.records.iter().find(|r| r.name == id);
+    s.push(step("OSDSYS HistoryUpdate (0x201E98) + save (0x204AC0)", match rec {
+        None => format!("new record for {id}: count 1, mask 0x01 → one tower stub appears on the next boot; written to mc0:/B?DATA-SYSTEM/history"),
+        Some(r) => { let c = r.count as u32 + 1; format!("{id}: count {} → {c}{}; written to mc0:/B?DATA-SYSTEM/history", r.count, if c >= 14 && (c - 14) % 10 == 0 { ", a new random tower bit is added" } else { "" }) }
+    }));
+    s.push(step("OSDSYS", format!("shutdown of subsystems (0x2021E8), then LoadExecPS2(\"rom0:PS1DRV\", argc 2, argv {{\"{id}\", \"{}\"}})", d.version.as_deref().unwrap_or(""))));
+    s.push(step("KERNEL KLoadExec", "HardwareRestart, EELOAD re-copied to 0x82000, loads rom0:PS1DRV".into()));
+    s.push(step("PS1DRV / TBIN", "the EE side of PlayStation compatibility: the IOP is rebooted in PS1 mode and TBIN loads rom0:LOGO — the PS1 BIOS shell (stub + LZ stream → 0x30000, i.e. the PS1's 0x80030000)".into()));
+    match lic {
+        Some(l) => s.push(step("PS1 shell: system area", format!("sectors 4–15 read; licence text \"{}\"; logo data in sectors 5–15 {}", l.text, if l.logo_sectors_present { "present" } else { "absent (the licence screen would show no logo)" }))),
+        None => s.push(step("PS1 shell: system area", "sectors 4–15 carry no licence text: an original PS1 shell reports \"Not PS Disk\"".into())),
+    }
+    s.push(step("PS1 shell", "the Sony Computer Entertainment screen with its chime, then the licence screen with the logo read from the disc (timings in notes/ps1_boot.md once verified)".into()));
+    if let Some(b) = &d.ps1_exe {
+        s.push(step("PS1 shell → PS-X EXE", format!("{} at LBA {}, {} bytes: text {} bytes to 0x{:08X}, initial PC 0x{:08X}, GP 0x{:08X}, SP 0x{:08X}{}", b.file_name, b.lba, b.size, b.text_size, b.text_addr, b.initial_pc, b.initial_gp, b.stack, if b.marker.is_empty() { String::new() } else { format!("; header marker \"{}\"", b.marker) })));
+    } else {
+        s.push(step("PS1 shell → PS-X EXE", "the BOOT file was not found on the disc (or is not a PS-X EXE); the shell would fail to start it".into()));
+    }
+    s.push(step("— stop —", "This is where the PlayStation game takes over. The app ends the sequence here.".into()));
     s
 }

@@ -320,12 +320,20 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Disc", |ui| {
         if let Some(d) = &m.disc {
             ui.small(format!("Volume: {} ({} sectors, {} MiB, {})", d.volume_id, d.sector_count, d.byte_size() >> 20, if d.is_dvd() { "DVD" } else { "CD" }));
-            ui.small(format!("Title ID: {}   state 0x{:02X}", d.title_id().unwrap_or_else(|| "—".into()), d.disc_state_code()));
-            ui.monospace(d.system_cnf_text.trim());
+            let kind = match d.kind { ps2kit::disc::DiscKind::Ps2 => "PlayStation 2 disc", ps2kit::disc::DiscKind::Ps1 => "PlayStation disc", ps2kit::disc::DiscKind::Unknown => "not a PlayStation disc" };
+            ui.small(format!("{kind}   Title ID: {}   register 0x{:02X} → state 0x{:02X}", d.title_id().unwrap_or_else(|| "—".into()), d.disc_type_register(), d.disc_state_code()));
+            if !d.system_cnf_text.trim().is_empty() { ui.monospace(d.system_cnf_text.trim()); }
             if let Some(b) = &d.boot_elf {
                 ui.small(format!("Boot ELF: {} — LBA {}, {} bytes, entry 0x{:08X}, {} segment(s)", b.file_name, b.lba, b.size, b.entry, b.segments.len()));
             }
-            ui.small(d.logo_region.map(|r| format!("Logo sectors: {} master (checked by J/H and E consoles only)", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into()));
+            if let Some(b) = &d.ps1_exe {
+                ui.small(format!("PS-X EXE: {} — LBA {}, {} bytes, text 0x{:08X} ({} bytes), PC 0x{:08X}", b.file_name, b.lba, b.size, b.text_addr, b.text_size, b.initial_pc));
+            }
+            match d.kind {
+                ps2kit::disc::DiscKind::Ps2 => ui.small(d.logo_region.map(|r| format!("Logo sectors: {} master (checked by J/H and E consoles only)", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())),
+                ps2kit::disc::DiscKind::Ps1 => ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" — logo data {}", l.text, if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into())),
+                ps2kit::disc::DiscKind::Unknown => ui.small("No SYSTEM.CNF and no licence sector."),
+            };
             ui.collapsing("What the console would do next", |ui| {
                 for s in m.handoff_steps() { ui.small(format!("{}  {}", s.who, s.what)); }
             });

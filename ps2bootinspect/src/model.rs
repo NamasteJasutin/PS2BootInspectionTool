@@ -227,7 +227,11 @@ impl Model {
         match DiscImage::open(path) {
             Ok(d) => {
                 self.disc_logo = DiscLogo::read(path).ok();
-                self.disc_status = format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo: {} master", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "logo: unknown master".into()));
+                self.disc_status = match d.kind {
+                    ps2kit::disc::DiscKind::Ps2 => format!("{} — {}, {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "no BOOT2".into()), d.logo_region.map(|r| format!("logo: {} master", if r == "J" { "J/A" } else { r })).unwrap_or_else(|| "logo: unknown master".into())),
+                    ps2kit::disc::DiscKind::Ps1 => format!("{} — PlayStation disc {}, licence {}", path.file_name().unwrap_or_default().to_string_lossy(), d.title_id().unwrap_or_else(|| "???".into()), d.ps1_licence.as_ref().and_then(|l| l.region).unwrap_or("unknown")),
+                    ps2kit::disc::DiscKind::Unknown => format!("{} — not a PlayStation disc", path.file_name().unwrap_or_default().to_string_lossy()),
+                };
                 self.disc = Some(d);
                 self.disc_path = Some(path.to_path_buf());
                 self.logo_version += 1;
