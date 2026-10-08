@@ -345,7 +345,8 @@ impl Model {
         Some(phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds))
     }
 
-    pub fn handoff_steps(&self) -> Vec<HandoffStep> { handoff_steps(self.disc.as_ref(), &self.history, self.video) }
+    pub fn rom_region(&self) -> Option<char> { self.assets.as_ref().and_then(|a| a.rom_version.chars().nth(4)) }
+    pub fn handoff_steps(&self) -> Vec<HandoffStep> { handoff_steps(self.disc.as_ref(), &self.history, self.video, self.rom_region()) }
 
     pub fn logo_animation(&self) -> Option<LogoAnimation<'_>> { self.logo_assets.as_ref().map(|a| LogoAnimation::new(a, self.video)) }
 

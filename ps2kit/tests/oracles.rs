@@ -9,7 +9,7 @@ use ps2kit::sim::{OpeningScene, Timeline, VideoMode};
 use ps2kit::sound::BootSound;
 use std::path::{Path, PathBuf};
 
-fn root() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("../..") }
+fn root() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("..") }
 fn bios() -> Option<RomDir> { std::fs::read(root().join("SCPH-70004_BIOS_V12_PAL_200.BIN")).ok().map(|d| RomDir::new(d).unwrap()) }
 
 #[test]

@@ -1,5 +1,8 @@
 # PS2 Boot Inspection Tool — developer notes
 
+> The cross-platform Rust app at the repository root is the maintained version; this Swift/Metal
+> app is kept as the reference it was ported from and only supports ROM 2.00 E.
+
 A Swift/Metal re-implementation of the tower scene of the PS2 boot screen, written from the
 behavioural notes in `../notes/`. It contains no Sony code or data: textures and the scene's
 data tables are read at run time from **your own BIOS dump**, and the towers come from

@@ -2,7 +2,7 @@
 
 # PS2 Boot Inspection Tool
 
-A native macOS app that replays the PlayStation 2 start-up from **your own** BIOS dump, memory
+A desktop app (Windows, Linux, macOS) that replays the PlayStation 2 start-up from **your own** BIOS dump, memory
 card and game disc, and lets you look inside it: what the boot screen is built from, how your
 play history shapes it, what the console does between power-on and the moment a game takes over.
 
@@ -31,8 +31,8 @@ synthetic one (titles × launches) to see how the skyline fills up over a consol
 The console's camera only ever flies straight through. Switch to the free camera to fly around
 the field, look at the towers from the side or from above, and see the scripted camera's own
 route drawn in space — its rungs, the points where the lettering, the dive, the defocus and the
-fade trigger, and its view frustum moving along. Drag to look, scroll to fly, Ctrl+scroll to
-rotate, right-drag to slide. The route can be exported as CSV.
+fade trigger, and its view frustum moving along. Blender's camera controls: middle-drag (or drag) to orbit, Shift for pan, Ctrl or the wheel to
+dolly, numpad 1/3/7 for the axis views, Home to frame everything. The route can be exported as CSV.
 
 ![The scripted camera path seen from the side](docs/camera-path.png)
 
@@ -71,21 +71,30 @@ the game. The game is never run.
 
 ## Requirements and set-up
 
-- macOS 13 or later, Apple silicon or Intel with Metal.
-- A PS2 BIOS dump: currently ROM 2.00 E (`SCPH-70004`); other versions need their data
-  offsets added.
+- Windows, Linux or macOS (the app is Rust on wgpu, so the three builds come from one code base).
+- A PS2 BIOS dump. Supported so far: ROM 2.00 E (SCPH-70004), 1.60 E (SCPH-30004R),
+  1.60 A (SCPH-39001) and the DTL-H30101 development kit (1.50 A) — the data tables are
+  located by content, so other builds of the same OSD generation should load too. ROM 1.00
+  (SCPH-10000) is a different OSD generation and is rejected with a message.
 - A PCSX2 memory card (`.ps2` image, with or without ECC, or a folder card). Optional: a game
   disc image (`.iso`, or a raw `.bin`/`.cue` CD rip) for the disc phase and the genuine logo.
 
 ```sh
-cd app && ./make_app.sh && open "PS2 Boot Inspection Tool.app"
+cargo run --release -p ps2bootinspect                    # the app (Rust toolchain from rustup.rs)
+cargo run --release -p ps2kit --bin ps2history -- <card>  # dump a card's play history
+cargo run --release -p ps2bootinspect -- --render 95 out.png --bios <bios> --titles 21 --launches 60 --pal
+cargo test -p ps2kit                                     # checks against the Python tools and the Swift app
 ```
 
-On first start the app looks in PCSX2's `bios` and `memcards` folders and in `~/PS2ISO`; use the
-*Open…* buttons for other locations. Command-line helpers for the same data: `swift run
-ps2history <card>` (dump a card's history), `swift run BootScreen --render …` (render a frame
-to PNG), `--chime` (export the chime as WAV), `--path` (camera route as CSV). See
-`app/README.md`.
+Pre-built binaries for Windows, Linux and macOS come out of the GitHub Actions workflow
+(`.github/workflows/build.yml`) for every push to `main`.
+
+On first start the app looks in PCSX2's `bios` and `memcards` folders (Library/Application
+Support, Documents or `~/.config`) and in `~/PS2ISO`; use the *Open…* buttons for other
+locations.
+
+The original native macOS app (Swift/Metal) is kept in `app/`; see `app/README.md`. It is
+functionally the same but supports only ROM 2.00 E.
 
 ## Accuracy
 
@@ -93,8 +102,7 @@ The reconstruction comes from a static reading of the BIOS code; it has not been
 against real hardware or an emulator capture. Known approximations: the glass cubes are a
 two-pass stand-in for the console's ten passes, the chime plays without the console's reverb,
 power-on and hand-over durations are estimates, and the orientation of the tower grid on screen
-and a possible colour overflow on tower caps are unverified. Details are in `app/README.md`
-and the documentation below.
+and a possible colour overflow on tower caps are unverified. Details are in the documentation below.
 
 ## Documentation
 
@@ -109,6 +117,9 @@ For anyone who wants to check the tool's claims or extend it to another BIOS ver
 | `notes/ps2logo.md` | The logo program and the disc's logo sectors. |
 | `notes/sound.md` | The boot chime: driver, bank and sequence formats. |
 | `notes/menu_survey.md` | Survey of the main menu and browser (not re-created). |
+| `notes/devkit_survey.md` | What the DTL-H30101 development-kit BIOS does differently (very little). |
+| `ps2kit/` | The portable core (Rust): every reader and the simulation, with oracle tests. |
+| `ps2bootinspect/` | The app (Rust: egui + wgpu + cpal). |
 | `tools/`, `analysis/symbols/` | Scripts that derive all of the above from a BIOS image, and symbol tables for the decompilations they produce. |
 
 ## Licence

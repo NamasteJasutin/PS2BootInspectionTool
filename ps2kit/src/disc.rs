@@ -115,7 +115,7 @@ pub struct HandoffStep {
 
 /// The hand-off the console would perform after the logo, as a list of steps the app can
 /// show instead of doing. Every line names the function in the notes that does it.
-pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: VideoMode) -> Vec<HandoffStep> {
+pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: VideoMode, rom_region: Option<char>) -> Vec<HandoffStep> {
     let step = |who: &str, what: String| HandoffStep { who: who.into(), what };
     let Some(d) = disc else {
         return vec![step("OSDSYS", "No disc: OpeningDecideNext → ctx[0x5E8] = 2, the clock/main-menu module is woken (not re-created here).".into())];
@@ -123,7 +123,14 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
     let id = d.title_id().unwrap_or_else(|| "?".into());
     let kind = if d.is_dvd() { "DVD" } else { "CD" };
     let boot2 = d.system_cnf.get("BOOT2").cloned().unwrap_or_default();
+    let console = rom_region.map(|r| match r { 'J' | 'H' => "Japan", 'A' => "USA", 'E' => "Europe", 'C' => "China", _ => "unknown" });
+    let disc_region = match id.get(..4) { Some("SLES") | Some("SCES") => Some("Europe"), Some("SLUS") | Some("SCUS") => Some("USA"), Some("SLPS") | Some("SCPS") | Some("SLPM") | Some("SCPM") | Some("SLKA") => Some("Japan/Asia"), Some("SCAJ") => Some("Asia"), _ => None };
     let mut s = vec![
+        step("Region", match (disc_region, console) {
+            (Some(d), Some(c)) if d == c || (d == "Japan/Asia" && c == "Japan") => format!("disc {id} is {d}, console ROM is {c}: a real console accepts it"),
+            (Some(d), Some(c)) => format!("disc {id} is {d}, console ROM is {c}: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks."),
+            (d, c) => format!("disc region {}, console region {} (not checked)", d.unwrap_or("unknown"), c.unwrap_or("unknown")),
+        }),
         step("CDVD (disc thread 0x20F478)", format!("disc type register → state 0x{:02X} (PlayStation 2 {kind}); Ps2DiscVerifyAndGetId reads the disc key twice → title ID {id}", d.disc_state_code())),
         step("OSDSYS OpeningDecideNext (0x2165A0)", format!("latched state → ctx[0x14] = {} (launch request: PS2 {kind})", if d.is_dvd() { 0 } else { 1 })),
         step("OSDSYS Launch (0x203970 → 0x202AB0)", format!("DiscThreadEnable(0); read cdrom0:\\SYSTEM.CNF;1 → BOOT2 = {boot2}; file name must match the first 10 characters of the disc ID")),

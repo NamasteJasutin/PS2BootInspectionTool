@@ -16,8 +16,14 @@ fn main() -> eframe::Result {
         if let Err(e) = offline::run(&args[2..]) { eprintln!("error: {e}"); std::process::exit(1) }
         return Ok(());
     }
+    let icon = image::load_from_memory(include_bytes!("../../docs/icon.png")).ok().map(|i| {
+        let rgba = i.to_rgba8();
+        egui::IconData { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
+    });
+    let mut viewport = egui::ViewportBuilder::default().with_inner_size([1400.0, 860.0]).with_min_inner_size([1000.0, 600.0]).with_title("PS2 Boot Inspection Tool");
+    if let Some(icon) = icon { viewport = viewport.with_icon(std::sync::Arc::new(icon)) }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 860.0]).with_min_inner_size([1000.0, 600.0]).with_title("PS2 Boot Inspection Tool"),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

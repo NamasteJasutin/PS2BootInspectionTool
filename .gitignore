@@ -24,4 +24,4 @@ __pycache__/
 .DS_Store
 
 # Rust build output
-/v2/target/
+/target/
