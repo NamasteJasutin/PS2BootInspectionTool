@@ -38,7 +38,20 @@ impl SectorReader {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("FILE ") {
                 let name = rest.trim().trim_end_matches("BINARY").trim().trim_matches('"');
-                return Ok(path.parent().unwrap_or(Path::new(".")).join(name));
+                let dir = path.parent().unwrap_or(Path::new("."));
+                let named = dir.join(name);
+                if named.exists() { return Ok(named) }
+                // Renamed sets: the cue still names the original files. Take the .bin that
+                // shares the cue's name, else the one marked as track 1, else the only one.
+                let stem = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+                let mut bins: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("bin") || e.eq_ignore_ascii_case("img"))).collect();
+                bins.sort();
+                let lower = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if let Some(b) = bins.iter().find(|b| lower(b) == format!("{stem}.bin") || lower(b) == format!("{stem}.img")) { return Ok(b.clone()) }
+                if let Some(b) = bins.iter().find(|b| { let n = lower(b); n.contains("track 01") || n.contains("track 1)") || n.contains("track01") }) { return Ok(b.clone()) }
+                if bins.len() == 1 { return Ok(bins.remove(0)) }
+                return Err(Error::Corrupt(format!("cue sheet names {name}, which is not next to it")));
             }
         }
         Err(Error::Corrupt("cue sheet has no FILE line".into()))

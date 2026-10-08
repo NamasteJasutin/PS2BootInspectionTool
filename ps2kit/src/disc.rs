@@ -175,7 +175,8 @@ impl DiscImage {
                 let data = &lic[..2048];
                 if let Some(i) = data.windows(8).position(|w| w == b"Licensed") {
                     let text: String = data[i..(i + 80).min(2048)].iter().take_while(|&&b| b != 0).map(|&b| b as char).collect();
-                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    // The Japanese master pads the line with '0' characters.
+                    let text = text.split_whitespace().take_while(|w| !w.starts_with("000")).collect::<Vec<_>>().join(" ");
                     let region = if text.contains("Amer") { Some("America") } else if text.contains("Euro") { Some("Europe") } else if text.contains("Inc.") { Some("Japan") } else { None };
                     let logo_sectors_present = lic.len() > 2048 && lic[2048..].iter().any(|&b| b != 0);
                     ps1_licence = Some(Ps1Licence { text, region, logo_sectors_present });
@@ -293,7 +294,11 @@ fn ps1_handoff_steps(d: &DiscImage, history: &PlayHistory, rom_region: Option<ch
         }),
         step("CDVD (disc thread 0x20F478)", format!("disc type register 0x{:02X} → state 0x{:02X} (PlayStation CD{})", d.disc_type_register(), d.disc_state_code(), if d.has_cdda { " with CD-DA" } else { "" })),
         step("OSDSYS OpeningDecideNext (0x2165A0)", "latched state → ctx[0x14] = 2 (launch request: PlayStation disc)".into()),
-        step("OSDSYS LaunchPs1Disc (0x202D50 → Ps1GetBootId 0x203390)", format!("SYSTEM.CNF BOOT = {}; VER = {}; title ID = the file name between the last \\ or : and ; → {id}{}", d.ps1_exe.as_ref().map(|b| b.path.as_str()).unwrap_or("(none: PSX.EXE)"), d.version.as_deref().unwrap_or("(none)"), if id == "???" { " (PSX.EXE is recorded as \"???\")" } else { "" })),
+        step("OSDSYS LaunchPs1Disc (0x202D50 → Ps1GetBootId 0x203390)", if d.system_cnf.contains_key("BOOT") {
+            format!("SYSTEM.CNF BOOT = {}; VER = {}; title ID = the file name between the last \\ or : and ; → {id}{}", d.ps1_exe.as_ref().map(|b| b.path.as_str()).unwrap_or("?"), d.version.as_deref().unwrap_or("(none)"), if id == "???" { " (PSX.EXE is recorded as \"???\")" } else { "" })
+        } else {
+            "no SYSTEM.CNF on the disc: the shell boots cdrom:\\PSX.EXE;1 and OSDSYS records the title as \"???\"".to_string()
+        }),
     ];
     let rec = history.records.iter().find(|r| r.name == id);
     s.push(step("OSDSYS HistoryUpdate (0x201E98) + save (0x204AC0)", match rec {
