@@ -6,19 +6,38 @@ use crate::bytes::Bytes;
 use crate::rom::unpack;
 use crate::{Error, Result};
 
-/// A program image with the address it is loaded at.
+/// A program image (an unpacked EE executable) with the address it is loaded at.
+#[derive(Clone)]
 pub struct Image {
+    /// The program bytes, as they would sit in memory from `base` on.
     pub data: Vec<u8>,
+    /// Virtual address of `data[0]`.
     pub base: usize,
 }
 
-impl Image {
-    pub fn at(&self, vaddr: usize) -> Option<usize> { vaddr.checked_sub(self.base).filter(|&o| o < self.data.len()) }
-    pub fn contains(&self, vaddr: usize) -> bool { self.at(vaddr).is_some() }
-    pub fn find(&self, pattern: &[u8]) -> Option<usize> { self.data.windows(pattern.len()).position(|w| w == pattern) }
-    pub fn find_all(&self, pattern: &[u8], step: usize) -> Vec<usize> {
-        (0..self.data.len().saturating_sub(pattern.len())).step_by(step).filter(|&i| &self.data[i..i + pattern.len()] == pattern).collect()
+impl std::fmt::Debug for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Image").field("base", &format_args!("{:#x}", self.base)).field("bytes", &self.data.len()).finish()
     }
+}
+
+impl Image {
+    /// Offset into `data` of virtual address `vaddr`, if it lies inside the image.
+    #[must_use]
+    pub fn at(&self, vaddr: usize) -> Option<usize> { vaddr.checked_sub(self.base).filter(|&o| o < self.data.len()) }
+    /// Whether `vaddr` lies inside the image.
+    #[must_use]
+    pub fn contains(&self, vaddr: usize) -> bool { self.at(vaddr).is_some() }
+    /// Offset of the first occurrence of `pattern`.
+    #[must_use]
+    pub fn find(&self, pattern: &[u8]) -> Option<usize> { self.data.windows(pattern.len()).position(|w| w == pattern) }
+    /// Offsets of every occurrence of `pattern` that starts on a multiple of `step` bytes.
+    #[must_use]
+    pub fn find_all(&self, pattern: &[u8], step: usize) -> Vec<usize> {
+        (0..self.data.len().saturating_sub(pattern.len())).step_by(step.max(1)).filter(|&i| &self.data[i..i + pattern.len()] == pattern).collect()
+    }
+    /// `n` little-endian floats from offset `off` (zeros past the end).
+    #[must_use]
     pub fn f32s(&self, off: usize, n: usize) -> Vec<f32> { (0..n).map(|i| self.data.f32(off + i * 4)).collect() }
 
     /// Unpacks a stub + LZ program (the stream is found by trying offsets) or takes the
@@ -47,10 +66,11 @@ impl Image {
                 continue;
             }
             let (off, vaddr, filesz, memsz) = (module.u32(o + 4) as usize, module.u32(o + 8) as usize, module.u32(o + 16) as usize, module.u32(o + 20) as usize);
-            if off + filesz > module.len() {
-                break;
+            let Some(segment) = module.get(off..off.saturating_add(filesz)) else { break };
+            if memsz > 64 << 20 {
+                return Err(Error::Corrupt("implausible PT_LOAD memory size".into()));
             }
-            let mut data = module[off..off + filesz].to_vec();
+            let mut data = segment.to_vec();
             data.resize(memsz.max(filesz), 0);
             return Ok(Self { data, base: vaddr });
         }
@@ -60,21 +80,35 @@ impl Image {
 
 fn missing(what: &str) -> Error { Error::Corrupt(format!("could not locate the {what} in this BIOS version")) }
 
-/// Addresses of the opening's tables in an OSDSYS image.
+/// Offsets (into [`Image::data`]) of the opening's tables in an OSDSYS image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OsdLayout {
+    /// The asset table: 16-byte entries `{name*, addr, size, flags}`.
     pub asset_names: usize,
+    /// The texture descriptors, 0xF0 bytes each.
     pub texture_table: usize,
+    /// How many descriptors the texture table holds.
     pub texture_count: usize,
+    /// 21 records x 6 `(column, row)` pairs.
     pub slot_table: usize,
+    /// 14 fill factors of the growing tower.
     pub fill_table: usize,
+    /// 14 size factors of the growing tower.
     pub size_table: usize,
+    /// 14 x 9 base positions `(x, y, z, 0)`.
     pub tower_positions: usize,
+    /// Four orb colours `(r, g, b, 0)`.
     pub orb_colours: usize,
+    /// Five glass cube positions.
     pub cube_positions: usize,
+    /// Five warning-scene prism positions.
     pub prism_positions: usize,
 }
 
 impl OsdLayout {
+    /// Finds every table by content. Also returns the asset names in table order (`None`
+    /// for a null entry). A miss names the table in [`Error::Corrupt`].
     pub fn discover(img: &Image) -> Result<(Self, Vec<Option<String>>)> {
         let d = &img.data[..];
         // Asset table: 16-byte entries {name*, addr, size, flags}; entry 0 names "FONTM".
@@ -142,17 +176,26 @@ impl OsdLayout {
     }
 }
 
-/// Addresses inside a PS2LOGO image.
+/// Virtual addresses (not offsets) of the tables inside a PS2LOGO image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LogoLayout {
-    pub shape_tables: (usize, usize),   // (NTSC, PAL) object tables: 4 x {keys*, count}
+    /// `(NTSC, PAL)` object tables: 4 x `{keyframes*, count}`.
+    pub shape_tables: (usize, usize),
+    /// `(NTSC, PAL)` colour keyframe tables: 4 x `{keys*, count}`.
     pub colour_tables: (usize, usize),
-    pub type_table: usize,              // {0,1,1,1}; layer A at +0x20, layer B at +0x40
+    /// Object kinds `{0,1,1,1}`; layer A flags at +0x20, layer B flags at +0x40.
+    pub type_table: usize,
+    /// Five ribbon copy multipliers.
     pub ribbon_multipliers: usize,
-    pub ribbon_delta: usize,            // 2.8 then 3.8; PAL y scales at +8/+12; rates at +0x10/+0x14
+    /// 2.8 then 3.8; the PAL y scale pair at +8/+12; the NTSC/PAL rates at +0x10/+0x14.
+    pub ribbon_delta: usize,
+    /// The embedded `SShd` sound bank header (12 bytes before the signature).
     pub bank_header: usize,
 }
 
 impl LogoLayout {
+    /// Finds every table by content. A miss names the table in [`Error::Corrupt`].
     pub fn discover(img: &Image) -> Result<Self> {
         let d = &img.data[..];
         let base = img.base;
@@ -165,8 +208,8 @@ impl LogoLayout {
         // Object tables: 4 x {keyframes*, count}; each keyframe {t, shape*, polylines}.
         let object_table = |q: usize| (0..4).all(|k| {
             let (p, c) = (d.u32(q + k * 8) as usize, d.u32(q + k * 8 + 4));
-            if !img.contains(p) || !(1..=16).contains(&c) { return false }
-            let o = img.at(p).unwrap();
+            let Some(o) = img.at(p) else { return false };
+            if !(1..=16).contains(&c) { return false }
             d.u32(o) == 0 && img.contains(d.u32(o + 4) as usize) && (1..=32).contains(&d.u32(o + 8))
         });
         let shapes: Vec<usize> = (0..d.len().saturating_sub(64)).step_by(4).filter(|&q| object_table(q)).collect();
@@ -174,24 +217,27 @@ impl LogoLayout {
         let shape_tables = shapes.iter().find(|&&q| shapes.contains(&(q + 0x20))).map(|&q| (q + 0x20 + base, q + base)).ok_or_else(|| missing("shape keyframe tables"))?;
         let colour_table = |q: usize| (0..4).all(|k| {
             let (p, c) = (d.u32(q + k * 8) as usize, d.u32(q + k * 8 + 4) as usize);
-            if !img.contains(p) || !(2..=32).contains(&c) { return false }
-            let o = img.at(p).unwrap();
+            let Some(o) = img.at(p) else { return false };
+            if !(2..=32).contains(&c) { return false }
             if o + 20 * c > d.len() || d.i32(o) != 0 { return false }
             (0..c).all(|i| (1..5).all(|j| (0..=300).contains(&d.i32(o + i * 20 + j * 4)))) && (0..c - 1).all(|i| d.i32(o + i * 20) < d.i32(o + (i + 1) * 20))
         });
         let colours: Vec<usize> = (0..d.len().saturating_sub(64)).step_by(4).filter(|&q| colour_table(q)).collect();
         let colour_tables = colours.iter().find(|&&q| colours.contains(&(q + 0x20))).map(|&q| (q + 0x20 + base, q + base)).ok_or_else(|| missing("colour keyframe tables"))?;
-        let bank_header = img.find(b"SShd").map(|q| q - 0xC + base).ok_or_else(|| missing("embedded sound bank"))?;
+        let bank_header = img.find(b"SShd").and_then(|q| q.checked_sub(0xC)).map(|q| q + base).ok_or_else(|| missing("embedded sound bank"))?;
         Ok(Self { shape_tables, colour_tables, type_table: type_table + base, ribbon_multipliers: ribbon_multipliers + base, ribbon_delta: ribbon_delta + base, bank_header })
     }
 }
 
-/// Pitch and pan tables of the IOP sound driver, located by their first entries.
+/// Offsets of the pitch and pan tables of the IOP sound driver (`rom0:OSDSND`), located by
+/// their entries around the unison step; `None` when the module does not contain them.
+#[must_use]
 pub fn driver_tables(module: &[u8]) -> Option<(usize, usize)> {
-    let pitch = (0..module.len().saturating_sub(6)).step_by(2).find(|&i| {
+    let unison = (0..module.len().saturating_sub(6)).step_by(2).find(|&i| {
         let (a, b, c) = (module.u16(i), module.u16(i + 2), module.u16(i + 4));
         b == 0x1000 && (0xFEE..=0xFF3).contains(&a) && (0x100D..=0x1012).contains(&c)
-    })? + 2 - 208 * 2;
+    })?;
+    let pitch = (unison + 2).checked_sub(208 * 2)?;
     let pan = module.windows(6).position(|w| w == [0x80, 0, 0x80, 8, 0x80, 0x10])?;
     Some((pitch, pan))
 }

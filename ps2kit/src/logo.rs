@@ -10,55 +10,105 @@ use crate::{Error, Result};
 use glam::Vec2;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+/// One node of a vector path, in centred logo coordinates.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
-    pub kind: i32, // 0 move, 1 line, 2 cubic, 3 end
+    /// 0 = move to, 1 = line to, 2 = cubic to (`f` holds both control points and the end), 3 = end.
+    pub kind: i32,
+    /// Up to three `(x, y)` pairs, depending on `kind`.
     pub f: [f32; 6],
 }
+/// A shape: a list of polylines, each a list of nodes.
 pub type Shape = Vec<Vec<Node>>;
 
-#[derive(Debug, Clone)]
+/// A colour keyframe of an object.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColourKey {
+    /// Field at which the key applies.
     pub t: i32,
+    /// `(r, g, b, a)` as the program stores them, 0..=255 (alpha above 128 is clamped on draw).
     pub rgba: [f32; 4],
 }
 
-#[derive(Debug, Clone)]
+/// One of the four animated objects of a video mode.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Object {
-    pub kind: i32, // 0 = line strips, 1 = ribbon
+    /// 0 = line strips, 1 = ribbon.
+    pub kind: i32,
+    /// Drawn into the first feedback layer.
     pub layer_a: bool,
+    /// Drawn into the second feedback layer.
     pub layer_b: bool,
+    /// Shape keyframes as `(field, shape)`, in field order.
     pub keys: Vec<(i32, Shape)>,
+    /// Colour keyframes, in field order.
     pub colours: Vec<ColourKey>,
 }
 
-#[derive(Debug, Clone)]
+/// One voice of the chime, as the embedded bank describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SoundEffect {
+    /// Left volume, 0..=0x3FFF.
     pub vol_l: i64,
+    /// Right volume, 0..=0x3FFF.
     pub vol_r: i64,
+    /// SPU pitch register value (0x1000 = 44.1 kHz).
     pub pitch: i64,
+    /// SPU ADSR register 1.
     pub adsr1: u16,
+    /// SPU ADSR register 2.
     pub adsr2: u16,
+    /// Whether the voice goes through reverb (not rendered).
     pub reverb: bool,
+    /// Start of the sample in [`LogoAssets::sample_body`].
     pub sample_offset: usize,
 }
 
+/// Everything the logo program needs, read from `rom0:PS2LOGO`.
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct LogoAssets {
+    /// The four objects of each video mode.
     pub objects: HashMap<VideoMode, Vec<Object>>,
+    /// Brightness multipliers of the five ribbon copies.
     pub ribbon_multipliers: [f32; 5],
+    /// Field spacing of the ribbon copies per object.
     pub ribbon_delta: [f32; 4],
+    /// Ribbon time scale per video mode.
     pub ribbon_rate: HashMap<VideoMode, f32>,
+    /// Vertical scale applied to PAL coordinates.
     pub pal_y_scale: f32,
+    /// The chime's voices (the first five are played).
     pub effects: Vec<SoundEffect>,
+    /// Master volume of the effects, 0..=0x3FFF.
     pub effect_master_volume: i64,
+    /// The bank's ADPCM body.
     pub sample_body: Vec<u8>,
 }
 
+impl std::fmt::Debug for LogoAssets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogoAssets")
+            .field("objects", &self.objects.iter().map(|(m, o)| (m, o.len())).collect::<Vec<_>>())
+            .field("ribbon_multipliers", &self.ribbon_multipliers)
+            .field("ribbon_delta", &self.ribbon_delta)
+            .field("ribbon_rate", &self.ribbon_rate)
+            .field("pal_y_scale", &self.pal_y_scale)
+            .field("effects", &self.effects)
+            .field("effect_master_volume", &self.effect_master_volume)
+            .field("sample_body_bytes", &self.sample_body.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl LogoAssets {
+    /// Unpacks `rom0:PS2LOGO` from a BIOS dump and reads its tables.
     pub fn load(bios: &RomDir) -> Result<Self> {
         Self::from_image(&Image::from_module(bios.module("PS2LOGO")?, 0x100000)?)
     }
 
+    /// Reads the tables from an already unpacked PS2LOGO image.
     pub fn from_image(img: &Image) -> Result<Self> {
         let lay = LogoLayout::discover(img)?;
         let d = &img.data[..];
@@ -131,15 +181,17 @@ impl LogoAssets {
     }
 
     /// The five-voice chime (`cmd 0x5200` for effects 0..=4), 48 kHz interleaved stereo.
+    #[must_use]
     pub fn chime(&self, master_volume: i64) -> Vec<f32> {
         let mut mix: Vec<f32> = Vec::new();
         for e in self.effects.iter().take(5) {
             let (pcm, _) = decode_adpcm(&self.sample_body, e.sample_offset);
-            if pcm.len() < 2 {
+            if pcm.len() < 2 || e.pitch <= 0 {
                 continue;
             }
             let step = (e.pitch * 44100 / 48000) as f64 / 4096.0;
-            let n = (pcm.len() as f64 / step) as usize + 1;
+            // A corrupt pitch could ask for hours of audio; a chime voice is under a second.
+            let n = ((pcm.len() as f64 / step) as usize).min(crate::sound::SAMPLE_RATE * 10) + 1;
             let env = envelope(e.adsr1, e.adsr2, n, n);
             let master = 0x3FFF as f32 / 16384.0;
             let gl = ((e.vol_l * master_volume) >> 7) as f32 / 16384.0 * master;
@@ -164,29 +216,49 @@ impl LogoAssets {
     }
 }
 
-/// Evaluates the keyframed vector objects of the logo animation.
+/// Evaluates the keyframed vector objects of the logo animation for one video mode.
+/// Times `t` are fields since the program started.
+#[derive(Debug, Clone, Copy)]
 pub struct LogoAnimation<'a> {
+    /// The tables being evaluated.
     pub assets: &'a LogoAssets,
+    /// The video mode, which selects the object set and the timing.
     pub video: VideoMode,
 }
 
 impl<'a> LogoAnimation<'a> {
+    /// Binds `assets` to a video mode.
+    #[must_use]
     pub fn new(assets: &'a LogoAssets, video: VideoMode) -> Self { Self { assets, video } }
+    /// The four objects of this video mode (empty if the assets lack the mode).
+    #[must_use]
     pub fn objects(&self) -> &[Object] { self.assets.objects.get(&self.video).map(Vec::as_slice).unwrap_or(&[]) }
+    /// First animated field (17 NTSC, 14 PAL).
+    #[must_use]
     pub fn first_field(&self) -> i32 { if self.video == VideoMode::Pal { 14 } else { 17 } }
+    /// Last animated field (42 NTSC, 35 PAL).
+    #[must_use]
     pub fn last_field(&self) -> i32 { if self.video == VideoMode::Pal { 35 } else { 42 } }
+    /// Fields the last frame is held for before the game starts.
     pub const HOLD_FIELDS: usize = 120;
 
+    /// Blur passes over the logo quad at field `t`, 240 fading to 0.
+    #[must_use]
     pub fn logo_blur_iterations(&self, t: i32) -> i32 {
         if self.video == VideoMode::Pal { ((28 - t) * 240 / 28).clamp(0, 240) } else { ((33 - t) * 240 / 33).clamp(0, 240) }
     }
+    /// Whether the whole-screen blur is still on at field `t`.
+    #[must_use]
     pub fn screen_blur_active(&self, t: i32) -> bool { if self.video == VideoMode::Pal { t < 29 } else { t < 34 } }
+    /// Alpha (0..=112) of the feedback layer at field `t`.
+    #[must_use]
     pub fn feedback_alpha(&self, t: i32) -> i32 {
         if self.video == VideoMode::Pal {
             if t <= 21 { 112 } else { ((34 - t) * 112 / 12).clamp(0, 112) }
         } else if t <= 25 { 112 } else { ((41 - t) * 112 / 15).clamp(0, 112) }
     }
     /// (x, y, w, h) of the logo quad in 640x512 buffer coordinates.
+    #[must_use]
     pub fn logo_rect(&self) -> (f32, f32, f32, f32) { if self.video == VideoMode::Pal { (149.5, 216.5, 384.0, 77.0) } else { (149.5, 223.5, 384.0, 64.0) } }
 
     fn key_pair<T>(keys: &[T], time: impl Fn(&T) -> i32, t: i32) -> (usize, usize, f32) {
@@ -201,7 +273,12 @@ impl<'a> LogoAnimation<'a> {
         (i, i + 1, (t1 - t) as f32 / (t1 - t0) as f32)
     }
 
+    /// The shape of `obj` at field `t`, interpolated between its keyframes (empty if it has none).
+    #[must_use]
     pub fn shape(&self, obj: &Object, t: i32) -> Shape {
+        if obj.keys.is_empty() {
+            return Shape::new();
+        }
         let (i, j, w) = Self::key_pair(&obj.keys, |k| k.0, t.max(0));
         if i == j {
             return obj.keys[i].1.clone();
@@ -209,14 +286,19 @@ impl<'a> LogoAnimation<'a> {
         obj.keys[i].1.iter().zip(&obj.keys[j].1).map(|(pa, pb)| {
             pa.iter().zip(pb).map(|(na, nb)| {
                 let mut f = [0f32; 6];
-                for k in 0..6 { f[k] = na.f[k] * w + nb.f[k] * (1.0 - w) }
+                for ((out, &a), &b) in f.iter_mut().zip(&na.f).zip(&nb.f) { *out = a * w + b * (1.0 - w) }
                 Node { kind: na.kind, f }
             }).collect()
         }).collect()
     }
 
     /// Drawn colour (0..=255 per channel) of an object at field `t`: rgb · min(a, 255) / 128.
+    /// Black for an object without colour keys.
+    #[must_use]
     pub fn colour(&self, obj: &Object, t: i32) -> [f32; 3] {
+        if obj.colours.is_empty() {
+            return [0.0; 3];
+        }
         let (i, j, w) = Self::key_pair(&obj.colours, |k| k.t, t);
         let (ci, cj) = (&obj.colours[i].rgba, &obj.colours[j].rgba);
         let a = (ci[3] * w + cj[3] * (1.0 - w)).min(255.0);
@@ -240,6 +322,7 @@ impl<'a> LogoAnimation<'a> {
 
     /// Flattens a shape into point lists. `counts` reuses subdivision counts (ribbons);
     /// without it, samples closer than 1 px are dropped (line strips).
+    #[must_use]
     pub fn flatten(&self, shape: &Shape, counts: Option<&[usize]>) -> Vec<Vec<Vec2>> {
         let mut ci = 0;
         shape.iter().map(|nodes| {
@@ -274,6 +357,9 @@ impl<'a> LogoAnimation<'a> {
         }).collect()
     }
 
+    /// Subdivision count of every cubic of `obj` at field `t`, in path order (for
+    /// [`flatten`](Self::flatten) so that ribbon copies share one tessellation).
+    #[must_use]
     pub fn segment_counts(&self, obj: &Object, t: i32) -> Vec<usize> {
         let mut counts = Vec::new();
         for pl in self.shape(obj, t) {
@@ -287,13 +373,15 @@ impl<'a> LogoAnimation<'a> {
     }
 
     /// Centred coordinates -> 640x512 buffer coordinates.
+    #[must_use]
     pub fn to_screen(&self, p: Vec2) -> Vec2 {
         Vec2::new(p.x + 320.0, 256.0 - if self.video == VideoMode::Pal { p.y * self.assets.pal_y_scale } else { p.y })
     }
 
-    /// Field offsets of the five ribbon copies for object `index` (oldest first).
+    /// Field offsets of the five ribbon copies for object `index` (0..=3, oldest first).
+    #[must_use]
     pub fn ribbon_offsets(&self, index: usize) -> [i32; 5] {
-        let d = self.assets.ribbon_delta[index];
+        let d = self.assets.ribbon_delta.get(index).copied().unwrap_or(0.0);
         let r = self.assets.ribbon_rate.get(&self.video).copied().unwrap_or(1.0);
         let mut out = [0; 5];
         for (k, o) in out.iter_mut().enumerate() { *o = (d * (4 - k) as f32 * r) as i32 }
@@ -302,29 +390,35 @@ impl<'a> LogoAnimation<'a> {
 }
 
 /// A grey bitmap of the lettering as the logo program draws it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogoBitmap {
+    /// Width in pixels.
     pub width: usize,
+    /// Height in pixels.
     pub height: usize,
+    /// `width * height` bytes, row-major, 0 = black.
     pub grey: Vec<u8>,
 }
 
 /// The lettering bitmap every licensed disc carries in its first 12 sectors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DiscLogo {
+    /// The 24,576 descrambled bytes.
     pub pixels: Vec<u8>,
-    /// "E" or "J" when the checksum matched.
+    /// "E" or "J" when the checksum matched a known master.
     pub region: Option<&'static str>,
 }
 
 impl DiscLogo {
-    /// Reads sectors 0-11 of a plain ISO image and descrambles them as the drive does.
+    /// Reads sectors 0-11 of a disc image and descrambles them as the drive does.
     pub fn read(path: &std::path::Path) -> Result<Self> {
         let raw = crate::sectors::SectorReader::open(path)?.read(0, 12)?;
         if raw.len() != 12 * 2048 {
             return Err(Error::Corrupt("disc image is too short for the logo sectors".into()));
         }
         let key = raw[0];
-        let out: Vec<u8> = raw.iter().map(|&b| { let x = b ^ key; (x << 3) | (x >> 5) }).collect();
+        let out: Vec<u8> = raw.iter().map(|&b| (b ^ key).rotate_left(3)).collect();
         let sum = out.chunks_exact(4).fold(0u32, |s, c| s.wrapping_add(u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
         let region = if sum == 0x7813_4705 { Some("E") } else if sum == 0x62DB_1E66 { Some("J") } else { None };
         Ok(Self { pixels: out, region })
@@ -332,17 +426,20 @@ impl DiscLogo {
 
     /// The image laid out for a video mode: 384x64 (NTSC) or the 344x71 PAL picture in a
     /// 384x77 frame starting at row 3.
+    #[must_use]
     pub fn bitmap(&self, video: VideoMode) -> LogoBitmap {
+        let px = |i: usize| self.pixels.get(i).copied().unwrap_or(0);
         if video == VideoMode::Pal {
             let mut grey = vec![0u8; 384 * 77];
-            for r in 0..71 { for c in 0..344 { grey[(r + 3) * 384 + c] = self.pixels[r * 344 + c] } }
+            for r in 0..71 { for c in 0..344 { grey[(r + 3) * 384 + c] = px(r * 344 + c) } }
             LogoBitmap { width: 384, height: 77, grey }
         } else {
-            LogoBitmap { width: 384, height: 64, grey: self.pixels[..384 * 64].to_vec() }
+            LogoBitmap { width: 384, height: 64, grey: (0..384 * 64).map(px).collect() }
         }
     }
 
     /// Fallback when no disc is available: the lettering outline from the BIOS, filled.
+    #[must_use]
     pub fn synthesised(anim: &LogoAnimation) -> LogoBitmap {
         let (rx, ry, _, rh) = anim.logo_rect();
         let (w, h) = (384usize, rh as usize);
@@ -361,12 +458,13 @@ impl DiscLogo {
                         if (a.y <= y) != (b.y <= y) { xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x)) }
                     }
                 }
-                xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                xs.sort_by(f32::total_cmp);
                 for k in (0..xs.len().saturating_sub(1)).step_by(2) {
                     let (x0, x1) = (xs[k].max(0.0), xs[k + 1].min(w as f32));
                     if x1 <= x0 { continue }
-                    for px in x0 as usize..=(x1 as usize).min(w - 1) {
-                        coverage[px] += ((px as f32 + 1.0).min(x1) - (px as f32).max(x0)).max(0.0) / sub as f32;
+                    let (first, last) = (x0 as usize, (x1 as usize).min(w - 1));
+                    for (px, cov) in coverage.iter_mut().enumerate().take(last + 1).skip(first) {
+                        *cov += ((px as f32 + 1.0).min(x1) - (px as f32).max(x0)).max(0.0) / sub as f32;
                     }
                 }
             }

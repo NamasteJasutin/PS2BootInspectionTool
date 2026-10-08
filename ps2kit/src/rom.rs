@@ -5,12 +5,22 @@ use crate::{Error, Result};
 use std::collections::HashMap;
 
 /// A ROMDIR archive: the BIOS image itself, and the asset bundles nested inside it.
+#[derive(Clone)]
 pub struct RomDir {
+    /// The whole image. Modules are slices of it; see [`module`](Self::module).
     pub data: Vec<u8>,
     entries: HashMap<String, (usize, usize)>,
 }
 
+impl std::fmt::Debug for RomDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RomDir").field("bytes", &self.data.len()).field("modules", &self.entries.len()).finish()
+    }
+}
+
 impl RomDir {
+    /// Parses the ROMDIR table of a BIOS dump (or of a nested archive such as `TEXIMAGE`).
+    /// Fails with [`Error::NotABios`] when there is no `RESET` entry.
     pub fn new(data: Vec<u8>) -> Result<Self> {
         let base = data
             .windows(10)
@@ -21,20 +31,22 @@ impl RomDir {
         while p + 16 <= data.len() && data[p] != 0 {
             let name = data.cstr(p, 10);
             let size = data.u32(p + 12) as usize;
-            if name != "-" && !entries.contains_key(&name) && offset + size <= data.len() {
+            if name != "-" && !entries.contains_key(&name) && offset.checked_add(size).is_some_and(|end| end <= data.len()) {
                 entries.insert(name, (offset, size));
             }
-            offset += (size + 15) & !15;
+            offset = offset.saturating_add((size + 15) & !15);
             p += 16;
         }
         Ok(Self { data, entries })
     }
 
+    /// The bytes of the module called `name` (`OSDSYS`, `ROMVER`, ...).
     pub fn module(&self, name: &str) -> Result<&[u8]> {
         let &(o, n) = self.entries.get(name).ok_or_else(|| Error::MissingModule(name.into()))?;
-        Ok(&self.data[o..o + n])
+        self.data.get(o..o + n).ok_or_else(|| Error::Corrupt(format!("module {name} lies outside the image")))
     }
 
+    /// Names of every module in the table, in no particular order.
     pub fn names(&self) -> impl Iterator<Item = &String> { self.entries.keys() }
 }
 

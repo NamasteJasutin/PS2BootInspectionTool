@@ -63,7 +63,7 @@ fn towers_match_swift() {
         let h = PlayHistory::synthetic(&vec![launches; titles], &[], 1);
         assert_eq!(OpeningScene::new(&assets, &h).towers.len(), expected);
     }
-    let h = PlayHistory::synthetic(&vec![60; 21], &[], 1);
+    let h = PlayHistory::synthetic(&[60; 21], &[], 1);
     let s = OpeningScene::new(&assets, &h);
     assert!(s.towers.iter().all(|t| t.brightness >= 32.0 * 0.1 && t.brightness <= 220.0));
 }

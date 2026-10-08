@@ -5,16 +5,31 @@ use crate::bytes::Bytes;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
+/// One directory entry of a card, as [`MemoryCard::list`] returns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Entry {
+    /// File or folder name (at most 32 bytes on a real card).
     pub name: String,
+    /// Whether the entry is a folder.
     pub is_directory: bool,
+    /// File size in bytes; for a folder, its number of directory entries.
     pub length: usize,
     cluster: u32,
 }
 
+/// An opened card. Reads are served from memory (image) or from the folder on disk.
 pub struct MemoryCard {
     backing: Backing,
+}
+
+impl std::fmt::Debug for MemoryCard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.backing {
+            Backing::Image(img) => f.debug_struct("MemoryCard").field("image_bytes", &img.data.len()).finish(),
+            Backing::Folder(root) => f.debug_struct("MemoryCard").field("folder", root).finish(),
+        }
+    }
 }
 
 enum Backing {
@@ -23,6 +38,7 @@ enum Backing {
 }
 
 impl MemoryCard {
+    /// Opens a `.ps2` image (a file) or a PCSX2 folder card (a directory).
     pub fn open(path: &Path) -> Result<Self> {
         let backing = if path.is_dir() {
             Backing::Folder(path.to_path_buf())
@@ -53,6 +69,7 @@ impl MemoryCard {
         }
     }
 
+    /// Reads a whole file given as path components (`&["BEDATA-SYSTEM", "history"]`).
     pub fn read_file(&self, path: &[&str]) -> Result<Vec<u8>> {
         let joined = path.join("/");
         match &self.backing {
@@ -149,11 +166,13 @@ impl Image {
     }
 
     fn read_chain(&self, first: u32, length: usize) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(length);
+        // `length` comes from a directory entry: never trust it for the allocation.
+        let mut out = Vec::with_capacity(length.min(self.data.len()));
         let mut c = first;
         let mut guard = 0;
         while out.len() < length {
-            out.extend(self.cluster(c + self.alloc_offset)?);
+            let n = c.checked_add(self.alloc_offset).ok_or_else(|| Error::CardCorrupt("cluster number overflows".into()))?;
+            out.extend(self.cluster(n)?);
             let next = self.fat(c)?;
             if next == 0xFFFF_FFFF || next & 0x8000_0000 == 0 {
                 break;
@@ -193,7 +212,8 @@ impl Image {
     }
 
     fn resolve(&self, path: &[&str]) -> Result<Directory> {
-        let mut dir = Directory { cluster: self.root_cluster, count: self.cluster(self.root_cluster + self.alloc_offset)?.u32(4) as usize };
+        let root = self.root_cluster.checked_add(self.alloc_offset).ok_or_else(|| Error::CardCorrupt("root cluster out of range".into()))?;
+        let mut dir = Directory { cluster: self.root_cluster, count: self.cluster(root)?.u32(4) as usize };
         for part in path {
             let e = self
                 .list(&dir)?

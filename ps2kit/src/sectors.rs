@@ -7,13 +7,18 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// A disc image opened for sector reads. The geometry is sniffed from the first sector.
+#[derive(Debug)]
 pub struct SectorReader {
     file: File,
+    /// Bytes per sector in the file: 2048 (ISO) or 2352 (raw BIN).
     pub sector_size: u64,
+    /// Offset of the 2048 data bytes within a raw sector: 16 (MODE1) or 24 (MODE2 form 1).
     pub data_offset: u64,
 }
 
 impl SectorReader {
+    /// Opens an `.iso`, `.bin`/`.img`, or a `.cue` (resolved to the BIN it names).
     pub fn open(path: &Path) -> Result<Self> {
         let path = Self::resolve_cue(path)?;
         let mut file = File::open(&path)?;
@@ -57,13 +62,21 @@ impl SectorReader {
         Err(Error::Corrupt("cue sheet has no FILE line".into()))
     }
 
+    /// True for a 2352-byte-sector image (a CD rip) rather than a plain ISO.
+    #[must_use]
     pub fn is_raw(&self) -> bool { self.sector_size == 2352 }
 
     /// Reads `count` sectors starting at `lba`; short reads at the end are returned as is.
     pub fn read(&mut self, lba: usize, count: usize) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(count * 2048);
+        let mut out = Vec::with_capacity(count.min(1 << 16) * 2048);
         for i in 0..count {
-            self.file.seek(SeekFrom::Start((lba + i) as u64 * self.sector_size + self.data_offset))?;
+            // `lba` usually comes from the image itself; a corrupt one must not overflow.
+            let offset = (lba as u64)
+                .checked_add(i as u64)
+                .and_then(|s| s.checked_mul(self.sector_size))
+                .and_then(|o| o.checked_add(self.data_offset))
+                .ok_or_else(|| Error::Corrupt(format!("sector {lba} + {i} is beyond any disc")))?;
+            self.file.seek(SeekFrom::Start(offset))?;
             let mut buf = vec![0u8; 2048];
             let got = self.file.read(&mut buf)?;
             if got == 0 { break }
@@ -74,7 +87,8 @@ impl SectorReader {
     }
 }
 
-/// True for the file types the readers accept.
+/// True for the file extensions the readers accept (`iso`, `bin`, `cue`, `img`).
+#[must_use]
 pub fn is_disc_image(path: &Path) -> bool {
     path.extension().is_some_and(|e| ["iso", "bin", "cue", "img"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }

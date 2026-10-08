@@ -10,7 +10,7 @@ use ps2kit::rom::{unpack, RomDir};
 use ps2kit::sectors::SectorReader;
 use ps2kit::sim::{BootSequence, Segment, Timeline, VideoMode};
 use ps2kit::sound::{decode_adpcm, envelope};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("ps2kit-test-{}-{name}", std::process::id()));
@@ -187,7 +187,7 @@ fn synthetic_disc(logo_region: &str) -> Vec<Vec<u8>> {
     plain[100] = 0xFF;                                                 // a pixel that must survive the rotation
     plain[4..8].copy_from_slice(&sum.wrapping_sub(0xFF).to_le_bytes());
     for (i, b) in plain.iter().enumerate() {
-        let r = (b >> 3) | (b << 5);                                  // rotr 3
+        let r = b.rotate_right(3);
         sectors[i / 2048][i % 2048] = r ^ key;
     }
     assert_eq!(sectors[0][0], key);
@@ -228,13 +228,13 @@ fn synthetic_disc(logo_region: &str) -> Vec<Vec<u8>> {
     sectors
 }
 
-fn write_iso(dir: &PathBuf, sectors: &[Vec<u8>]) -> PathBuf {
+fn write_iso(dir: &Path, sectors: &[Vec<u8>]) -> PathBuf {
     let p = dir.join("disc.iso");
     std::fs::write(&p, sectors.concat()).unwrap();
     p
 }
 
-fn write_bin_cue(dir: &PathBuf, sectors: &[Vec<u8>]) -> PathBuf {
+fn write_bin_cue(dir: &Path, sectors: &[Vec<u8>]) -> PathBuf {
     // MODE2/2352: sync, header, 8-byte subheader, 2048 data, 280 bytes EDC/ECC.
     let mut raw = Vec::new();
     for (i, s) in sectors.iter().enumerate() {
@@ -250,7 +250,7 @@ fn write_bin_cue(dir: &PathBuf, sectors: &[Vec<u8>]) -> PathBuf {
     cue
 }
 
-fn check_disc(path: &PathBuf, raw: bool, region: &str) {
+fn check_disc(path: &Path, raw: bool, region: &str) {
     let d = DiscImage::open(path).unwrap();
     assert_eq!(d.kind, DiscKind::Ps2);
     assert_eq!(d.raw_sectors, raw);
@@ -477,4 +477,46 @@ fn iso_without_boot_is_unknown_media() {
     assert_eq!(d.disc_state_code(), 0x69);
     let steps = ps2kit::disc::handoff_steps(Some(&d), &PlayHistory::synthetic(&[], &[], 1), Vm::Ntsc, Some('E'), None);
     assert_eq!(steps.len(), 1);
+}
+
+// --- malformed input ---------------------------------------------------------------------
+
+/// Inputs that used to panic (index out of range, overflow, endless loop) must now fail
+/// cleanly or degrade to an empty result.
+#[test]
+fn malformed_input_does_not_panic() {
+    use ps2kit::bios::decode_texture;
+    use ps2kit::locate::driver_tables;
+    use ps2kit::locate::Image;
+    use ps2kit::logo::LogoAssets;
+    use ps2kit::sound::{SoundBank, SoundSequence};
+
+    // 4-bit texture with an odd pixel count: the last nibble sits in a half byte.
+    assert!(decode_texture(&[0u8; 1], 1, 1, 0x14, Some(&[0u8; 64])).is_ok());
+    assert!(decode_texture(&[0u8; 1], 1, 1, 0x14, Some(&[0u8; 8])).is_err(), "short palette");
+    assert!(decode_texture(&[], 1 << 20, 1 << 20, 0, None).is_err(), "implausible size");
+
+    // A driver module whose unison entry sits before where the table would start.
+    let mut osdsnd = vec![0u8; 64];
+    for (i, v) in [0xFF0u16, 0x1000, 0x1010].iter().enumerate() { osdsnd[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes()) }
+    assert_eq!(driver_tables(&osdsnd), None);
+
+    // A sequence with a zero tempo (the driver would spin for ever) and one with a runaway
+    // delta time are rejected rather than hung on.
+    let mut seq = vec![0u8; 0x120];
+    seq[0xC..0x10].copy_from_slice(b"SSsq");
+    seq[0x110..0x113].copy_from_slice(&[0x90, 60, 100]);
+    seq[0x113] = 0x10;
+    seq[0x114..0x117].copy_from_slice(&[0xFF, 0x2F, 0]);
+    assert!(SoundSequence::new(&seq).is_err(), "resolution and bpm are 0");
+    seq[2..4].copy_from_slice(&480u16.to_le_bytes());
+    seq[4..6].copy_from_slice(&120u16.to_le_bytes());
+    assert!(SoundSequence::new(&seq).is_ok());
+    seq[0x113..0x11A].copy_from_slice(&[0xFF; 7]);
+    assert!(SoundSequence::new(&seq).is_err(), "delta time longer than 4 bytes");
+
+    // A bank header that is too short; a PS2LOGO image with none of the tables.
+    assert!(SoundBank::new(&[0u8; 16], Vec::new()).is_err());
+    assert!(RomDir::new(vec![0u8; 16]).is_err());
+    assert!(LogoAssets::from_image(&Image { data: vec![0u8; 0x100], base: 0x100000 }).is_err());
 }

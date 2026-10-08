@@ -6,45 +6,82 @@ use crate::rom::{unpack, RomDir};
 use crate::{Error, Result};
 use std::collections::HashMap;
 
+/// Output sample rate of every renderer in this crate, in Hz.
 pub const SAMPLE_RATE: usize = 48000;
+/// Rate of the IOP driver's sequencer tick, in Hz.
 pub const UPDATES_PER_SECOND: f64 = 60.0;
 
-#[derive(Debug, Clone)]
+/// One tone (a sample plus its playback parameters) of a program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Tone {
+    /// Lowest MIDI note the tone answers to.
     pub low: i32,
+    /// Highest MIDI note the tone answers to.
     pub high: i32,
+    /// Note at which the sample plays at its recorded pitch.
     pub root: i32,
+    /// Fine tuning in 1/16 semitone steps.
     pub fine: i32,
+    /// Start of the sample in [`SoundBank::body`].
     pub sample_offset: usize,
+    /// SPU ADSR register 1.
     pub adsr1: u16,
+    /// SPU ADSR register 2.
     pub adsr2: u16,
+    /// Tone volume, 0..=127.
     pub volume: i32,
+    /// Tone pan, 0..=127 (64 = centre).
     pub pan: i32,
+    /// Pitch bend range in semitones.
     pub bend_range: i32,
+    /// Raw flag byte.
     pub flags: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a program chooses tones for a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProgramKind {
+    /// The first tone whose range covers the note plays.
     Split,
+    /// Every tone whose range covers the note plays.
     Layer,
+    /// A drum kit (not rendered; has no tones here).
     Drum,
 }
 
-#[derive(Debug, Clone)]
+/// A program (instrument) of a bank.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Program {
+    /// Tone selection mode.
     pub kind: ProgramKind,
+    /// Program volume, 0..=127.
     pub volume: i32,
+    /// The tones, in bank order.
     pub tones: Vec<Tone>,
 }
 
+/// An `SShd` bank: programs, the velocity curve and the ADPCM body.
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct SoundBank {
+    /// Programs by number.
     pub programs: HashMap<i32, Program>,
+    /// 128-entry velocity curve.
     pub velocity: Vec<i32>,
+    /// The headerless ADPCM body.
     pub body: Vec<u8>,
 }
 
+impl std::fmt::Debug for SoundBank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SoundBank").field("programs", &self.programs).field("velocity", &self.velocity).field("body_bytes", &self.body.len()).finish_non_exhaustive()
+    }
+}
+
 impl SoundBank {
+    /// Parses a bank `header` (the `SShd` block) and takes ownership of its ADPCM `body`.
     pub fn new(header: &[u8], body: Vec<u8>) -> Result<Self> {
         if header.len() <= 0x30 || &header[0xC..0x10] != b"SShd" {
             return Err(Error::Bank("signature".into()));
@@ -97,11 +134,14 @@ impl SoundBank {
         Ok(Self { programs, velocity, body })
     }
 
+    /// Decodes the sample at `offset` in the body; see [`decode_adpcm`].
+    #[must_use]
     pub fn decode_sample(&self, offset: usize) -> (Vec<f32>, Option<usize>) { decode_adpcm(&self.body, offset) }
 }
 
 /// Decodes one PS-ADPCM sample: 16-byte blocks of a shift/filter byte, a flag byte and 28
 /// nibbles. Returns PCM (±32768 scale) and the loop start, if it loops.
+#[must_use]
 pub fn decode_adpcm(body: &[u8], offset: usize) -> (Vec<f32>, Option<usize>) {
     const FILTERS: [(i32, i32); 5] = [(0, 0), (60, 0), (115, -52), (98, -55), (122, -60)];
     let mut out = Vec::new();
@@ -137,43 +177,80 @@ pub fn decode_adpcm(body: &[u8], offset: usize) -> (Vec<f32>, Option<usize>) {
     (out, if loops { loop_start } else { None })
 }
 
-#[derive(Debug, Clone, Copy)]
+/// A decoded sequence event (a subset of MIDI).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EventKind {
-    NoteOn { note: i32, velocity: i32 },
-    NoteOff { note: i32 },
+    /// Key on.
+    NoteOn {
+        /// MIDI note number.
+        note: i32,
+        /// Velocity, 1..=127.
+        velocity: i32,
+    },
+    /// Key off.
+    NoteOff {
+        /// MIDI note number.
+        note: i32,
+    },
+    /// Controller change `(controller, value)`; 7 is volume, 10 is pan.
     Control(i32, i32),
+    /// Program change.
     Program(i32),
+    /// Pitch bend, coarse byte only (64 = none).
     Bend(i32),
+    /// Tempo change, in beats per minute.
     Tempo(i32),
+    /// End of track.
     End,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// One event of a sequence with its position on both clocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SequenceEvent {
+    /// What happens.
     pub kind: EventKind,
+    /// MIDI channel, 0..=15.
     pub channel: usize,
+    /// Position in sequence ticks.
     pub tick: i64,
     /// Index of the driver's 60 Hz update at which the event fires.
     pub update: i64,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Initial state of one MIDI channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Channel {
+    /// Program number.
     pub program: i32,
+    /// Volume, 0..=127.
     pub volume: i32,
+    /// Pan, 0..=127 (64 = centre).
     pub pan: i32,
+    /// Pitch bend, 0..=127 (64 = none).
     pub bend: i32,
 }
 
+/// An `SSsq` sequence, decoded and scheduled on the driver's 60 Hz clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SoundSequence {
+    /// Sequence volume, 0..=127.
     pub volume: i32,
+    /// Ticks per quarter note.
     pub resolution: i64,
+    /// Initial tempo in beats per minute.
     pub bpm: i64,
+    /// Initial channel states.
     pub channels: [Channel; 16],
+    /// Events in time order, ending with [`EventKind::End`].
     pub events: Vec<SequenceEvent>,
 }
 
 impl SoundSequence {
+    /// Parses an `SSsq` block (header, 16 channel records, then the event stream).
     pub fn new(d: &[u8]) -> Result<Self> {
         if d.len() <= 0x110 || &d[0xC..0x10] != b"SSsq" {
             return Err(Error::Sequence("signature".into()));
@@ -207,9 +284,14 @@ impl SoundSequence {
             };
             events.push(SequenceEvent { kind, channel: ch, tick, update: 0 });
             let mut delta = 0i64;
+            let mut bytes = 0;
             while pos < d.len() {
                 let b = d.u8(pos) as i64;
                 pos += 1;
+                bytes += 1;
+                if bytes > 4 {
+                    return Err(Error::Sequence(format!("delta time longer than 4 bytes at {pos}")));
+                }
                 delta = delta << 7 | (b & 0x7F);
                 if b & 0x80 == 0 {
                     break;
@@ -223,10 +305,15 @@ impl SoundSequence {
         for e in events.iter_mut() {
             acc += (e.tick - last) << 12;
             last = e.tick;
-            let step = (resolution * bpm_now << 12) / 60 / 60;
-            while acc >= 1 {
-                acc -= step;
-                update += 1;
+            let step = ((resolution * bpm_now) << 12) / 60 / 60;
+            if step <= 0 {
+                return Err(Error::Sequence("tempo or resolution is zero".into()));
+            }
+            // Closed form of `while acc >= 1 { acc -= step; update += 1 }`.
+            if acc >= 1 {
+                let n = (acc - 1) / step + 1;
+                acc -= n * step;
+                update += n;
             }
             e.update = update;
             if let EventKind::Tempo(t) = e.kind {
@@ -238,6 +325,7 @@ impl SoundSequence {
 }
 
 /// The driver's lookup tables, read from the IOP module when a layout is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverTables {
     /// 608 entries, 16 steps per semitone, entry 208 = 0x1000.
     pub pitch: Vec<i64>,
@@ -246,6 +334,9 @@ pub struct DriverTables {
 }
 
 impl DriverTables {
+    /// The tables recomputed from their formulas (equal-tempered pitch, constant-power pan),
+    /// for when `rom0:OSDSND` cannot be located.
+    #[must_use]
     pub fn computed() -> Self {
         Self {
             pitch: (0..608).map(|i| (4096.0 * 2f64.powf((i as f64 - 208.0) / 192.0)).round() as i64).collect(),
@@ -253,6 +344,9 @@ impl DriverTables {
         }
     }
 
+    /// The tables as the driver module `d` holds them, at the offsets
+    /// [`locate::driver_tables`](crate::locate::driver_tables) found; `None` if `d` is too short.
+    #[must_use]
     pub fn from_driver(d: &[u8], pitch_offset: usize, pan_offset: usize) -> Option<Self> {
         if pitch_offset + 608 * 2 > d.len() || pan_offset + 64 > d.len() {
             return None;
@@ -265,6 +359,7 @@ impl DriverTables {
 }
 
 /// SPU ADSR level (0..=0x7FFF) per output sample; the key is released after `on_samples`.
+#[must_use]
 pub fn envelope(a1: u16, a2: u16, on_samples: usize, total: usize) -> Vec<f32> {
     #[derive(PartialEq, Clone, Copy)]
     enum Phase { Attack, Decay, Sustain, Release }
@@ -310,8 +405,11 @@ pub fn envelope(a1: u16, a2: u16, on_samples: usize, total: usize) -> Vec<f32> {
 }
 
 /// Renders a sequence through the bank into 48 kHz interleaved stereo, voice by voice.
+#[derive(Debug, Clone, Copy)]
 pub struct Synth<'a> {
+    /// The bank the sequence's programs refer to.
     pub bank: &'a SoundBank,
+    /// The pitch and pan tables.
     pub tables: &'a DriverTables,
 }
 
@@ -327,7 +425,8 @@ struct Voice {
 impl<'a> Synth<'a> {
     fn pitch_register(&self, root: i32, note: i32, fine: i32, bend: i32, bend_range: i32) -> i64 {
         let b = ((bend - 0x40) * bend_range) >> 2;
-        let tab = |i: i32| self.tables.pitch[i.clamp(0, 607) as usize];
+        // The tables are public data: a short one must not panic.
+        let tab = |i: i32| self.tables.pitch.get(i.clamp(0, 607) as usize).copied().unwrap_or(0x1000);
         let value = if note < root {
             let d = root - note;
             (tab((12 - d % 12) * 16 + b + 0xD0 + fine) * 44100) >> (d / 12 + 1)
@@ -351,7 +450,7 @@ impl<'a> Synth<'a> {
         let mut active: HashMap<i32, Vec<usize>> = HashMap::new();
         for e in seq.events.iter().filter(|e| e.update as f64 / UPDATES_PER_SECOND <= max_seconds) {
             let t = base + (e.update as f64 / UPDATES_PER_SECOND * rate as f64) as usize;
-            let c = &mut channels[e.channel];
+            let Some(c) = channels.get_mut(e.channel) else { continue };
             match e.kind {
                 EventKind::Program(p) => { c.program = p; c.bend = 0x40 }
                 EventKind::Control(7, v) => c.volume = v,
@@ -361,8 +460,8 @@ impl<'a> Synth<'a> {
                     let Some(program) = self.bank.programs.get(&c.program) else { continue };
                     for tone in program.tones.iter().filter(|t| t.low <= note && note <= t.high) {
                         let p = (c.pan + tone.pan - 0x40).clamp(0, 0x7F) >> 2;
-                        let (gl, gr) = self.tables.pan[p as usize];
-                        let vel = self.bank.velocity[velocity.min(127) as usize] as i64;
+                        let (gl, gr) = self.tables.pan.get(p as usize).copied().unwrap_or((0x80, 0x80));
+                        let vel = self.bank.velocity.get(velocity.clamp(0, 127) as usize).copied().unwrap_or(velocity) as i64;
                         let (seqv, chv, prv, tv) = (sequence_volume, c.volume as i64, program.volume as i64, tone.volume as i64);
                         voices.push(Voice {
                             start: t,
@@ -426,7 +525,9 @@ impl<'a> Synth<'a> {
 }
 
 /// The boot sounds as OSDSYS schedules them, synthesised from `rom0:SNDIMAGE` with the
-/// driver tables from `rom0:OSDSND`.
+/// driver tables from `rom0:OSDSND`. All three are [`SAMPLE_RATE`] interleaved stereo.
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct BootSound {
     /// `SNDBOOTS`, interleaved stereo, starting at opening frame 0.
     pub chime: Vec<f32>,
@@ -436,7 +537,16 @@ pub struct BootSound {
     pub warning: Vec<f32>,
 }
 
+impl std::fmt::Debug for BootSound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secs = |v: &Vec<f32>| v.len() as f64 / 2.0 / SAMPLE_RATE as f64;
+        f.debug_struct("BootSound").field("chime_s", &secs(&self.chime)).field("cue_s", &secs(&self.cue)).field("warning_s", &secs(&self.warning)).finish_non_exhaustive()
+    }
+}
+
 impl BootSound {
+    /// Renders the three sequences from a BIOS dump. Falls back to
+    /// [`DriverTables::computed`] when `rom0:OSDSND` is missing or not recognised.
     pub fn load(bios: &RomDir) -> Result<Self> {
         let archive = RomDir::new(bios.module("SNDIMAGE")?.to_vec())?;
         let asset = |n: &str| -> Result<Vec<u8>> { unpack(archive.module(n)?, 0) };
@@ -448,8 +558,10 @@ impl BootSound {
             .unwrap_or_else(DriverTables::computed);
         let synth = Synth { bank: &bank, tables: &tables };
         let (mut a, mut b, mut w) = (Vec::new(), Vec::new(), Vec::new());
-        synth.render(&SoundSequence::new(&asset("SNDBOOTS")?)?, 0x42, 0.0, 3.0, f64::INFINITY, &mut a);
-        synth.render(&SoundSequence::new(&asset("SNDTNNLS")?)?, 0x2A, 0.0, 3.0, f64::INFINITY, &mut b);
+        // The chime and the cue are a few seconds; the cap keeps a damaged sequence from
+        // asking for an unbounded buffer.
+        synth.render(&SoundSequence::new(&asset("SNDBOOTS")?)?, 0x42, 0.0, 3.0, 120.0, &mut a);
+        synth.render(&SoundSequence::new(&asset("SNDTNNLS")?)?, 0x2A, 0.0, 3.0, 120.0, &mut b);
         synth.render(&SoundSequence::new(&asset("SNDWARNS")?)?, 0x36, 0.0, 0.0, 60.0, &mut w);
         Ok(Self { chime: a, cue: b, warning: w })
     }

@@ -1,6 +1,9 @@
 //! Little-endian accessors over byte slices (bounds-checked, returning 0 past the end).
+//!
+//! Crate-private on purpose: "0 past the end" is the right default for the readers, which
+//! validate what they find, but it would silently hide truncation from an outside caller.
 
-pub trait Bytes {
+pub(crate) trait Bytes {
     fn u8(&self, o: usize) -> u8;
     fn u16(&self, o: usize) -> u16;
     fn u32(&self, o: usize) -> u32;
@@ -16,7 +19,7 @@ impl Bytes for [u8] {
     fn u16(&self, o: usize) -> u16 { self.u8(o) as u16 | (self.u8(o + 1) as u16) << 8 }
     fn u32(&self, o: usize) -> u32 { self.u16(o) as u32 | (self.u16(o + 2) as u32) << 16 }
     fn cstr(&self, o: usize, max: usize) -> String {
-        let end = (o + max).min(self.len());
+        let end = o.saturating_add(max).min(self.len());
         let s = &self[o.min(end)..end];
         let s = &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())];
         String::from_utf8_lossy(s).into_owned()

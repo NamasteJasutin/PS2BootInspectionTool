@@ -35,6 +35,7 @@ for r in &PlayHistory::from_card(&card)?.records {
 | `sound` | OSD sound bank, sequences and the SPU envelope, rendered to PCM |
 | `bios`, `locate` | the opening's data tables, found in any supported ROM by content |
 | `sim` | towers, camera and timelines as functions of the frame number |
+| `ps1` | the PS1 licence screen a PS2 shows for a PlayStation disc (`rom0:LOGO`, TMD, TIM, VAB) |
 
 Supported BIOS versions for `bios`/`logo`/`sound`: ROM 1.50–2.00 of the OSD generation with
 `TEX*` assets (tested: 2.00 E, 1.60 E, 1.60 A, DTL-H30101 1.50 A). ROM 1.00 is a different
