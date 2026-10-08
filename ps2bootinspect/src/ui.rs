@@ -134,7 +134,7 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     let fps = m.timeline.fps();
     let status = if m.scene_kind == SceneKind::Full {
         let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
-        let name = match span.segment { Segment::PowerOn => "power-on", Segment::Opening => "ONE: BIOS opening", Segment::Handoff => "hand-off", Segment::Logo => "TWO: disc logo", Segment::End => "end" };
+        let name = match span.segment { Segment::PowerOn => "power-on", Segment::Opening => "ONE: BIOS opening", Segment::Handoff => "hand-off", Segment::Logo => if m.ps1_active() { "TWO: PS1 licence screen" } else { "TWO: disc logo" }, Segment::End => "end" };
         format!("{name}  {:5.2} s  (segment frame {local})  camera z {:6.1}  roll {:+.2}   cpu {:4.1} ms", m.frame / fps, c.z, c.roll, m.cpu_ms)
     } else if m.frame < 0.0 {
         format!("power-on {:+5.2} s  (opening starts at 0)   cpu {:4.1} ms", m.frame / fps, m.cpu_ms)
