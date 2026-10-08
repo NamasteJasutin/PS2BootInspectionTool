@@ -1,4 +1,4 @@
-# BootScreen — a native re-creation of the PS2 opening
+# PS2 Boot Inspection Tool — developer notes
 
 A Swift/Metal re-implementation of the tower scene of the PS2 boot screen, written from the
 behavioural notes in `../notes/`. It contains no Sony code or data: textures and the scene's
@@ -6,7 +6,7 @@ data tables are read at run time from **your own BIOS dump**, and the towers com
 **your own memory card** (PCSX2 `.ps2` images or folder cards).
 
 ```sh
-./make_app.sh && open BootScreen.app      # or: swift run BootScreen
+./make_app.sh && open "PS2 Boot Inspection Tool.app"   # or: swift run BootScreen
 ```
 
 On start it looks in `~/Library/Application Support/PCSX2/{bios,memcards}`; use *Open…* for

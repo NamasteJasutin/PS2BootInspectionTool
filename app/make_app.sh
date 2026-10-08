@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 swift build -c release
-APP=BootScreen.app
+APP="PS2 Boot Inspection Tool.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp .build/release/BootScreen "$APP/Contents/MacOS/BootScreen"
@@ -13,8 +13,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>BootScreen</string>
-    <key>CFBundleIdentifier</key><string>local.ps2bootscreen</string>
-    <key>CFBundleName</key><string>PS2 Boot Screen</string>
+    <key>CFBundleIdentifier</key><string>jp.live.justiin.ps2bootinspectiontool</string>
+    <key>CFBundleName</key><string>PS2 Boot Inspection Tool</string>
+    <key>CFBundleDisplayName</key><string>PS2 Boot Inspection Tool</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>

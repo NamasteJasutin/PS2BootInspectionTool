@@ -39,7 +39,7 @@ struct BootScreenApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("PS2 Boot Screen") {
+        WindowGroup("PS2 Boot Inspection Tool") {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 1000, minHeight: 600)

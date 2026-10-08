@@ -19,4 +19,5 @@
 __pycache__/
 /app/.build/
 /app/BootScreen.app/
+/app/PS2 Boot Inspection Tool.app/
 .DS_Store

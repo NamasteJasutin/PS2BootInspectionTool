@@ -1,152 +1,116 @@
-# PS2 Boot Screen — reverse engineered and rebuilt natively, in one hour
+# PS2 Boot Inspection Tool
 
-> After seeing `Boundary Break` fail to crack taking full control over the PS2 Bios, I decided
-> to put Fable 5.1 up to the task which did it in a ridiculous time. He'll talk about it below.
-> Video reference `https://www.youtube.com/watch?v=lzToMTjeTgA`
+A native macOS app that replays the PlayStation 2 start-up from **your own** BIOS dump, memory
+card and game disc, and lets you look inside it: what the boot screen is built from, how your
+play history shapes it, what the console does between power-on and the moment a game takes over.
 
-![The re-created opening: towers, fog, glass cubes and the lettering](docs/opening.png)
+![The opening, built from the play history on a memory card](docs/opening.png)
 
-**From a raw BIOS dump to a native macOS app you can fly around in: 62 minutes, one sitting.**
+Nothing from Sony ships with the app. You bring a BIOS image, a PCSX2 memory card and, if you
+want the disc phase, a disc image; the tool reads them at run time.
 
-On the evening of 5 October 2026 this directory held six BIOS files and nothing else. An hour
-later it held a full behavioural specification of the PlayStation 2 boot screen, the tools
-that produced it, and *BootScreen*, a Swift/Metal re-creation that builds the towers from your
-own memory card. It was done by Claude (Fable 5.1) in a single Claude Code session, steered
-by one human with good taste in side projects.
+## What you can inspect
 
-## The scoreboard
+### Memory card data, as towers
+
+The towers in the PS2 boot screen are a picture of the console's play history: every title on
+the card owns six slots in a 14×9 grid, a title's first launch plants a tower, and more towers
+grow with the number of launches. The tool reads `B?DATA-SYSTEM/history` straight from a PCSX2
+card image or folder card and builds the skyline from it, so two cards give two different
+boot screens, side by side if you like. A table in the sidebar shows each record — title ID,
+launch count, which of its towers exist and which one is still growing.
+
+Cards without a history file (PCSX2 fast boot never writes one) are not a dead end: the tool
+can stand in a history made from the titles that have saves on the card, or let you dial in a
+synthetic one (titles × launches) to see how the skyline fills up over a console's life.
+
+### A free camera
+
+The console's camera only ever flies straight through. Switch to the free camera to fly around
+the field, look at the towers from the side or from above, and see the scripted camera's own
+route drawn in space — its rungs, the points where the lettering, the dive, the defocus and the
+fade trigger, and its view frustum moving along. Drag to look, scroll to fly, Ctrl+scroll to
+rotate, right-drag to slide. The route can be exported as CSV.
+
+![The scripted camera path seen from the side](docs/camera-path.png)
+
+### The full boot, both phases
+
+*Full boot* plays the whole sequence on one clock:
+
+1. **BIOS phase** — the black period after power-on, with a readout of what the console is
+   busy with (IOP boots, loading the OSD program, mounting the card, decoding assets, uploading
+   the sound bank), then the opening with your towers, chime and all.
+2. **Disc phase** — the hand-over to the disc: the OSD program identifies the disc, reads
+   `SYSTEM.CNF`, records the launch in your history and starts `PS2LOGO`; the "PlayStation 2"
+   logo plays with the lettering read from the disc's first sectors; then the point where the
+   game would start.
+
+The tool stops exactly there and shows what would happen next instead of doing it: the disc's
+title ID and type, `SYSTEM.CNF`, the boot executable's location, size, entry point and memory
+segments, the logo checksum, how your play history would change, and the chain of named
+functions from the OSD program through the kernel and `PS2LOGO` to the first instruction of
+the game. The game is never run.
+
+![The dive, a second before the fade](docs/dive.png)
+
+### Time, sound, picture
+
+- Pause, scrub, slow down, loop. Choose when the drive "identifies" the disc and how long the
+  hand-over takes — both change the timing the way they do on the console.
+- The boot chime is synthesised from the BIOS the way the console's sound chip plays it, placed
+  on the same clock as the picture; a volume meter, waveform or 32-band equaliser can be shown
+  over it.
+- NTSC (60 Hz) or PAL (50 Hz) presentation, chosen from the BIOS region; the console's
+  language for the warning text; every layer of the frame can be switched off to study the one
+  underneath.
+- The red "Please insert a PlayStation or PlayStation 2 format disc" screen is included as its
+  own scene.
+
+## Requirements and set-up
+
+- macOS 13 or later, Apple silicon or Intel with Metal.
+- A PS2 BIOS dump: currently ROM 2.00 E (`SCPH-70004`); other versions need their data
+  offsets added.
+- A PCSX2 memory card (`.ps2` image, with or without ECC, or a folder card). Optional: a game
+  disc image (`.iso`) for the disc phase and the genuine logo.
+
+```sh
+cd app && ./make_app.sh && open "PS2 Boot Inspection Tool.app"
+```
+
+On first start the app looks in PCSX2's `bios` and `memcards` folders and in `~/PS2ISO`; use the
+*Open…* buttons for other locations. Command-line helpers for the same data: `swift run
+ps2history <card>` (dump a card's history), `swift run BootScreen --render …` (render a frame
+to PNG), `--chime` (export the chime as WAV), `--path` (camera route as CSV). See
+`app/README.md`.
+
+## Accuracy
+
+The reconstruction comes from a static reading of the BIOS code; it has not been compared
+against real hardware or an emulator capture. Known approximations: the glass cubes are a
+two-pass stand-in for the console's ten passes, the chime plays without the console's reverb,
+power-on and hand-over durations are estimates, and the orientation of the tower grid on screen
+and a possible colour overflow on tower caps are unverified. Details are in `app/README.md`
+and the documentation below.
+
+## Documentation
+
+For anyone who wants to check the tool's claims or extend it to another BIOS version:
 
 | | |
 |---|---|
-| **21:10** | Six BIOS files. Goal stated: "clean reverse engineer the PS2 loading screen". |
-| **21:39** | Tower scene understood end to end and written up. |
-| **21:55** | App started. |
-| **22:08** | App bundle built: your BIOS, your memory card, free camera, time scrubbing, camera-path overlay. |
+| `notes/opening.md` | The tower scene: data, camera, every stage of the frame. |
+| `notes/opening_scene1.md` | The warning scene. |
+| `notes/boot_sequence.md` | Power-on to the first frame: call tree and timeline. |
+| `notes/osdsys_flow.md` | The OSD program's control flow and the play-history file format. |
+| `notes/ps2logo.md` | The logo program and the disc's logo sectors. |
+| `notes/sound.md` | The boot chime: driver, bank and sequence formats. |
+| `notes/menu_survey.md` | Survey of the main menu and browser (not re-created). |
+| `tools/`, `analysis/symbols/` | Scripts that derive all of the above from a BIOS image, and symbol tables for the decompilations they produce. |
 
-What got taken apart on the way:
+## Licence
 
-* **The ROM container and a custom LZ scheme**, re-implemented from the ~100-instruction
-  decompressor in OSDSYS's loader stub. All 80 nested assets unpack to exactly their declared sizes.
-* **1,838 functions of OSDSYS** (470 KB of MIPS R5900) and 458 of the IOP sound driver,
-  decompiled with a Ghidra toolchain that was downloaded, compiled for Apple Silicon and
-  scripted during the session, without installing anything system-wide.
-* **A 229-instruction VU1 vertex program**, read with a VU1 disassembler and VIF/DMA-chain
-  walker written on the spot because no off-the-shelf tool was at hand.
-* **Six texture formats**, including PS1-style TIM images hiding inside a PS2 BIOS.
-* **The secret of the towers.** They are your play history: 21 titles × 6 slots on a 14×9
-  grid, a new tower at launches 1, 14, 24, 34, 44 and 54, each one growing with every boot.
-* **The whole frame recipe**: painter-sorted lit towers, a 62.5 % feedback smear, six fog
-  layers, four Lissajous light orbs with 128-sample trails, glass cubes rendered in ten
-  passes with a destination-alpha reflection mask, a defocus ramp, and a camera that is
-  nothing but a straight line with jerk and roll.
-* **The boot chord**: 8 notes, 9 ADPCM samples, 17 voices, decoded to WAV and re-rendered.
-* **The memory card filesystem**, so the app reads PCSX2 cards directly.
-
-By the numbers: about 1,800 lines of notes, 1,300 lines of Python tooling and 2,100 lines of
-Swift. Three analyses ran in parallel in the background while the renderer was being read.
-
-![The dive, one second before the fade](docs/dive.png)
-
-![The scripted camera path, seen with the free camera](docs/camera-path.png)
-
-## What it is, soberly
-
-Behavioural documentation of the PlayStation 2 boot ("opening") screen, derived from a
-SCPH-70004 BIOS dump (ROM 2.00 E, 2004-06-14), plus a clean re-implementation written from
-that documentation. Nothing here redistributes Sony code or data: the notes describe what the
-code does, the tools re-derive everything from your own dump, and the app loads textures and
-tables from your BIOS and towers from your memory card at run time. (The screenshots above
-were rendered by the app from the author's own dump.)
-
-The bragging stops at the edge of what was checked. All of this comes from static analysis;
-nothing has been compared against real hardware or an emulator capture yet. The known gaps —
-the app's approximate glass cubes, the tower grid's up/down orientation, a possible colour
-overflow on tower caps, no sound in the app — are listed in `notes/opening.md` §8 and
-`app/README.md`.
-
-## Where things are
-
-| Path | Contents |
-|---|---|
-| `notes/opening.md` | The tower scene: module structure, render plumbing, VU1 program, camera timeline, how play history becomes geometry, per-frame draw order. |
-| `notes/opening_scene1.md` | The second opening scene (red "insert disc" screen). |
-| `notes/osdsys_flow.md` | Boot chain, OSDSYS `main`, threads, state machine, play-history file format. |
-| `notes/sound.md` | Boot sound: EE→IOP command path, OSDSND, HD/BD/SQ data. |
-| `notes/boot_sequence.md` | Power-on to the first opening frame: RESET → KERNEL → EELOAD → OSDSYS call tree, IOP boots, timeline estimates, every place OSDSYS waits. |
-| `analysis/symbols/` | Symbol tables (`address name source`) for OSDSYS, OSDSND, KERNEL, EELOAD, RESET, gathered from the notes plus syscall/SDK/libc identifications (`tools/build_symbols.py`). |
-| `analysis/osdsys_named/` | Generated: OSDSYS decompilation with those names applied (same layout as `analysis/osdsys/`). `analysis/{reset,kernel,eeload}/`: the boot chain before OSDSYS. |
-| `app/` | **BootScreen**: a native macOS (Swift/Metal) re-creation of the tower scene that reads your BIOS dump and PCSX2 memory card. See `app/README.md`. |
-| `tools/` | Scripts used to get from the ROM image to the analysis (below). |
-| `extracted/` | Generated: ROM modules, unpacked OSDSYS, unpacked assets, PNG previews. |
-| `analysis/` | Generated: Ghidra decompilation of OSDSYS (`osdsys/`) and OSDSND (`osdsnd/`), VU1 disassembly (`vu1/`). |
-| `vendor/` | Local Ghidra 12.1.4 + ghidra-emotionengine-reloaded 2.1.38 + Temurin JDK 21 (nothing installed system-wide). Ghidra ships no macOS/arm64 natives; they were built once with `cd vendor/ghidra_*/support/gradle && gradle buildNatives`. |
-| `ghidra_proj/`, `ghidra_proj_snd/` | Generated Ghidra projects (OSDSYS, OSDSND); can be opened in the Ghidra GUI. |
-
-## Pipeline
-
-```sh
-python3 -m venv .venv && .venv/bin/pip install rabbitizer pillow numpy
-
-# 1. Split the ROM into its ROMDIR modules
-.venv/bin/python tools/romdir.py SCPH-70004_BIOS_V12_PAL_200.BIN extracted/rom0
-
-# 2. OSDSYS in ROM is a loader stub + LZ stream; unpack the real program (loads at 0x200000)
-.venv/bin/python tools/osd_unpack.py extracted/rom0/OSDSYS extracted/osdsys_200000.bin
-
-# 3. TEXIMAGE / SNDIMAGE / ICOIMAGE / FNTIMAGE are nested ROMDIR archives of LZ streams
-.venv/bin/python tools/unpack_assets.py          # -> extracted/<ARCHIVE>_unpacked/
-.venv/bin/python tools/tex2png.py                # opening textures -> extracted/png/
-
-# 4. Decompile (Ghidra headless; writes analysis/osdsys/{c/*.c,functions.tsv,data_xrefs.tsv})
-tools/ghidra/run_osdsys.sh
-#    Named re-export (analysis/osdsys_named/) and the boot chain (analysis/{reset,kernel,eeload}/)
-.venv/bin/python tools/build_symbols.py           # notes -> analysis/symbols/{osdsys,osdsnd}.tsv
-tools/ghidra/run_named.sh                         # ApplySymbols.java + OsdExport.java, project ghidra_proj_named/
-tools/ghidra/run_boot.sh                          # RESET/KERNEL/EELOAD, project ghidra_proj_boot/
-
-# 5. VU1 micro-program and packets used by the opening
-.venv/bin/python tools/vudis.py chain 0x273990
-
-# 6. Boot sound: bank/sequence dump, samples and an approximate (dry) render
-.venv/bin/python tools/snd_dump.py
-.venv/bin/python tools/snd_vag2wav.py            # -> extracted/snd_wav/
-.venv/bin/python tools/snd_render.py
-```
-
-Helpers for reading the result: `tools/cview.py [-d analysis/<dir>] <addr>…` (compact view of
-decompiled functions), `tools/peek.py <f|i|x|h|b|s> <vaddr> [n]` (read initialised data),
-`tools/r5900dis.py` (linear R5900 disassembly).
-
-## Formats worked out along the way
-
-* **ROMDIR**: 16-byte entries `{char name[10]; u16 extinfo_size; u32 size}` starting at the
-  `RESET` entry; module offsets are the running sum of sizes rounded up to 16.
-* **OSD LZ stream** (`tools/osd_unpack.py`): `u32` output size, then groups of 30 tokens each
-  preceded by a big-endian `u32` — bits 31..2 are literal/match flags, bits 1..0 = *n*.
-  A match is a big-endian `u16`: offset = `(h & (0x3FFF >> n)) + 1`,
-  length = `(h >> (14 − n)) + 3`.
-* **Opening textures**: PS1 TIM-style 16-bit images (20-byte header), raw RGBA32, raw 8-bit
-  intensity, raw (intensity, alpha) byte pairs, and 4-bit indexed with a CLUT in the
-  executable. See the texture table in `notes/opening.md`.
-
-## Campaign: the whole boot, natively
-
-The goal has grown from "the opening" to "everything the console shows before a game starts",
-re-created from the BIOS and fully decompiled for research. Status:
-
-| Stage | Research | App |
-|---|---|---|
-| Power-on → OSDSYS (RESET, IOP modules, KERNEL, EELOAD) | done (static): `notes/boot_sequence.md`, named decompilation in `analysis/osdsys_named/` + `analysis/{reset,kernel,eeload}/`; timings are estimates, not measured | planned: black-screen timing before the opening |
-| Opening (towers) | done | done, incl. chime + visualiser |
-| Warning scene (red "insert disc") | done | done |
-| `rom0:PS2LOGO` ("PlayStation 2" logo for a disc boot) | done: `notes/ps2logo.md` | done (reads the lettering from your disc image) |
-| Disc boot, end to end (opening → hand-off → logo → where the ELF would start) with disc introspection | done: `notes/osdsys_flow.md` §2.5, `notes/ps2logo.md` | done: *Full boot* scene, *Disc* panel, end card |
-| Main menu / browser (no-disc path) | surveyed: `notes/menu_survey.md` (≈8k lines of behaviour for a trimmed version) | not started |
-
-## Licence and what is (not) in this repository
-
-The notes, tools and app are MIT-licensed (see `LICENSE`). The repository contains no Sony
-code or data: BIOS images, disc images, memory cards, everything extracted or decompiled from
-them, and the local Ghidra toolchain are ignored by `.gitignore`. Bring your own BIOS dump,
-memory card and disc image; the app reads them at run time. The screenshots in `docs/` are
-renders of the app.
+MIT (see `LICENSE`). The repository holds no Sony code or data: BIOS and disc images, memory
+cards, and everything extracted or decompiled from them are ignored by `.gitignore`. The
+screenshots in `docs/` are renders of the app.
