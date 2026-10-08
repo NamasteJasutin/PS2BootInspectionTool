@@ -1,0 +1,17 @@
+[package]
+name = "ps2kit"
+description = "PS2 BIOS, memory card and disc readers plus the boot-screen simulation, with no Sony data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+glam = "0.29"
+thiserror = "2"
+
+[[bin]]
+name = "ps2history"
+path = "src/bin/ps2history.rs"
+
+[dev-dependencies]
+png = "0.17"

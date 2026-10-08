@@ -22,3 +22,6 @@ __pycache__/
 /app/BootScreen.app/
 /app/PS2 Boot Inspection Tool.app/
 .DS_Store
+
+# Rust build output
+/v2/target/
