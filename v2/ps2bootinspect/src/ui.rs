@@ -224,7 +224,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Your files", |ui| {
         if let Some(p) = file_row(ui, "BIOS", &m.bios_status.clone(), false, &["bin", "BIN", "rom"]) { m.load_bios(&p, false) }
         if let Some(p) = file_row(ui, "Memory card", &m.card_status.clone(), true, &["ps2"]) { m.load_card(&p, false) }
-        if let Some(p) = file_row(ui, "Game disc image", &m.disc_status.clone(), false, &["iso"]) { m.load_disc(&p, false) }
+        if let Some(p) = file_row(ui, "Game disc image", &m.disc_status.clone(), false, &["iso", "bin", "cue", "img"]) { m.load_disc(&p, false) }
     });
     section(ui, "Play history", |ui| {
         let before = m.history_source;

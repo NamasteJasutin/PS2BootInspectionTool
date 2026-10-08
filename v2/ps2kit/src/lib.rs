@@ -9,6 +9,7 @@ pub mod history;
 pub mod logo;
 pub mod memcard;
 pub mod rom;
+pub mod sectors;
 pub mod sim;
 pub mod sound;
 

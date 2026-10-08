@@ -263,9 +263,7 @@ public struct DiscLogo {
 
     /// Reads sectors 0-11 of a plain ISO image and descrambles them as the drive does.
     public init(discImageURL url: URL) throws {
-        let h = try FileHandle(forReadingFrom: url)
-        defer { try? h.close() }
-        let raw = try h.read(upToCount: 12 * 2048) ?? Data()
+        let raw = try SectorReader(url: url).read(lba: 0, count: 12)
         guard raw.count == 12 * 2048 else { throw BIOSError.corrupt("disc image is too short for the logo sectors") }
         let key = raw[raw.startIndex]
         var out = [UInt8](repeating: 0, count: raw.count)

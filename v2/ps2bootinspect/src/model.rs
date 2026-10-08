@@ -135,9 +135,16 @@ impl Model {
             if self.card.is_none() { self.load_card(&p, true) }
         }
         if let Some(home) = dirs::home_dir() {
-            for p in Self::files(&home.join("PS2ISO")) {
-                if self.disc.is_none() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")) { self.load_disc(&p, true) }
+            // Images directly in ~/PS2ISO or up to two folders down (how rips usually arrive).
+            let mut dirs = vec![home.join("PS2ISO")];
+            for depth in 0..2 {
+                let subs: Vec<PathBuf> = dirs.iter().flat_map(|d| Self::files(d)).filter(|p| p.is_dir()).collect();
+                if depth == 0 { dirs.extend(subs.clone()) } else { dirs.extend(subs) }
             }
+            let mut images: Vec<PathBuf> = dirs.iter().flat_map(|d| Self::files(d)).filter(|p| p.is_file() && ps2kit::sectors::is_disc_image(p)).collect();
+            // Prefer .cue/.iso over the .bin they describe.
+            images.sort_by_key(|p| match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() { Some("cue") => 0, Some("iso") => 1, _ => 2 });
+            for p in images { if self.disc.is_none() { self.load_disc(&p, true) } }
         }
         self.frame = self.start_frame();
     }

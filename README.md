@@ -75,7 +75,7 @@ the game. The game is never run.
 - A PS2 BIOS dump: currently ROM 2.00 E (`SCPH-70004`); other versions need their data
   offsets added.
 - A PCSX2 memory card (`.ps2` image, with or without ECC, or a folder card). Optional: a game
-  disc image (`.iso`) for the disc phase and the genuine logo.
+  disc image (`.iso`, or a raw `.bin`/`.cue` CD rip) for the disc phase and the genuine logo.
 
 ```sh
 cd app && ./make_app.sh && open "PS2 Boot Inspection Tool.app"

@@ -7,7 +7,6 @@ use crate::logo::DiscLogo;
 use crate::sim::VideoMode;
 use crate::{Error, Result};
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -37,6 +36,8 @@ pub struct DiscImage {
     pub system_cnf_text: String,
     pub boot_elf: Option<BootElf>,
     pub logo_region: Option<&'static str>,
+    /// Raw 2352-byte sectors (a CD rip) rather than a plain ISO.
+    pub raw_sectors: bool,
 }
 
 impl DiscImage {
@@ -48,14 +49,9 @@ impl DiscImage {
     pub fn title_id(&self) -> Option<String> { self.boot_elf.as_ref().map(|b| b.file_name.split(';').next().unwrap_or("").to_string()) }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let mut f = std::fs::File::open(path)?;
-        let mut sector = |n: usize, count: usize| -> Result<Vec<u8>> {
-            let mut buf = vec![0u8; count * 2048];
-            f.seek(SeekFrom::Start(n as u64 * 2048))?;
-            let got = f.read(&mut buf)?;
-            buf.truncate(got);
-            Ok(buf)
-        };
+        let mut reader = crate::sectors::SectorReader::open(path)?;
+        let raw_sectors = reader.is_raw();
+        let mut sector = |n: usize, count: usize| -> Result<Vec<u8>> { reader.read(n, count) };
         let pvd = sector(16, 1)?;
         if pvd.len() < 2048 || &pvd[1..6] != b"CD001" {
             return Err(Error::Corrupt("not an ISO 9660 image (no primary volume descriptor)".into()));
@@ -107,7 +103,7 @@ impl DiscImage {
             }
         }
         let logo_region = DiscLogo::read(path).ok().and_then(|l| l.region);
-        Ok(Self { path: path.to_path_buf(), volume_id, sector_count, system_cnf, system_cnf_text: text, boot_elf, logo_region })
+        Ok(Self { path: path.to_path_buf(), volume_id, sector_count, system_cnf, system_cnf_text: text, boot_elf, logo_region, raw_sectors })
     }
 }
 

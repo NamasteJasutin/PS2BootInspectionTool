@@ -27,6 +27,8 @@ public struct DiscImage {
     public let systemCNFText: String
     public let bootELF: BootELF?
     public let logo: DiscLogo?
+    /// Raw 2352-byte sectors (a CD rip) rather than a plain ISO.
+    public let rawSectors: Bool
 
     /// Title ID as the history file and the browser spell it (`SLES_530.64`).
     public var titleID: String? {
@@ -38,12 +40,9 @@ public struct DiscImage {
 
     public init(url: URL) throws {
         self.url = url
-        let h = try FileHandle(forReadingFrom: url)
-        defer { try? h.close() }
-        func sector(_ n: Int, count: Int = 1) throws -> Data {
-            try h.seek(toOffset: UInt64(n) * 2048)
-            return try h.read(upToCount: count * 2048) ?? Data()
-        }
+        let reader = try SectorReader(url: url)
+        rawSectors = reader.isRaw
+        func sector(_ n: Int, count: Int = 1) throws -> Data { try reader.read(lba: n, count: count) }
         let pvd = try sector(16)
         guard pvd.count >= 2048, pvd.bytes(1, 5) == Data("CD001".utf8) else {
             throw BIOSError.corrupt("not an ISO 9660 image (no primary volume descriptor)")

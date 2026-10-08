@@ -109,8 +109,13 @@ final class AppModel: ObservableObject {
         biosCandidates += Self.files(in: Self.pcsx2.appendingPathComponent("bios"))
         for url in biosCandidates where assets == nil { loadBIOS(url, quiet: true) }
         var discCandidates = [defaults.url(forKey: "disc")].compactMap { $0 }
-        discCandidates += Self.files(in: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("PS2ISO"))
-            .filter { $0.pathExtension.lowercased() == "iso" }
+        // Images directly in ~/PS2ISO or up to two folders down (how rips usually arrive); .cue/.iso before .bin.
+        var dirs = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("PS2ISO")]
+        for _ in 0 ..< 2 { dirs += dirs.flatMap(Self.files).filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } }
+        let rank = ["cue": 0, "iso": 1]
+        discCandidates += dirs.flatMap(Self.files)
+            .filter { SectorReader.imageExtensions.contains($0.pathExtension.lowercased()) }
+            .sorted { rank[$0.pathExtension.lowercased(), default: 2] < rank[$1.pathExtension.lowercased(), default: 2] }
         for url in discCandidates where discLogo == nil { loadDisc(url, quiet: true) }
         var cardCandidates = [defaults.url(forKey: "card")].compactMap { $0 }
         cardCandidates += Self.files(in: Self.pcsx2.appendingPathComponent("memcards"))

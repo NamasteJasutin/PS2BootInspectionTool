@@ -8,7 +8,6 @@ use crate::sound::{decode_adpcm, envelope};
 use crate::{Error, Result};
 use glam::Vec2;
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 
 const BASE: usize = 0x100000;
 
@@ -318,10 +317,10 @@ pub struct DiscLogo {
 impl DiscLogo {
     /// Reads sectors 0-11 of a plain ISO image and descrambles them as the drive does.
     pub fn read(path: &std::path::Path) -> Result<Self> {
-        let mut f = std::fs::File::open(path)?;
-        let mut raw = vec![0u8; 12 * 2048];
-        f.seek(SeekFrom::Start(0))?;
-        f.read_exact(&mut raw).map_err(|_| Error::Corrupt("disc image is too short for the logo sectors".into()))?;
+        let raw = crate::sectors::SectorReader::open(path)?.read(0, 12)?;
+        if raw.len() != 12 * 2048 {
+            return Err(Error::Corrupt("disc image is too short for the logo sectors".into()));
+        }
         let key = raw[0];
         let out: Vec<u8> = raw.iter().map(|&b| { let x = b ^ key; (x << 3) | (x >> 5) }).collect();
         let sum = out.chunks_exact(4).fold(0u32, |s, c| s.wrapping_add(u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
