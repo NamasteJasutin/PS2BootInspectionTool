@@ -301,9 +301,9 @@ impl Model {
 
     fn arrange_audio(&self) {
         if self.scene_kind == SceneKind::Full {
-            self.audio.arrange(SceneKind::Full, self.timeline.fps(), self.sequence.dive_frame(), self.sequence.logo_start(), self.sequence.opening_start());
+            self.audio.arrange(SceneKind::Full, self.timeline.fps(), self.sequence.dive_frame(), self.sequence.logo_start(), self.sequence.opening_start(), self.ps1_active());
         } else {
-            self.audio.arrange(self.scene_kind, self.timeline.fps(), self.timeline.dive_frame, 0, 0);
+            self.audio.arrange(self.scene_kind, self.timeline.fps(), self.timeline.dive_frame, 0, 0, self.ps1_active());
         }
     }
 

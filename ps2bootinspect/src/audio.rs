@@ -94,15 +94,21 @@ impl AudioPlayer {
     pub fn load_logo_chime(&mut self, pcm: Vec<f32>) { self.logo_chime = Arc::new(pcm) }
 
     /// Places the clips for a scene; frames are converted with `fps`.
-    pub fn arrange(&self, scene: SceneKind, fps: f32, dive_frame: usize, logo_start: usize, opening_start: usize) {
+    /// `ps1_disc`: the opening stops the chime with the fast release instead of starting the
+    /// PS2 transition cue (OSDSYS does that for PlayStation discs, audio CDs and DVD-Video).
+    pub fn arrange(&self, scene: SceneKind, fps: f32, dive_frame: usize, logo_start: usize, opening_start: usize, ps1_disc: bool) {
         let at = |frame: usize| (frame as f64 / fps as f64 * SAMPLE_RATE as f64) as i64;
         let mut list = Vec::new();
         let clip = |start, pcm: Arc<Vec<f32>>, looped, fade_start| Clip { start, pcm, looped, fade_start };
         match scene {
             SceneKind::Boot | SceneKind::Full => {
                 if let Some(s) = &self.sounds {
-                    list.push(clip(at(opening_start), Arc::new(s.chime.clone()), false, None));
-                    list.push(clip(at(dive_frame), Arc::new(s.cue.clone()), false, None));
+                    if ps1_disc {
+                        list.push(clip(at(opening_start), Arc::new(s.chime.clone()), false, Some(at(dive_frame))));
+                    } else {
+                        list.push(clip(at(opening_start), Arc::new(s.chime.clone()), false, None));
+                        list.push(clip(at(dive_frame), Arc::new(s.cue.clone()), false, None));
+                    }
                 }
                 if scene == SceneKind::Full { list.push(clip(at(logo_start), self.logo_chime.clone(), false, None)) }
             }
