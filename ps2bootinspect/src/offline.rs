@@ -77,6 +77,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some("eight") => crate::model::CameraMode::FigureEight, Some("zenith") => crate::model::CameraMode::Zenith, _ => crate::model::CameraMode::Scripted,
     };
     m.camera_speed = named.get("degrees").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    m.camera_height = named.get("height").and_then(|v| v.parse().ok()).unwrap_or(0.6);
     m.options.solid_towers = m.camera_mode != crate::model::CameraMode::Scripted;
     m.frame = frame;
     let free = free.or_else(|| m.view_override());

@@ -383,7 +383,10 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
             });
         });
         ui.small(m.camera_mode.describe());
-        if m.camera_mode != CameraMode::Scripted { ui.add(egui::Slider::new(&mut m.camera_speed, 0.05..=5.0).text("degrees per frame").logarithmic(true)); }
+        if m.camera_mode != CameraMode::Scripted {
+            ui.add(egui::Slider::new(&mut m.camera_speed, 0.05..=5.0).text("degrees per frame").logarithmic(true));
+            if matches!(m.camera_mode, CameraMode::Orbit | CameraMode::FigureEight | CameraMode::Tornado) && !m.in_logo_phase() { ui.add(egui::Slider::new(&mut m.camera_height, 0.0..=1.5).text("height (× radius)")); }
+        }
         if ui.checkbox(&mut m.free_camera_enabled, "Free camera").changed() && m.free_camera_enabled { m.reset_free_camera() }
         ui.small("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.");
         if ui.add_enabled(m.free_camera_enabled, egui::Button::new("Back to the scripted position")).clicked() { m.reset_free_camera() }

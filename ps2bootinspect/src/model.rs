@@ -74,49 +74,47 @@ impl CameraMode {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Scripted => "The route OSDSYS integrates every field (notes/opening.md).",
-            Self::Orbit => "The city's vertical is the z axis (the console looks down on the tower tops). A circle centred on the middle of the towers' base, out to where the console's camera starts; the camera dollies around it looking at the centre.",
-            Self::Tornado => "A helix around the city's axis: starts where the console's camera starts, widens as it descends to the base, tightens again, looking at the centre.",
-            Self::Crane => "Rises from street level at the towers' base to the console's own overhead start, and back.",
-            Self::FigureEight => "A lemniscate above the tower tops, looking down at the centre.",
-            Self::Zenith => "Pulled straight back along the axis so the towers read as a grid of tiles.",
+            Self::Orbit => "The console's camera dives down the city's axis (Y+ → Y−). A level circle around that axis at the chosen height, radius out to the console's start, looking at the base's centre.",
+            Self::Tornado => "A funnel around the axis: wide at the start's height, tightening as it descends to the base, looking at the centre.",
+            Self::Crane => "Street level at the city's edge, rising onto the axis above the towers — the console's own vantage — and back.",
+            Self::FigureEight => "A level lemniscate at the chosen height, looking down at the centre.",
+            Self::Zenith => "On the axis above the city, held still: the console's start without the dive.",
         }
     }
 
     /// The view at `frame` of the scene, turning `degrees_per_frame` around `centre`, at
-    /// `radius` (the distance from the centre to where the console's own camera starts).
-    /// `vertical` is the scene's down direction: +z for the city (the console looks down on
-    /// the tower tops), +y for the logo screens (the console looks at them from the front).
-    pub fn view(self, frame: f32, degrees_per_frame: f32, centre: Vec3, radius: f32, vertical: Vec3, video: VideoMode) -> Option<crate::renderer::ViewCamera> {
-        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    /// `radius` (the distance from the centre to where the console's own camera starts) and
+    /// `height` (fraction of the radius above the centre, for the paths that stay level).
+    /// `vertical` is the scene's down direction: +z for the city (the console starts above the
+    /// tower tops and dives down the axis), +y for the logo screens (the console looks at them
+    /// from the front, at height 0). `front` is where the lap starts: a horizontal direction.
+    pub fn view(self, frame: f32, degrees_per_frame: f32, centre: Vec3, radius: f32, height: f32, vertical: Vec3, front: Vec3, video: VideoMode) -> Option<crate::renderer::ViewCamera> {
+        use std::f32::consts::TAU;
         let a = (degrees_per_frame * frame).to_radians();
         let lap = (a / TAU).rem_euclid(1.0);
         let eased = (lap * TAU).cos() * -0.5 + 0.5;                  // 0 → 1 → 0 over a lap
-        // A frame around the centre: `down` = the scene's vertical, `front` = towards where
-        // the console's camera starts (-z), `side` = screen-right.
         let down = vertical.normalize_or(Vec3::Y);
-        let front = if down.z.abs() > 0.5 { -Vec3::Z } else { (-Vec3::Z - down * (-Vec3::Z).dot(down)).normalize_or(-Vec3::Z) };
+        let up = -down;
+        let front = (front - down * front.dot(down)).normalize_or(Vec3::X);
         let side = down.cross(front).normalize_or(Vec3::X);
-        let (sideways, up) = (side, -down);
+        let ring = |angle: f32, r: f32| (front * angle.cos() + side * angle.sin()) * r;
         let position = match self {
             Self::Scripted => return None,
-            // Horizontal circle around the vertical axis, starting at the console's side.
-            Self::Orbit => centre + (front * a.cos() + sideways * a.sin()) * radius,
-            // Helix: wide and high at the start, tightening as it descends to the centre's level.
-            Self::Tornado => {
-                let r = radius * (0.2 + 0.8 * (1.0 - eased));
-                centre + (front * (3.0 * a).cos() + sideways * (3.0 * a).sin()) * r + up * radius * 0.6 * (1.0 - eased)
-            }
-            // From below the centre, in front, rising over the top and back.
-            Self::Crane => { let swing = eased * PI - FRAC_PI_2; centre + (front * swing.cos() + up * swing.sin()) * radius }
-            // A lemniscate in the front plane, looking at the centre.
-            Self::FigureEight => centre + front * radius + sideways * (radius * 0.5 * a.sin()) + up * (radius * 0.3 * (2.0 * a).sin()),
-            // Straight above, looking down the vertical.
-            Self::Zenith => centre + up * radius + front * 0.01 * radius,
+            // A level circle around the vertical axis at `height`.
+            Self::Orbit => centre + up * (height * radius) + ring(a, radius),
+            // A funnel: wide at the start's height, tightening as it descends to the base.
+            Self::Tornado => centre + up * (radius * (1.0 - eased) * height.max(0.3) * 2.0) + ring(3.0 * a, radius * (1.0 - 0.85 * eased).max(0.1)),
+            // Street level at the edge, rising onto the axis above the city, and back.
+            Self::Crane => centre + up * (radius * (0.05 + 0.95 * eased)) + ring(0.0, radius * (1.0 - 0.95 * eased)),
+            // A level lemniscate at `height`, looking down at the centre.
+            Self::FigureEight => centre + up * (height * radius) + front * (radius * a.sin()) + side * (radius * 0.5 * (2.0 * a).sin()),
+            // On the axis above the city: the console's own vantage, held still.
+            Self::Zenith => centre + up * radius + front * (0.001 * radius),
         };
-        let forward = (centre - position).normalize_or(front);
+        let forward = (centre - position).normalize_or(down);
         // `up` is the screen-down direction in this renderer (+Y is down the console's screen):
         // the scene's vertical projected into the view plane; looking along the vertical,
-        // fall back to the console's front so the picture keeps its bearings.
+        // fall back to the lap's front so the picture keeps its bearings.
         let proj = down - forward * forward.dot(down);
         let screen_down = if proj.length() < 0.05 { (front - forward * forward.dot(front)).normalize_or(Vec3::Y) } else { proj.normalize() };
         Some(crate::renderer::ViewCamera { position, forward, up: screen_down, video })
@@ -280,6 +278,8 @@ pub struct Model {
     pub camera_mode: CameraMode,
     /// Degrees per frame along a predetermined camera path.
     pub camera_speed: f32,
+    /// Height of a level path above the city's base, as a fraction of the orbit radius.
+    pub camera_height: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -320,7 +320,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -705,18 +705,26 @@ impl Model {
         // The paths circle the city's base (the towers' far end, vertical = z; the console's
         // camera starts at z = 16) — or, in the second phase, the logo (vertical = y): the
         // PS1 model's centre, or the picture plane the PS2 logo hangs on.
-        let (centre, radius, vertical) = if self.in_logo_phase() {
+        // In the city the console starts on the axis, so a level lap starts beside it, towards
+        // the console's screen-top (-y); for the logo screens the lap starts at the console's
+        // own front (-z), at height 0.
+        let (centre, radius, height, vertical, front) = if self.in_logo_phase() {
             if self.ps1_active() {
                 let k = crate::scenes::ps1::PS1_WORLD_SCALE;
-                (Vec3::new(0.0, -340.0 * k, 5888.0 * k), 5888.0 * k * 0.7, Vec3::Y)
+                (Vec3::new(0.0, -340.0 * k, 5888.0 * k), 5888.0 * k * 0.7, 0.0, Vec3::Y, -Vec3::Z)
             } else {
-                (Vec3::new(0.0, 0.0, crate::renderer::PICTURE_PLANE_Z), crate::renderer::PICTURE_PLANE_Z, Vec3::Y)
+                (Vec3::new(0.0, 0.0, crate::renderer::PICTURE_PLANE_Z), crate::renderer::PICTURE_PLANE_Z, 0.0, Vec3::Y, -Vec3::Z)
             }
         } else {
             let base_z = self.scene.towers.iter().map(|t| t.centre.z + t.half_length).fold(0.0f32, f32::max).max(200.0);
-            (Vec3::new(0.0, 0.0, base_z), base_z - 16.0, Vec3::Z)
+            (Vec3::new(0.0, 0.0, base_z), base_z - 16.0, self.camera_height, Vec3::Z, -Vec3::Y)
         };
-        self.camera_mode.view(frame, self.camera_speed, centre, radius, vertical, self.video)
+        let v = self.camera_mode.view(frame, self.camera_speed, centre, radius, height, vertical, front, self.video);
+        if std::env::var_os("PS2_DEBUG_PLANE").is_some() {
+            let (lo, hi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.z - t.half_length), hi.max(t.centre.z + t.half_length)));
+            eprintln!("path centre {centre:?} radius {radius} height {height} tower z {lo}..{hi} view {v:?}");
+        }
+        v
     }
 
     /// One colour multiplier per tower of the scene for the chosen tint (beyond the PS2:
