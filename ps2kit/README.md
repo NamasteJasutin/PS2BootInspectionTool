@@ -11,7 +11,7 @@ supply at run time; the crate's CI tests run on synthetic inputs only.
 
 ```toml
 [dependencies]
-ps2kit = "0.2"
+ps2kit = "0.3"
 ```
 
 ```rust
@@ -29,12 +29,12 @@ for r in &PlayHistory::from_card(&card)?.records {
 |---|---|
 | `rom` | the ROMDIR container and the OSD LZ scheme |
 | `memcard` | PCSX2 card images (with or without ECC) and folder cards |
-| `history` | the play-history file (`B?DATA-SYSTEM/history`), the data behind the boot screen's towers |
-| `sectors`, `disc` | ISO / BIN+CUE sector access, `SYSTEM.CNF`, the boot ELF, the hand-off a console would perform |
+| `history` | the play-history file (`B?DATA-SYSTEM/history`), the data behind the boot screen's towers, and `launch()` — the console's own `HistoryUpdate` (growth, tower bits, eviction) |
+| `sectors`, `disc` | ISO / BIN+CUE sector access, `SYSTEM.CNF`, the boot ELF, the hand-off a console would perform as a list of facts, and where the boot leads (`boot_outcome`: game, PS1 game, menu, warning scene) |
 | `logo` | `rom0:PS2LOGO` assets and the logo bitmap on a disc's first sectors (descrambling, region checksums) |
 | `sound` | OSD sound bank, sequences and the SPU envelope, rendered to PCM |
 | `bios`, `locate` | the opening's data tables, found in any supported ROM by content |
-| `sim` | towers, camera and timelines as functions of the frame number |
+| `sim` | towers, camera and timelines as functions of the frame number; `BootPlan`/`BootSequence` for the whole boot on one clock, ending in the logo, the licence screen, the warning scene or the menu |
 | `ps1` | the PS1 licence screen a PS2 shows for a PlayStation disc (`rom0:LOGO`, TMD, TIM, VAB) |
 
 Supported BIOS versions for `bios`/`logo`/`sound`: ROM 1.50–2.00 of the OSD generation with

@@ -61,11 +61,16 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      # Release notes are written by hand in docs/releases/<tag>.md; the generated list of
+      # commits is appended after them.
       - uses: softprops/action-gh-release@v2
         with:
+          name: PS2 Boot Inspection Tool ${{ github.ref_name }}
+          body_path: docs/releases/${{ github.ref_name }}.md
           files: artifacts/*
           generate_release_notes: true

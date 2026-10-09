@@ -2,7 +2,8 @@
 
 ## 0.3.0 — 2026-10-09
 
-The boot can now lead somewhere other than the logo.
+The boot can now lead somewhere other than the logo, the history table can be launched into,
+and the PS1 logo is available to other cameras. Breaking changes are the first three lines.
 
 - `sim::BootOutcome` (`Game`, `Ps1Game`, `Menu`, `Warning`) and `sim::BootPlan`; `BootSequence::from_plan` builds the segments the outcome calls for, `BootSequence::new` is the `Game` shorthand. `BootSequence` gains `outcome`, `warning` (the warning scene's timeline) and `warning_start()`.
 - `sim::Segment` is `#[non_exhaustive]` and gains `Warning` and `Menu`; a sequence no longer always has five segments. `with_logo` sets `outcome = Ps1Game` and is a no-op on a sequence without a logo segment.
