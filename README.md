@@ -146,6 +146,7 @@ For anyone who wants to check the tool's claims or extend it to another BIOS ver
 | `notes/sound.md` | The boot chime: driver, bank and sequence formats. |
 | `notes/menu_survey.md` | Survey of the main menu and browser (not re-created). |
 | `notes/devkit_survey.md` | What the DTL-H30101 development-kit BIOS does differently (very little). |
+| `notes/research/` | Four surveys of the hidden hand-overs across five ROMs and four discs — OSDSYS hooks, kernel/EELOAD/IOP probes, what games ask the console, ROM1/EROM/NVM — with a merged, ranked list of research tooling (`notes/research/README.md`). |
 | `notes/hidden_features.md` | What every ROM carries that owners never see: the factory test program, the card update hook, the dormant kernel debugger, and what PCSX2 exposes of it. |
 | `ps2kit/` | The portable core (Rust): every reader and the simulation, with oracle tests. |
 | `ps2bootinspect/` | The app (Rust: egui + wgpu + cpal). |
