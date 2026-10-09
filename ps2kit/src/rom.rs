@@ -56,6 +56,14 @@ impl RomDir {
 
     /// Names of every module in the table, in no particular order.
     pub fn names(&self) -> impl Iterator<Item = &String> { self.entries.keys() }
+
+    /// Every module as `(name, offset, size)`, in image order.
+    #[must_use]
+    pub fn entries(&self) -> Vec<(String, usize, usize)> {
+        let mut v: Vec<_> = self.entries.iter().map(|(n, &(o, s))| (n.clone(), o, s)).collect();
+        v.sort_by_key(|e| e.1);
+        v
+    }
 }
 
 /// Decompresses the OSD LZ stream at `src[start..]`.

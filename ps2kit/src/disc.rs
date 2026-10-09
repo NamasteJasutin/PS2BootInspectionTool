@@ -400,6 +400,9 @@ pub enum HandoffStep {
     NoDisc,
     /// Neither `SYSTEM.CNF` nor a PlayStation licence sector: unknown media, left to the browser.
     UnknownMedia,
+    /// The drive reports a disc that is neither a PlayStation nor a PlayStation 2 disc
+    /// (state 0x74): the warning scene follows the opening.
+    IllegalDisc,
     /// OSDSYS compares the title ID's region with the console's.
     RegionCheck {
         /// The disc's title ID (`?` when unknown).
@@ -550,7 +553,7 @@ impl HandoffStep {
     #[must_use]
     pub fn who(&self) -> String {
         match self {
-            Self::NoDisc | Self::LoadExec { .. } => "OSDSYS".into(),
+            Self::NoDisc | Self::IllegalDisc | Self::LoadExec { .. } => "OSDSYS".into(),
             Self::UnknownMedia | Self::Ps2DiscIdentified { .. } | Self::Ps1DiscIdentified { .. } => "CDVD (disc thread 0x20F478)".into(),
             Self::RegionCheck { .. } | Self::Ps1RegionCheck { .. } => "Region".into(),
             Self::LaunchRequest { .. } => "OSDSYS OpeningDecideNext (0x2165A0)".into(),
@@ -588,10 +591,11 @@ impl fmt::Display for HandoffStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoDisc => f.write_str("No disc: OpeningDecideNext → ctx[0x5E8] = 2, the clock/main-menu module is woken (not re-created here)."),
+            Self::IllegalDisc => f.write_str("the drive reports an illegal disc (state 0x74): OpeningDecideNext → ctx[0x5E8] = 4, the opening module plays its warning scene (\"Please insert a PlayStation or PlayStation 2 format disc\") until the drive reports a change"),
             Self::UnknownMedia => f.write_str("the disc has no SYSTEM.CNF and no PlayStation licence sector: the drive reports it as unknown media (register 0x05, state 0x69); OpeningDecideNext leaves it to the browser, which shows it as a data disc"),
             Self::RegionCheck { title_id, disc, console, verdict } => match (disc, console, verdict) {
                 (Some(d), Some(c), RegionVerdict::Accepted) => write!(f, "disc {title_id} is {}, console ROM is {}: a real console accepts it", ps2_region_name(*d, true), ps2_region_name(*c, false)),
-                (Some(d), Some(c), RegionVerdict::Rejected) => write!(f, "disc {title_id} is {}, console ROM is {}: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks.", ps2_region_name(*d, true), ps2_region_name(*c, false)),
+                (Some(d), Some(c), RegionVerdict::Rejected) => write!(f, "disc {title_id} is {}, console ROM is {}: a real console would reject it (state 0x74, warning scene)", ps2_region_name(*d, true), ps2_region_name(*c, false)),
                 (d, c, _) => write!(f, "disc region {}, console region {} (not checked)", d.map(|r| ps2_region_name(r, true)).unwrap_or("unknown"), c.map(|r| ps2_region_name(r, false)).unwrap_or("unknown")),
             },
             Self::Ps2DiscIdentified { state, dvd, title_id } => write!(f, "disc type register → state 0x{state:02X} (PlayStation 2 {}); Ps2DiscVerifyAndGetId reads the disc key twice → title ID {title_id}", if *dvd { "DVD" } else { "CD" }),
@@ -684,6 +688,26 @@ pub fn handoff_steps(disc: Option<&DiscImage>, history: &PlayHistory, video: Vid
     }
     s.push(HandoffStep::Stop { ps1: false });
     s
+}
+
+/// Where the boot leads, read off the hand-off facts: no disc or unknown media → the menu;
+/// an illegal disc or a rejected region → the warning scene (unless `enforce` is false, when
+/// the region lock is ignored as the tool always did); a PlayStation disc → the licence
+/// screen; otherwise the logo and the game.
+#[must_use]
+pub fn boot_outcome(steps: &[HandoffStep], enforce: bool) -> crate::sim::BootOutcome {
+    use crate::sim::BootOutcome;
+    let mut outcome = BootOutcome::Game;
+    for s in steps {
+        match s {
+            HandoffStep::NoDisc | HandoffStep::UnknownMedia => return BootOutcome::Menu,
+            HandoffStep::IllegalDisc => return BootOutcome::Warning,
+            HandoffStep::RegionCheck { verdict: RegionVerdict::Rejected, .. } if enforce => return BootOutcome::Warning,
+            HandoffStep::Ps1DiscIdentified { .. } => outcome = BootOutcome::Ps1Game,
+            _ => {}
+        }
+    }
+    outcome
 }
 
 fn history_update(history: &PlayHistory, title_id: &str) -> HandoffStep {

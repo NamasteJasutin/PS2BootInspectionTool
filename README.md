@@ -54,6 +54,12 @@ sectors 5–11, fades it in through the GTE depth cue, then the "PlayStation" wo
 licence line in the kernel's font and the drive's region letters, with the shell's drone and
 ascending chime — and the hand-off card follows `PS1DRV` to the PS-X EXE.
 
+The second phase follows the facts. The **Scenario** panel lets you change them: pretend the
+console is of another region, tell the drive it found no disc or an illegal one, or switch the
+region lock off. A US disc on a European BIOS then ends in the red warning scene, as it would
+on the console; an empty tray ends at the clock / main menu; the segment strip under the
+scrubber shows which path the sequence takes.
+
 The tool stops exactly there and shows what would happen next instead of doing it: the disc's
 title ID and type, `SYSTEM.CNF`, the boot executable's location, size, entry point and memory
 segments, the logo checksum, how your play history would change, and the chain of named

@@ -7,7 +7,7 @@ use ps2kit::logo::{DiscLogo, LogoMaster};
 use ps2kit::memcard::MemoryCard;
 use ps2kit::rom::{unpack, RomDir};
 use ps2kit::sectors::SectorReader;
-use ps2kit::sim::{BootSequence, Segment, Timeline};
+use ps2kit::sim::{BootOutcome, BootPlan, BootSequence, Segment, Timeline};
 use ps2kit::sound::{decode_adpcm, envelope};
 use ps2kit::{Region, VideoMode};
 use std::path::{Path, PathBuf};
@@ -339,6 +339,38 @@ fn boot_sequence_segments_are_contiguous() {
     assert_eq!(seq.logo_start(), seq.spans()[3].start);
     let (span, local) = seq.span_at(seq.logo_start() + 5);
     assert_eq!((span.segment, local), (Segment::Logo, 5));
+    assert_eq!(seq.outcome, BootOutcome::Game);
+    assert_eq!(seq.warning_start(), None);
+}
+
+#[test]
+fn boot_sequence_follows_the_outcome() {
+    let segments = |outcome| {
+        let seq = BootSequence::from_plan(&BootPlan::new(VideoMode::Ntsc, outcome));
+        let mut next = 0;
+        for s in seq.spans() { assert_eq!(s.start, next); next += s.length }
+        assert_eq!(seq.total_frames(), next);
+        let segs = seq.spans().iter().map(|s| s.segment).collect::<Vec<_>>();
+        (seq, segs)
+    };
+    let (game, segs) = segments(BootOutcome::Game);
+    assert_eq!(segs, [Segment::PowerOn, Segment::Opening, Segment::Handoff, Segment::Logo, Segment::End]);
+    let (warn, segs) = segments(BootOutcome::Warning);
+    assert_eq!(segs, [Segment::PowerOn, Segment::Opening, Segment::Warning, Segment::End]);
+    assert_eq!(warn.warning_start(), Some(warn.spans()[2].start));
+    assert_eq!(warn.spans()[2].length, warn.warning.end_frame());
+    assert_eq!(warn.spans()[1], game.spans()[1], "the opening is the same whatever follows");
+    let (menu, segs) = segments(BootOutcome::Menu);
+    assert_eq!(segs, [Segment::PowerOn, Segment::Opening, Segment::Menu]);
+    assert_eq!(menu.spans()[2].length, 360);
+    // with_logo only applies where there is a logo segment.
+    let licence = Timeline::ps1_licence(VideoMode::Ntsc, 83);
+    assert_eq!(menu.clone().with_logo(licence.clone()).outcome, BootOutcome::Menu);
+    let ps1 = game.with_logo(licence.clone());
+    assert_eq!(ps1.outcome, BootOutcome::Ps1Game);
+    assert_eq!(ps1.spans()[3].length, licence.end_frame());
+    let past = menu.span_at(10_000);
+    assert_eq!(past.0.segment, Segment::Menu);
 }
 
 // --- sound -----------------------------------------------------------------------------
@@ -529,7 +561,7 @@ fn malformed_input_does_not_panic() {
 /// update rules, PS1 licence outcomes, unknown media, no disc), captured before the steps
 /// became structured. `who()` and `Display` must reproduce them exactly.
 const HANDOFF_TEXT_0_1: &str = r#"## ps2 E ntsc h13
-Region|disc SLUS_123.45 is USA, console ROM is Europe: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks.
+Region|disc SLUS_123.45 is USA, console ROM is Europe: a real console would reject it (state 0x74, warning scene)
 CDVD (disc thread 0x20F478)|disc type register → state 0x6C (PlayStation 2 CD); Ps2DiscVerifyAndGetId reads the disc key twice → title ID SLUS_123.45
 OSDSYS OpeningDecideNext (0x2165A0)|latched state → ctx[0x14] = 1 (launch request: PS2 CD)
 OSDSYS Launch (0x203970 → 0x202AB0)|DiscThreadEnable(0); read cdrom0:\SYSTEM.CNF;1 → BOOT2 = cdrom0:\SLUS_123.45;1; file name must match the first 10 characters of the disc ID
@@ -544,7 +576,7 @@ EELOAD / kernel|ELF (MIPS R5900): 1 PT_LOAD segment(s), 6144 bytes in memory, en
   segment 0|vaddr 0x00100000, 2048 bytes from file, 6144 bytes in memory (bss zeroed)
 — stop —|This is where the game takes over the console. The app ends the sequence here.
 ## ps2 J pal h5
-Region|disc SLUS_123.45 is USA, console ROM is Japan: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks.
+Region|disc SLUS_123.45 is USA, console ROM is Japan: a real console would reject it (state 0x74, warning scene)
 CDVD (disc thread 0x20F478)|disc type register → state 0x6C (PlayStation 2 CD); Ps2DiscVerifyAndGetId reads the disc key twice → title ID SLUS_123.45
 OSDSYS OpeningDecideNext (0x2165A0)|latched state → ctx[0x14] = 1 (launch request: PS2 CD)
 OSDSYS Launch (0x203970 → 0x202AB0)|DiscThreadEnable(0); read cdrom0:\SYSTEM.CNF;1 → BOOT2 = cdrom0:\SLUS_123.45;1; file name must match the first 10 characters of the disc ID
@@ -589,7 +621,7 @@ EELOAD / kernel|ELF (MIPS R5900): 1 PT_LOAD segment(s), 6144 bytes in memory, en
   segment 0|vaddr 0x00100000, 2048 bytes from file, 6144 bytes in memory (bss zeroed)
 — stop —|This is where the game takes over the console. The app ends the sequence here.
 ## ps2 H h63
-Region|disc SLUS_123.45 is USA, console ROM is Japan: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks.
+Region|disc SLUS_123.45 is USA, console ROM is Japan: a real console would reject it (state 0x74, warning scene)
 CDVD (disc thread 0x20F478)|disc type register → state 0x6C (PlayStation 2 CD); Ps2DiscVerifyAndGetId reads the disc key twice → title ID SLUS_123.45
 OSDSYS OpeningDecideNext (0x2165A0)|latched state → ctx[0x14] = 1 (launch request: PS2 CD)
 OSDSYS Launch (0x203970 → 0x202AB0)|DiscThreadEnable(0); read cdrom0:\SYSTEM.CNF;1 → BOOT2 = cdrom0:\SLUS_123.45;1; file name must match the first 10 characters of the disc ID
@@ -604,7 +636,7 @@ EELOAD / kernel|ELF (MIPS R5900): 1 PT_LOAD segment(s), 6144 bytes in memory, en
   segment 0|vaddr 0x00100000, 2048 bytes from file, 6144 bytes in memory (bss zeroed)
 — stop —|This is where the game takes over the console. The app ends the sequence here.
 ## ps2 C
-Region|disc SLUS_123.45 is USA, console ROM is China: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks.
+Region|disc SLUS_123.45 is USA, console ROM is China: a real console would reject it (state 0x74, warning scene)
 CDVD (disc thread 0x20F478)|disc type register → state 0x6C (PlayStation 2 CD); Ps2DiscVerifyAndGetId reads the disc key twice → title ID SLUS_123.45
 OSDSYS OpeningDecideNext (0x2165A0)|latched state → ctx[0x14] = 1 (launch request: PS2 CD)
 OSDSYS Launch (0x203970 → 0x202AB0)|DiscThreadEnable(0); read cdrom0:\SYSTEM.CNF;1 → BOOT2 = cdrom0:\SLUS_123.45;1; file name must match the first 10 characters of the disc ID
@@ -619,7 +651,7 @@ EELOAD / kernel|ELF (MIPS R5900): 1 PT_LOAD segment(s), 6144 bytes in memory, en
   segment 0|vaddr 0x00100000, 2048 bytes from file, 6144 bytes in memory (bss zeroed)
 — stop —|This is where the game takes over the console. The app ends the sequence here.
 ## ps2 X
-Region|disc SLUS_123.45 is USA, console ROM is unknown: a real console would reject it (state 0x74, warning scene). The tool does not enforce region locks.
+Region|disc SLUS_123.45 is USA, console ROM is unknown: a real console would reject it (state 0x74, warning scene)
 CDVD (disc thread 0x20F478)|disc type register → state 0x6C (PlayStation 2 CD); Ps2DiscVerifyAndGetId reads the disc key twice → title ID SLUS_123.45
 OSDSYS OpeningDecideNext (0x2165A0)|latched state → ctx[0x14] = 1 (launch request: PS2 CD)
 OSDSYS Launch (0x203970 → 0x202AB0)|DiscThreadEnable(0); read cdrom0:\SYSTEM.CNF;1 → BOOT2 = cdrom0:\SLUS_123.45;1; file name must match the first 10 characters of the disc ID
@@ -770,7 +802,8 @@ OSDSYS|No disc: OpeningDecideNext → ctx[0x5E8] = 2, the clock/main-menu module
 "#;
 
 #[test]
-fn handoff_sentences_are_unchanged_since_0_1() {
+fn handoff_sentences_are_pinned() {
+    // Pinned at 0.1; 0.3 dropped the "The tool does not enforce region locks" clause, since it now can.
     use ps2kit::disc::HandoffStep;
     let ps2 = DiscImage::open(write_iso(&scratch("handoff-ps2"), &synthetic_disc("E"))).unwrap();
     let ps1 = DiscImage::open(write_iso(&scratch("handoff-ps1"), &synthetic_ps1_disc("Amer  ica ", true))).unwrap();
@@ -841,4 +874,14 @@ fn handoff_sentences_are_unchanged_since_0_1() {
     assert!(matches!(&steps[10], HandoffStep::LoadElf { elf } if elf.lba == 20));
     assert_eq!(h13.next_record("SLUS_123.45").0.count, 14);
     assert_eq!(empty.next_record("SLUS_123.45"), (Record { name: "SLUS_123.45".into(), count: 1, mask: 1, index: 0, date: 0 }, false));
+
+    // The outcome follows the facts: an American disc on a European console is rejected
+    // (warning scene) unless the lock is ignored; no disc → menu; an illegal disc → warning.
+    use ps2kit::disc::boot_outcome;
+    assert_eq!(boot_outcome(&steps, true), BootOutcome::Warning);
+    assert_eq!(boot_outcome(&steps, false), BootOutcome::Game);
+    assert_eq!(boot_outcome(&handoff_steps(Some(&ps2), &h13, VideoMode::Ntsc, Some(Region::America), None), true), BootOutcome::Game);
+    assert_eq!(boot_outcome(&handoff_steps(None, &h13, VideoMode::Ntsc, e, None), true), BootOutcome::Menu);
+    assert_eq!(boot_outcome(&[HandoffStep::IllegalDisc], false), BootOutcome::Warning);
+    assert!(HandoffStep::IllegalDisc.to_string().contains("0x74"));
 }

@@ -4,12 +4,12 @@ use crate::audio::{Analysis, AudioPlayer, Snapshot, VisualizerMode};
 use crate::renderer::RenderOptions;
 use glam::Vec3;
 use ps2kit::bios::OpeningAssets;
-use ps2kit::disc::{handoff_steps, DiscImage, HandoffStep};
+use ps2kit::disc::{boot_outcome, handoff_steps, DiscImage, HandoffStep};
 use ps2kit::history::PlayHistory;
 use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets, LogoBitmap};
 use ps2kit::memcard::MemoryCard;
 use ps2kit::rom::RomDir;
-use ps2kit::sim::{phase_at, BootPhase, BootSequence, CameraState, OpeningScene, Segment, Timeline, HANDOFF_PHASES, POWER_ON_PHASES, PS1_HANDOFF_PHASES};
+use ps2kit::sim::{phase_at, BootOutcome, BootPhase, BootPlan, BootSequence, CameraState, OpeningScene, Segment, Timeline, HANDOFF_PHASES, POWER_ON_PHASES, PS1_HANDOFF_PHASES};
 use ps2kit::sound::BootSound;
 use ps2kit::{Region, VideoMode};
 use std::path::{Path, PathBuf};
@@ -32,6 +32,41 @@ impl Scene {
 }
 
 pub fn video_mode_name(video: VideoMode) -> &'static str { if video == VideoMode::Pal { "PAL 50 Hz" } else { "NTSC 60 Hz" } }
+
+/// The sidebar's tabs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab { Boot, SaveData, Disc, Bios }
+
+impl Tab {
+    pub const ALL: [Self; 4] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios];
+    pub fn name(self) -> &'static str {
+        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS" }
+    }
+}
+
+/// What the drive is told it found, overriding the loaded image (the scenario bar).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DiscOverride { AsLoaded, NoDisc, Illegal }
+
+impl DiscOverride {
+    pub const ALL: [Self; 3] = [Self::AsLoaded, Self::NoDisc, Self::Illegal];
+    pub fn name(self) -> &'static str {
+        match self { Self::AsLoaded => "the loaded image", Self::NoDisc => "no disc (tray empty)", Self::Illegal => "an illegal disc (state 0x74)" }
+    }
+}
+
+/// The console regions a scenario can pretend to be.
+pub const REGIONS: [(Option<Region>, &str); 5] = [(None, "as the BIOS says"), (Some(Region::Japan), "J — Japan"), (Some(Region::America), "A — America"), (Some(Region::Europe), "E — Europe"), (Some(Region::China), "C — China")];
+
+pub fn outcome_name(outcome: BootOutcome) -> &'static str {
+    match outcome {
+        BootOutcome::Game => "the PlayStation 2 logo, then the game",
+        BootOutcome::Ps1Game => "the PS1 licence screen, then the game",
+        BootOutcome::Menu => "the clock / main menu (no disc to start)",
+        BootOutcome::Warning => "the warning scene (red screen)",
+        _ => "?",
+    }
+}
 
 /// The caption shown while the console is busy with a phase (`notes/boot_sequence.md`).
 pub fn phase_caption(phase: BootPhase) -> &'static str {
@@ -64,6 +99,8 @@ pub fn phase_caption(phase: BootPhase) -> &'static str {
 
 /// Shown at the end of the full sequence, where the game would start.
 const END_CAPTION: &str = "SPU quit; LoadExecPS2(boot ELF) — the game would start here";
+const MENU_CAPTION: &str = "OSDSYS: clock / main-menu module woken (ctx[0x5E8] = 2) — not re-created here";
+const WARNING_END_CAPTION: &str = "the drive reported a change: the warning scene faded and OSDSYS looks at the disc again";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HistorySource { Card, Saves, Custom, Empty }
@@ -131,6 +168,11 @@ pub struct Model {
     pub custom_launches: u32,
     pub history: PlayHistory,
     pub scene_kind: Scene,
+    pub tab: Tab,
+    pub disc_override: DiscOverride,
+    pub region_override: Option<Region>,
+    /// Play the outcome a real console would reach (region lock) rather than the logo regardless.
+    pub enforce_checks: bool,
     pub video: VideoMode,
     pub language: &'static str,
     pub power_on_seconds: f32,
@@ -152,6 +194,7 @@ pub struct Model {
     pub timeline: Timeline,
     pub sequence: BootSequence,
     pub assets: Option<OpeningAssets>,
+    pub rom: Option<RomDir>,
     pub scene: OpeningScene,
     pub logo_assets: Option<LogoAssets>,
     /// The PS1 shell inside the BIOS (`rom0:LOGO`), for PlayStation discs.
@@ -179,13 +222,13 @@ impl Model {
             card_path: None, card_status: "No memory card loaded".into(),
             disc_path: None, disc_status: "No disc image — the lettering is filled from the BIOS outline".into(),
             history_source: HistorySource::Empty, custom_titles: 12, custom_launches: 30, history: PlayHistory::default(),
-            scene_kind: Scene::Full, video, language: "E",
+            scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
             options: RenderOptions::default(), free_camera_enabled: false, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -244,6 +287,7 @@ impl Model {
                 if let Some(l) = &logo { self.ps2_logo_chime = l.chime(0x12) }
                 self.ps1_shell = ps2kit::ps1::Ps1Shell::load(&rom).map_err(|e| eprintln!("rom0:LOGO: {e}")).ok();
                 self.logo_assets = logo;
+                self.rom = Some(rom.clone());
                 self.update_logo_sound();
                 self.logo_version += 1;
                 self.rebuild_scene();
@@ -339,7 +383,12 @@ impl Model {
 
     pub fn rebuild_timeline(&mut self) {
         let fps = self.video.fps();
-        self.sequence = BootSequence::new(self.video, self.power_on_seconds, self.disc_seconds, self.handoff_seconds, 6.0);
+        let mut plan = BootPlan::new(self.video, self.outcome());
+        plan.power_on_seconds = self.power_on_seconds;
+        plan.disc_settled_seconds = self.disc_seconds;
+        plan.handoff_seconds = self.handoff_seconds;
+        plan.warning_seconds = self.warning_exit_seconds;
+        self.sequence = BootSequence::from_plan(&plan);
         self.timeline = match self.scene_kind {
             Scene::Boot | Scene::Full => Timeline::boot((self.disc_seconds * fps) as usize, self.video),
             Scene::Warning => Timeline::warning((self.warning_exit_seconds * fps) as usize, self.video),
@@ -352,11 +401,17 @@ impl Model {
 
     fn arrange_audio(&self) {
         if self.scene_kind == Scene::Full {
-            self.audio.arrange(Scene::Full, self.timeline.fps(), self.sequence.dive_frame(), self.sequence.logo_start(), self.sequence.opening_start(), self.ps1_active());
+            let seq = &self.sequence;
+            let logo = matches!(seq.outcome, BootOutcome::Game | BootOutcome::Ps1Game).then(|| seq.logo_start());
+            let warning = seq.warning_start().map(|s| (s, s + seq.warning.dive_frame));
+            self.audio.arrange(Scene::Full, self.timeline.fps(), seq.dive_frame(), logo, seq.opening_start(), self.ps1_active(), warning);
         } else {
-            self.audio.arrange(self.scene_kind, self.timeline.fps(), self.timeline.dive_frame, 0, 0, self.ps1_active());
+            self.audio.arrange(self.scene_kind, self.timeline.fps(), self.timeline.dive_frame, Some(0), 0, self.ps1_active(), None);
         }
     }
+
+    /// Where the boot leads under the current scenario.
+    pub fn outcome(&self) -> BootOutcome { boot_outcome(&self.handoff_steps(), self.enforce_checks) }
 
     pub fn set_scene(&mut self, kind: Scene) { self.scene_kind = kind; self.rebuild_timeline(); self.frame = self.start_frame() }
 
@@ -386,7 +441,11 @@ impl Model {
     pub fn camera(&self) -> CameraState {
         if self.scene_kind == Scene::Full {
             let (span, local) = self.sequence.span_at(self.frame.max(0.0) as usize);
-            return if span.segment == Segment::Opening { self.sequence.opening.camera(local as f32) } else { CameraState::default() };
+            return match span.segment {
+                Segment::Opening => self.sequence.opening.camera(local as f32),
+                Segment::Warning => self.sequence.warning.camera(local as f32),
+                _ => CameraState::default(),
+            };
         }
         self.timeline.camera(self.frame)
     }
@@ -403,7 +462,8 @@ impl Model {
             return match span.segment {
                 Segment::PowerOn => phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds).map(phase_caption),
                 Segment::Handoff => phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds).map(phase_caption),
-                Segment::End => Some(END_CAPTION),
+                Segment::End => Some(if self.sequence.outcome == BootOutcome::Warning { WARNING_END_CAPTION } else { END_CAPTION }),
+                Segment::Menu => Some(MENU_CAPTION),
                 _ => None,
             };
         }
@@ -411,8 +471,8 @@ impl Model {
         phase_at(&POWER_ON_PHASES, self.power_on_seconds + self.frame / fps, self.power_on_seconds).map(phase_caption)
     }
 
-    /// A PlayStation disc is loaded and the BIOS's PS1 shell could be read.
-    pub fn ps1_active(&self) -> bool { self.ps1_shell.is_some() && self.disc.as_ref().is_some_and(|d| d.kind == ps2kit::disc::DiscKind::Ps1) }
+    /// A PlayStation disc is loaded (and not overridden) and the BIOS's PS1 shell could be read.
+    pub fn ps1_active(&self) -> bool { self.ps1_shell.is_some() && self.disc_override == DiscOverride::AsLoaded && self.disc.as_ref().is_some_and(|d| d.kind == ps2kit::disc::DiscKind::Ps1) }
     /// The logo the licence screen shows: the disc's, else the shell's own copy.
     pub fn ps1_logo_model(&self) -> Option<&ps2kit::ps1::Tmd> { self.ps1_logo.as_ref().or(self.ps1_shell.as_ref().map(|s| &s.logo)) }
     /// The licence line exactly as the shell draws it (spaces included).
@@ -432,8 +492,18 @@ impl Model {
     }
 
     /// The console's region from the fifth `ROMVER` character.
-    pub fn rom_region(&self) -> Option<Region> { self.assets.as_ref().and_then(|a| a.rom_version().chars().nth(4)).and_then(Region::from_romver_letter) }
-    pub fn handoff_steps(&self) -> Vec<HandoffStep> { handoff_steps(self.disc.as_ref(), &self.history, self.video, self.rom_region(), self.ps1_shell.as_ref().map(|s| s.logo_bytes.as_slice())) }
+    pub fn detected_region(&self) -> Option<Region> { self.assets.as_ref().and_then(|a| a.rom_version().chars().nth(4)).and_then(Region::from_romver_letter) }
+    /// The region the scenario pretends the console has, else the detected one.
+    pub fn rom_region(&self) -> Option<Region> { self.region_override.or_else(|| self.detected_region()) }
+    /// The facts of the hand-off under the current scenario.
+    pub fn handoff_steps(&self) -> Vec<HandoffStep> {
+        let disc = match self.disc_override {
+            DiscOverride::AsLoaded => self.disc.as_ref(),
+            DiscOverride::NoDisc => None,
+            DiscOverride::Illegal => return vec![HandoffStep::IllegalDisc],
+        };
+        handoff_steps(disc, &self.history, self.video, self.rom_region(), self.ps1_shell.as_ref().map(|s| s.logo_bytes.as_slice()))
+    }
     /// Whether this console's PS1 shell would accept the loaded PlayStation disc.
     pub fn ps1_verdict(&self) -> Option<ps2kit::disc::Ps1Verdict> {
         let d = self.disc.as_ref()?;

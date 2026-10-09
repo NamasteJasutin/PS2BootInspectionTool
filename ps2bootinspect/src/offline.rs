@@ -45,12 +45,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.disc_seconds = named.get("disc").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     m.warning_exit_seconds = named.get("exit").and_then(|v| v.parse().ok()).unwrap_or(10.0);
     m.scene_kind = match named.get("scene").map(String::as_str) { Some("warning") => Scene::Warning, Some("logo") => Scene::Logo, Some("full") => Scene::Full, _ => Scene::Boot };
+    // Scenario: `--region J|A|E|C` pretends the console is of that region, `--tray none|illegal`
+    // overrides the disc, `--lock 0` ignores the region lock (the pre-1.1 behaviour).
+    m.region_override = named.get("region").and_then(|r| r.chars().next()).and_then(ps2kit::Region::from_romver_letter);
+    m.disc_override = match named.get("tray").map(String::as_str) { Some("none") => crate::model::DiscOverride::NoDisc, Some("illegal") => crate::model::DiscOverride::Illegal, _ => crate::model::DiscOverride::AsLoaded };
+    m.enforce_checks = named.get("lock").map(String::as_str) != Some("0");
     m.rebuild_timeline();
     if named.contains_key("handoff") {
         // `--handoff 1`: print what the sidebar's hand-off card would show.
         println!("bios: {}  video: {:?}", m.bios_status, m.video);
         println!("disc: {}", m.disc_status);
         for s in m.handoff_steps() { println!("  {:<44} {s}", s.who()) }
+        println!("outcome: {:?} — {}", m.outcome(), crate::model::outcome_name(m.outcome()));
         for sp in m.sequence.spans() { println!("segment {:?}: frames {}..{}", sp.segment, sp.start, sp.start + sp.length) }
     }
     let free = named.get("free").and_then(|f| {
@@ -90,6 +96,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             match span.segment {
                 Segment::Opening => r.render_opening(&mut enc, local as f32, &m.scene, assets, &m.sequence.opening, free, &m.options),
                 Segment::Logo => if !ps1(&mut r, &mut enc, local as f32) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options) },
+                Segment::Warning => r.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex),
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }
         }

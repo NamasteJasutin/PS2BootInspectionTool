@@ -487,8 +487,10 @@ pub fn phase_at(phases: &[BootPhase], elapsed: f32, total: f32) -> Option<BootPh
     phases.last().copied()
 }
 
-/// The parts of a [`BootSequence`], in order; a sequence always has all five.
+/// The parts of a [`BootSequence`], in order. Which ones a sequence has depends on its
+/// [`BootOutcome`]; every sequence starts with `PowerOn` and `Opening`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Segment {
     /// Black screen from power-on ([`POWER_ON_PHASES`]).
     PowerOn,
@@ -500,6 +502,55 @@ pub enum Segment {
     Logo,
     /// The point where the game would start; the sequence holds here.
     End,
+    /// The warning scene ([`Timeline::warning`], [`BootSequence::warning`]): the drive found
+    /// an illegal disc, or OSDSYS rejected the disc's region. Holds until the drive reports a change.
+    Warning,
+    /// The clock / main-menu module after an opening with no disc. Holds.
+    Menu,
+}
+
+/// Where a boot leads once the drive has settled (`notes/osdsys_flow.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BootOutcome {
+    /// A PS2 disc: hand-off, the logo, the game.
+    Game,
+    /// A PlayStation disc: hand-off to PS1DRV, the licence screen, the game.
+    Ps1Game,
+    /// No disc, or media OSDSYS leaves to the browser: the clock / main menu.
+    Menu,
+    /// An illegal disc (state 0x74) or a region OSDSYS rejects: the warning scene.
+    Warning,
+}
+
+/// The lengths that shape a [`BootSequence`], in seconds, plus its outcome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct BootPlan {
+    /// The video mode the frames are fields of.
+    pub video: crate::VideoMode,
+    /// Where the boot leads.
+    pub outcome: BootOutcome,
+    /// Black from power-on to the first opening frame.
+    pub power_on_seconds: f32,
+    /// When the drive has identified the disc, from the first opening frame (see [`Timeline::boot`]).
+    pub disc_settled_seconds: f32,
+    /// Black between the opening and the logo.
+    pub handoff_seconds: f32,
+    /// How long the sequence holds on its last screen.
+    pub end_seconds: f32,
+    /// For [`BootOutcome::Warning`]: how long before the drive reports a change and the
+    /// warning scene fades.
+    pub warning_seconds: f32,
+}
+
+impl BootPlan {
+    /// A plan with the console's typical lengths: 3 s power-on, 1.2 s hand-off, 6 s hold,
+    /// 10 s warning.
+    #[must_use]
+    pub fn new(video: crate::VideoMode, outcome: BootOutcome) -> Self {
+        Self { video, outcome, power_on_seconds: 3.0, disc_settled_seconds: 0.0, handoff_seconds: 1.2, end_seconds: 6.0, warning_seconds: 10.0 }
+    }
 }
 
 /// One segment's place on the sequence clock.
@@ -514,45 +565,80 @@ pub struct Span {
     pub length: usize,
 }
 
-/// The whole boot as one clock: power-on black → the opening → the hand-off to PS2LOGO →
-/// the logo → the point where the game would start. Frames are fields of the video mode.
+/// The whole boot as one clock: power-on black → the opening → then, by [`BootOutcome`],
+/// the hand-off → the logo → the point where the game would start, or the warning scene, or
+/// the menu. Frames are fields of the video mode.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct BootSequence {
     /// The video mode the frames are fields of.
     pub video: crate::VideoMode,
+    /// Where this boot leads.
+    pub outcome: BootOutcome,
     spans: Vec<Span>,
     /// The opening's timeline (frames local to its segment).
     pub opening: Timeline,
     /// The logo's (or the PS1 licence screen's) timeline (frames local to its segment).
     pub logo: Timeline,
+    /// The warning scene's timeline (frames local to its segment); only played by
+    /// [`BootOutcome::Warning`].
+    pub warning: Timeline,
 }
 
 impl BootSequence {
-    /// Builds the five segments from the black periods' lengths in seconds and the frame at
-    /// which the drive settles (`disc_settled_seconds`, see [`Timeline::boot`]).
+    /// A sequence that leads to a PS2 game, from the black periods' lengths in seconds and
+    /// the frame at which the drive settles (`disc_settled_seconds`, see [`Timeline::boot`]).
     #[must_use]
     pub fn new(video: crate::VideoMode, power_on_seconds: f32, disc_settled_seconds: f32, handoff_seconds: f32, end_seconds: f32) -> Self {
+        let mut plan = BootPlan::new(video, BootOutcome::Game);
+        plan.power_on_seconds = power_on_seconds;
+        plan.disc_settled_seconds = disc_settled_seconds;
+        plan.handoff_seconds = handoff_seconds;
+        plan.end_seconds = end_seconds;
+        Self::from_plan(&plan)
+    }
+
+    /// Builds the segments a [`BootPlan`] calls for:
+    /// `Game`/`Ps1Game`: power-on, opening, hand-off, logo, end;
+    /// `Warning`: power-on, opening, warning, end;
+    /// `Menu`: power-on, opening, menu.
+    #[must_use]
+    pub fn from_plan(plan: &BootPlan) -> Self {
+        let video = plan.video;
         let fps = video.fps();
-        let opening = Timeline::boot((disc_settled_seconds * fps) as usize, video);
+        let secs = |s: f32| (s.max(0.0) * fps) as usize;
+        let opening = Timeline::boot(secs(plan.disc_settled_seconds), video);
         let logo = Timeline::logo(video);
+        let warning = Timeline::warning(secs(plan.warning_seconds), video);
         let mut spans = Vec::new();
         let mut t = 0;
         let mut add = |segment, length: usize| {
             spans.push(Span { segment, start: t, length });
             t += length;
         };
-        add(Segment::PowerOn, (power_on_seconds * fps) as usize);
+        add(Segment::PowerOn, secs(plan.power_on_seconds));
         add(Segment::Opening, opening.end_frame());
-        add(Segment::Handoff, (handoff_seconds * fps) as usize);
-        add(Segment::Logo, logo.end_frame());
-        add(Segment::End, (end_seconds * fps) as usize);
-        Self { video, spans, opening, logo }
+        match plan.outcome {
+            BootOutcome::Game | BootOutcome::Ps1Game => {
+                add(Segment::Handoff, secs(plan.handoff_seconds));
+                add(Segment::Logo, logo.end_frame());
+                add(Segment::End, secs(plan.end_seconds));
+            }
+            BootOutcome::Warning => {
+                add(Segment::Warning, warning.end_frame());
+                add(Segment::End, secs(plan.end_seconds));
+            }
+            BootOutcome::Menu => add(Segment::Menu, secs(plan.end_seconds)),
+        }
+        Self { video, outcome: plan.outcome, spans, opening, logo, warning }
     }
 
-    /// The same sequence with the disc-logo segment replaced by `logo` (a PS1 disc's licence screen).
+    /// The same sequence with the disc-logo segment replaced by `logo` (a PS1 disc's licence
+    /// screen) and the outcome set to [`BootOutcome::Ps1Game`]. No effect on a sequence without a logo segment.
     #[must_use]
     pub fn with_logo(mut self, logo: Timeline) -> Self {
+        if !self.spans.iter().any(|s| s.segment == Segment::Logo) { return self }
+        self.outcome = BootOutcome::Ps1Game;
         let mut t = 0;
         for s in &mut self.spans {
             if s.segment == Segment::Logo { s.length = logo.end_frame() }
@@ -563,7 +649,7 @@ impl BootSequence {
         self
     }
 
-    /// The five segments in order, each starting where the previous one ends.
+    /// The segments in order, each starting where the previous one ends.
     #[must_use]
     pub fn spans(&self) -> &[Span] { &self.spans }
     /// Frames in the whole sequence.
@@ -578,6 +664,9 @@ impl BootSequence {
     /// First frame of the logo (or licence screen).
     #[must_use]
     pub fn logo_start(&self) -> usize { self.start_of(Segment::Logo) }
+    /// First frame of the warning scene, if the sequence has one.
+    #[must_use]
+    pub fn warning_start(&self) -> Option<usize> { self.spans.iter().find(|s| s.segment == Segment::Warning).map(|s| s.start) }
     /// The frame, on the sequence clock, at which the opening's dive starts.
     #[must_use]
     pub fn dive_frame(&self) -> usize { self.opening_start() + self.opening.dive_frame }
@@ -592,7 +681,7 @@ impl BootSequence {
             }
         }
         // `spans` is private and `new` always pushes five, so this never fails.
-        let last = self.spans.last().expect("a boot sequence always has its five segments");
+        let last = self.spans.last().expect("a boot sequence always has at least power-on and the opening");
         (last, last.length.saturating_sub(1))
     }
 }

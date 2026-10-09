@@ -1,7 +1,7 @@
 //! The egui application: sidebar, the picture with camera input, visualiser, hand-off card.
 
 use crate::audio::{VisualizerMode, BAND_COUNT};
-use crate::model::{video_mode_name, HistorySource, Model, Scene, LANGUAGES};
+use crate::model::{outcome_name, video_mode_name, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
 use crate::renderer::Renderer;
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
@@ -56,6 +56,7 @@ impl App {
                     Segment::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
                         self.renderer.render_ps1_licence(&mut enc, local as f32, shell, logo, layout, m.video, &m.options)
                     } else if let Some(anim) = m.logo_animation() { self.renderer.render_logo(&mut enc, local as f32, &anim, &m.options) }
+                    Segment::Warning => self.renderer.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex),
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
             }
@@ -135,7 +136,7 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     let fps = m.timeline.fps();
     let status = if m.scene_kind == Scene::Full {
         let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
-        let name = match span.segment { Segment::PowerOn => "power-on", Segment::Opening => "ONE: BIOS opening", Segment::Handoff => "hand-off", Segment::Logo => if m.ps1_active() { "TWO: PS1 licence screen" } else { "TWO: disc logo" }, Segment::End => "end" };
+        let name = segment_name(span.segment, m.ps1_active());
         format!("{name}  {:5.2} s  (segment frame {local})  camera z {:6.1}  roll {:+.2}   cpu {:4.1} ms", m.frame / fps, c.z, c.roll, m.cpu_ms)
     } else if m.frame < 0.0 {
         format!("power-on {:+5.2} s  (opening starts at 0)   cpu {:4.1} ms", m.frame / fps, m.cpu_ms)
@@ -215,6 +216,19 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     }
 }
 
+pub fn segment_name(segment: Segment, ps1: bool) -> &'static str {
+    match segment {
+        Segment::PowerOn => "power-on",
+        Segment::Opening => "ONE: BIOS opening",
+        Segment::Handoff => "hand-off",
+        Segment::Logo => if ps1 { "TWO: PS1 licence screen" } else { "TWO: disc logo" },
+        Segment::Warning => "TWO: warning scene",
+        Segment::Menu => "TWO: clock / main menu",
+        Segment::End => "end",
+        _ => "?",
+    }
+}
+
 fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
     ui.heading(title);
@@ -239,29 +253,45 @@ fn file_row(ui: &mut egui::Ui, label: &str, status: &str, directories: bool, fil
 }
 
 fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        for t in Tab::ALL { ui.selectable_value(&mut m.tab, t, t.name()); }
+    });
+    ui.separator();
+    match m.tab {
+        Tab::Boot => boot_tab(ui, m),
+        Tab::SaveData => save_data_tab(ui, m),
+        Tab::Disc => disc_tab(ui, m),
+        Tab::Bios => bios_tab(ui, m),
+    }
+    ui.add_space(12.0);
+}
+
+fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Your files", |ui| {
         if let Some(p) = file_row(ui, "BIOS", &m.bios_status.clone(), false, &["bin", "BIN", "rom"]) { m.load_bios(&p, false) }
         if let Some(p) = file_row(ui, "Memory card", &m.card_status.clone(), true, &["ps2"]) { m.load_card(&p, false) }
         if let Some(p) = file_row(ui, "Game disc image", &m.disc_status.clone(), false, &["iso", "bin", "cue", "img"]) { m.load_disc(&p, false) }
     });
-    section(ui, "Play history", |ui| {
-        let before = m.history_source;
-        egui::ComboBox::from_id_salt("history").selected_text(m.history_source.name()).show_ui(ui, |ui| {
-            for s in HistorySource::ALL { ui.selectable_value(&mut m.history_source, s, s.name()); }
+    section(ui, "Scenario", |ui| {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Console region");
+            let current = REGIONS.iter().find(|r| r.0 == m.region_override).map(|r| r.1).unwrap_or("?");
+            egui::ComboBox::from_id_salt("region").selected_text(current).show_ui(ui, |ui| {
+                for (r, name) in REGIONS { changed |= ui.selectable_value(&mut m.region_override, r, name).changed(); }
+            });
         });
-        let mut changed = before != m.history_source;
-        if m.history_source == HistorySource::Custom {
-            changed |= ui.add(egui::Slider::new(&mut m.custom_titles, 0..=21).text("titles")).changed();
-            changed |= ui.add(egui::Slider::new(&mut m.custom_launches, 1..=64).text("launches each")).changed();
-        }
-        if m.history_source == HistorySource::Saves { ui.small("Launch counts are invented; only the titles come from the card."); }
-        if changed { m.rebuild_history() }
-        let used: Vec<_> = m.history.records.iter().filter(|r| !r.is_empty()).cloned().collect();
-        if used.is_empty() { ui.small("No titles: the screen shows no towers."); }
-        for r in used {
-            let towers: String = (0..6).map(|k| if r.mask >> k & 1 == 1 { if k == r.index { '▫' } else { '▪' } } else { '·' }).collect();
-            ui.monospace(format!("{:<12} {:>3}× {towers}", r.name, r.count));
-        }
+        ui.horizontal(|ui| {
+            ui.label("The drive finds");
+            egui::ComboBox::from_id_salt("tray").selected_text(m.disc_override.name()).show_ui(ui, |ui| {
+                for d in DiscOverride::ALL { changed |= ui.selectable_value(&mut m.disc_override, d, d.name()).changed(); }
+            });
+        });
+        changed |= ui.checkbox(&mut m.enforce_checks, "Enforce the console's region lock").changed();
+        let detected = m.detected_region().map(|r| format!("{r:?}")).unwrap_or_else(|| "unknown".into());
+        ui.small(format!("Detected: {detected} console. Outcome: {}.", outcome_name(m.outcome())));
+        if changed { m.rebuild_timeline(); m.logo_version += 1; if m.frame > m.end_frame() { m.frame = m.start_frame() } }
     });
     section(ui, "Scene", |ui| {
         let before = m.scene_kind;
@@ -273,17 +303,19 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         let mut rebuild = false;
         match m.scene_kind {
             Scene::Full => {
-                ui.small("Phase ONE (BIOS): power-on, the opening. Phase TWO (disc): hand-off to rom0:PS2LOGO, the logo, then the point where the game's ELF would start. The console is never asked to run the game.");
-                rebuild |= ui.add(egui::Slider::new(&mut m.handoff_seconds, 0.2..=4.0).text("hand-off to PS2LOGO (s)")).changed();
+                ui.small("Phase ONE (BIOS): power-on, the opening. Phase TWO: what the scenario leads to — the hand-off and the disc's logo, the PS1 licence screen, the warning scene, or the menu. The console is never asked to run the game.");
+                if matches!(m.sequence.outcome, ps2kit::sim::BootOutcome::Game | ps2kit::sim::BootOutcome::Ps1Game) {
+                    rebuild |= ui.add(egui::Slider::new(&mut m.handoff_seconds, 0.2..=4.0).text("hand-off to PS2LOGO (s)")).changed();
+                }
             }
             Scene::Logo => { ui.small(if m.ps1_active() { "A PlayStation disc: the licence screen the PS1 shell inside the BIOS (rom0:LOGO) draws — the logo model from the disc's sectors 5–11, the text from the licence sector, the font from rom0:KROM, the chime from the shell's sound bank." } else { "What a licensed disc shows before its game starts: the lettering comes from the disc's first 12 sectors, the animation from rom0:PS2LOGO." }); }
-            Scene::Warning => {
-                egui::ComboBox::from_id_salt("lang").selected_text(LANGUAGES.iter().find(|l| l.0 == m.language).map(|l| l.1).unwrap_or("")).show_ui(ui, |ui| {
-                    for (code, name) in LANGUAGES { ui.selectable_value(&mut m.language, code, name); }
-                });
-                rebuild |= ui.add(egui::Slider::new(&mut m.warning_exit_seconds, 3.0..=60.0).text("drive reports a change after (s)")).changed();
-            }
-            Scene::Boot => {}
+            Scene::Warning | Scene::Boot => {}
+        }
+        if m.scene_kind == Scene::Warning || (m.scene_kind == Scene::Full && m.sequence.outcome == ps2kit::sim::BootOutcome::Warning) {
+            egui::ComboBox::from_id_salt("lang").selected_text(LANGUAGES.iter().find(|l| l.0 == m.language).map(|l| l.1).unwrap_or("")).show_ui(ui, |ui| {
+                for (code, name) in LANGUAGES { ui.selectable_value(&mut m.language, code, name); }
+            });
+            rebuild |= ui.add(egui::Slider::new(&mut m.warning_exit_seconds, 3.0..=60.0).text("drive reports a change after (s)")).changed();
         }
         ui.horizontal(|ui| {
             for v in [VideoMode::Ntsc, VideoMode::Pal] {
@@ -297,9 +329,12 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
             if ui.button(if m.playing { "Pause" } else { "Play" }).clicked() { m.playing = !m.playing }
             if ui.button("Restart").clicked() { m.frame = m.start_frame(); m.playing = true }
             ui.checkbox(&mut m.looping, "Loop");
+            if ui.button("◀").on_hover_text("one field back").clicked() { m.playing = false; m.frame = (m.frame - 1.0).max(m.start_frame()) }
+            if ui.button("▶").on_hover_text("one field forward").clicked() { m.playing = false; m.frame = (m.frame + 1.0).min(m.end_frame()) }
         });
         let (start, end) = (m.start_frame(), m.end_frame().max(1.0));
         ui.add(egui::Slider::new(&mut m.frame, start..=end).show_value(false));
+        if m.scene_kind == Scene::Full { segment_strip(ui, m) }
         ui.add(egui::Slider::new(&mut m.speed, 0.05..=2.0).text("speed").logarithmic(true));
         let mut rebuild = false;
         rebuild |= ui.add(egui::Slider::new(&mut m.power_on_seconds, 0.0..=6.0).text("power-on black (s)")).changed();
@@ -322,39 +357,6 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
                     if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-opening-camera-path.csv").save_file() { let _ = std::fs::write(p, m.camera_path_csv()); }
                 }
             });
-        }
-    });
-    section(ui, "Disc", |ui| {
-        if let Some(d) = &m.disc {
-            ui.small(format!("Volume: {} ({} sectors, {} MiB, {})", d.volume_id, d.sector_count, d.byte_size() >> 20, if d.is_dvd() { "DVD" } else { "CD" }));
-            let kind = match d.kind { ps2kit::disc::DiscKind::Ps2 => "PlayStation 2 disc", ps2kit::disc::DiscKind::Ps1 => "PlayStation disc", _ => "not a PlayStation disc" };
-            ui.small(format!("{kind}   Title ID: {}   register 0x{:02X} → state 0x{:02X}", d.title_id().unwrap_or_else(|| "—".into()), d.disc_type_register(), d.disc_state_code()));
-            if !d.system_cnf_text.trim().is_empty() { ui.monospace(d.system_cnf_text.trim()); }
-            if let Some(b) = &d.boot_elf {
-                ui.small(format!("Boot ELF: {} — LBA {}, {} bytes, entry 0x{:08X}, {} segment(s)", b.file_name, b.lba, b.size, b.entry, b.segments.len()));
-            }
-            if let Some(b) = &d.ps1_exe {
-                ui.small(format!("PS-X EXE: {} — LBA {}, {} bytes, text 0x{:08X} ({} bytes), PC 0x{:08X}", b.file_name, b.lba, b.size, b.text_addr, b.text_size, b.initial_pc));
-            }
-            match d.kind {
-                ps2kit::disc::DiscKind::Ps2 => { ui.small(d.logo_region.map(|r| format!("Logo sectors: {r} master (checked by J/H and E consoles only)")).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())); }
-                ps2kit::disc::DiscKind::Ps1 => {
-                    ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" ({} chars) — logo data {}", l.text, l.line.len(), if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into()));
-                    ui.small(match m.ps1_verdict() {
-                        Some(ps2kit::disc::Ps1Verdict::NotChecked) => "This console (A) does not check the licence or the logo.",
-                        Some(ps2kit::disc::Ps1Verdict::Accepted) => "This console's PS1 shell accepts the licence line and the logo.",
-                        Some(ps2kit::disc::Ps1Verdict::TextMismatch) => "This console's PS1 shell would not accept the licence line (black screen, endless re-read). Shown anyway.",
-                        Some(ps2kit::disc::Ps1Verdict::LogoMismatch) => "The logo differs from the shell's copy: the console would hang. Shown anyway.",
-                        _ => "Licence check: unknown.",
-                    });
-                }
-                _ => { ui.small("No SYSTEM.CNF and no licence sector."); }
-            }
-            ui.collapsing("What the console would do next", |ui| {
-                for s in m.handoff_steps() { ui.small(format!("{}  {s}", s.who())); }
-            });
-        } else {
-            ui.small("Open a game disc image (.iso) to see what the console would load.");
         }
     });
     section(ui, "Sound", |ui| {
@@ -384,5 +386,159 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
             ui.checkbox(&mut o.colour_wrap, "8-bit overflow on tower caps");
         }
     });
-    ui.add_space(12.0);
+}
+
+/// The segments of the full sequence as a coloured strip under the scrubber, the current
+/// frame marked; clicking a segment jumps to its start.
+fn segment_strip(ui: &mut egui::Ui, m: &mut Model) {
+    let total = m.sequence.total_frames().max(1) as f32;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), egui::Sense::click());
+    let painter = ui.painter();
+    let colour = |s: Segment| match s {
+        Segment::PowerOn | Segment::Handoff => Color32::from_gray(50),
+        Segment::Opening => Color32::from_rgb(40, 70, 140),
+        Segment::Logo => Color32::from_rgb(60, 120, 90),
+        Segment::Warning => Color32::from_rgb(150, 40, 40),
+        Segment::Menu => Color32::from_rgb(90, 80, 130),
+        _ => Color32::from_gray(30),
+    };
+    let spans: Vec<_> = m.sequence.spans().to_vec();
+    for sp in &spans {
+        let x0 = rect.min.x + rect.width() * sp.start as f32 / total;
+        let x1 = rect.min.x + rect.width() * (sp.start + sp.length) as f32 / total;
+        let r = Rect::from_min_max(Pos2::new(x0, rect.min.y), Pos2::new(x1, rect.max.y));
+        painter.rect_filled(r, 2.0, colour(sp.segment));
+        if r.width() > 40.0 {
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, segment_name(sp.segment, m.ps1_active()).split(": ").last().unwrap_or(""), egui::FontId::proportional(10.0), Color32::from_white_alpha(200));
+        }
+    }
+    let x = rect.min.x + rect.width() * m.frame.max(0.0) / total;
+    painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, rect.min.y - 2.0), Pos2::new(x + 1.0, rect.max.y + 2.0)), 0.0, Color32::WHITE);
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let f = ((pos.x - rect.min.x) / rect.width() * total) as usize;
+            if let Some(sp) = spans.iter().find(|sp| f >= sp.start && f < sp.start + sp.length) { m.frame = sp.start as f32; m.playing = true }
+        }
+    }
+    if let Some(pos) = response.hover_pos() {
+        let f = ((pos.x - rect.min.x) / rect.width() * total) as usize;
+        if let Some(sp) = spans.iter().find(|sp| f >= sp.start && f < sp.start + sp.length) {
+            response.on_hover_text(format!("{} — frames {}..{} ({:.1} s)", segment_name(sp.segment, m.ps1_active()), sp.start, sp.start + sp.length, sp.length as f32 / m.timeline.fps()));
+        }
+    }
+}
+
+fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "Play history", |ui| {
+        let before = m.history_source;
+        egui::ComboBox::from_id_salt("history").selected_text(m.history_source.name()).show_ui(ui, |ui| {
+            for s in HistorySource::ALL { ui.selectable_value(&mut m.history_source, s, s.name()); }
+        });
+        let mut changed = before != m.history_source;
+        if m.history_source == HistorySource::Custom {
+            changed |= ui.add(egui::Slider::new(&mut m.custom_titles, 0..=21).text("titles")).changed();
+            changed |= ui.add(egui::Slider::new(&mut m.custom_launches, 1..=64).text("launches each")).changed();
+        }
+        if m.history_source == HistorySource::Saves { ui.small("Launch counts are invented; only the titles come from the card."); }
+        if changed { m.rebuild_history() }
+    });
+    let used: Vec<_> = m.history.records.iter().filter(|r| !r.is_empty()).cloned().collect();
+    section(ui, "Launches", |ui| {
+        if used.is_empty() { ui.small("No titles: the screen shows no towers."); return }
+        let total: u32 = used.iter().map(|r| r.count as u32).sum();
+        let max = used.iter().map(|r| r.count).max().unwrap_or(1).max(1) as f32;
+        ui.small(format!("{} titles, {total} launches recorded; the file holds 21 records and a count stops at 63.", used.len()));
+        let mut sorted = used.clone();
+        sorted.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+        let row = 16.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row * sorted.len() as f32 + 4.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let label_w = 92.0;
+        let bar_w = rect.width() - label_w - 36.0;
+        for (i, r) in sorted.iter().enumerate() {
+            let y = rect.min.y + 2.0 + i as f32 * row;
+            painter.text(Pos2::new(rect.min.x, y + row / 2.0), egui::Align2::LEFT_CENTER, &r.name, egui::FontId::monospace(11.0), Color32::from_white_alpha(220));
+            let w = bar_w * r.count as f32 / max;
+            let x0 = rect.min.x + label_w;
+            painter.rect_filled(Rect::from_min_max(Pos2::new(x0, y + 2.0), Pos2::new(x0 + bar_w, y + row - 2.0)), 2.0, Color32::from_white_alpha(12));
+            let colour = if r.index == 7 { Color32::from_rgb(230, 190, 80) } else { Color32::from_rgb(115, 153, 255) };
+            painter.rect_filled(Rect::from_min_max(Pos2::new(x0, y + 2.0), Pos2::new(x0 + w.max(2.0), y + row - 2.0)), 2.0, colour);
+            painter.text(Pos2::new(rect.max.x, y + row / 2.0), egui::Align2::RIGHT_CENTER, format!("{}", r.count), egui::FontId::monospace(11.0), Color32::WHITE);
+        }
+        ui.small("Gold: maxed-out records (index 7) — their towers no longer grow.");
+    });
+    section(ui, "Records", |ui| {
+        ui.small("Title, launches, the six tower slots (▪ built, ▫ growing, · empty), last launch.");
+        for r in &used {
+            let towers: String = (0..6).map(|k| if r.mask >> k & 1 == 1 { if k == r.index { '▫' } else { '▪' } } else { '·' }).collect();
+            let date = if r.date == 0 { "—".to_string() } else { format!("{:04}-{:02}-{:02}", r.year(), r.month(), r.day()) };
+            ui.monospace(format!("{:<12} {:>3}× {towers} {date}", r.name, r.count));
+        }
+    });
+}
+
+fn disc_tab(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "Disc", |ui| {
+        if let Some(d) = &m.disc {
+            ui.small(format!("Volume: {} ({} sectors, {} MiB, {})", d.volume_id, d.sector_count, d.byte_size() >> 20, if d.is_dvd() { "DVD" } else { "CD" }));
+            let kind = match d.kind { ps2kit::disc::DiscKind::Ps2 => "PlayStation 2 disc", ps2kit::disc::DiscKind::Ps1 => "PlayStation disc", _ => "not a PlayStation disc" };
+            ui.small(format!("{kind}   Title ID: {}   register 0x{:02X} → state 0x{:02X}", d.title_id().unwrap_or_else(|| "—".into()), d.disc_type_register(), d.disc_state_code()));
+            if !d.system_cnf_text.trim().is_empty() { ui.monospace(d.system_cnf_text.trim()); }
+            if let Some(b) = &d.boot_elf {
+                ui.small(format!("Boot ELF: {} — LBA {}, {} bytes, entry 0x{:08X}, {} segment(s)", b.file_name, b.lba, b.size, b.entry, b.segments.len()));
+            }
+            if let Some(b) = &d.ps1_exe {
+                ui.small(format!("PS-X EXE: {} — LBA {}, {} bytes, text 0x{:08X} ({} bytes), PC 0x{:08X}", b.file_name, b.lba, b.size, b.text_addr, b.text_size, b.initial_pc));
+            }
+            match d.kind {
+                ps2kit::disc::DiscKind::Ps2 => { ui.small(d.logo_region.map(|r| format!("Logo sectors: {r} master (checked by J/H and E consoles only)")).unwrap_or_else(|| "Logo sectors: match neither the E nor the J/A master".into())); }
+                ps2kit::disc::DiscKind::Ps1 => {
+                    ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" ({} chars) — logo data {}", l.text, l.line.len(), if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into()));
+                    ui.small(match m.ps1_verdict() {
+                        Some(ps2kit::disc::Ps1Verdict::NotChecked) => "This console (A) does not check the licence or the logo.",
+                        Some(ps2kit::disc::Ps1Verdict::Accepted) => "This console's PS1 shell accepts the licence line and the logo.",
+                        Some(ps2kit::disc::Ps1Verdict::TextMismatch) => "This console's PS1 shell would not accept the licence line (black screen, endless re-read). Shown anyway.",
+                        Some(ps2kit::disc::Ps1Verdict::LogoMismatch) => "The logo differs from the shell's copy: the console would hang. Shown anyway.",
+                        _ => "Licence check: unknown.",
+                    });
+                }
+                _ => { ui.small("No SYSTEM.CNF and no licence sector."); }
+            }
+        } else {
+            ui.small("Open a game disc image (.iso or .cue) to see what the console would load.");
+        }
+    });
+    section(ui, "What the console would do next", |ui| {
+        ui.small(format!("Under the scenario: {}.", outcome_name(m.outcome())));
+        for s in m.handoff_steps() {
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(egui::RichText::new(s.who()).color(Color32::from_rgb(115, 153, 255)).size(11.0));
+                ui.small(s.to_string());
+            });
+        }
+    });
+}
+
+fn bios_tab(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "ROM", |ui| {
+        let Some(a) = &m.assets else { ui.small("No BIOS loaded."); return };
+        let v = a.rom_version();
+        ui.monospace(format!("ROMVER {v}"));
+        let (ver, region, kind, date) = (v.get(0..4).unwrap_or(""), v.get(4..5).unwrap_or(""), v.get(5..6).unwrap_or(""), v.get(6..14).unwrap_or(""));
+        ui.small(format!("version {}.{}  region {region} ({})  type {kind} ({})  built {}-{}-{}", ver.get(0..2).unwrap_or(""), ver.get(2..4).unwrap_or(""),
+            match region { "J" => "Japan", "A" => "America", "E" => "Europe", "H" => "Asia", "C" => "China", _ => "?" },
+            match kind { "C" => "consumer", "D" => "development", _ => "?" },
+            date.get(0..4).unwrap_or(""), date.get(4..6).unwrap_or(""), date.get(6..8).unwrap_or("")));
+        ui.small(format!("Default video mode: {}.  Opening assets located by content: {} textures, tower grid, growth table, orb colours.", video_mode_name(if region == "E" { VideoMode::Pal } else { VideoMode::Ntsc }), a.textures().count()));
+    });
+    section(ui, "Modules (ROMDIR)", |ui| {
+        let Some(rom) = &m.rom else { return };
+        let entries = rom.entries();
+        ui.small(format!("{} entries, {} bytes.", entries.len(), rom.data().len()));
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for (name, offset, size) in &entries {
+                ui.monospace(format!("{:<10} {:>8X} {:>8}", name, offset, size));
+            }
+        });
+    });
 }

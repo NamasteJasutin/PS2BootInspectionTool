@@ -96,7 +96,10 @@ impl AudioPlayer {
     /// Places the clips for a scene; frames are converted with `fps`.
     /// `ps1_disc`: the opening stops the chime with the fast release instead of starting the
     /// PS2 transition cue (OSDSYS does that for PlayStation discs, audio CDs and DVD-Video).
-    pub fn arrange(&self, scene: Scene, fps: f32, dive_frame: usize, logo_start: usize, opening_start: usize, ps1_disc: bool) {
+    /// `logo_start`: where the logo chime starts in the full sequence; `warning`: where the
+    /// warning scene starts and the frame at which the drive reports a change.
+    #[allow(clippy::too_many_arguments)]
+    pub fn arrange(&self, scene: Scene, fps: f32, dive_frame: usize, logo_start: Option<usize>, opening_start: usize, ps1_disc: bool, warning: Option<(usize, usize)>) {
         let at = |frame: usize| (frame as f64 / fps as f64 * SAMPLE_RATE as f64) as i64;
         let mut list = Vec::new();
         let clip = |start, pcm: Arc<Vec<f32>>, looped, fade_start| Clip { start, pcm, looped, fade_start };
@@ -109,8 +112,9 @@ impl AudioPlayer {
                         list.push(clip(at(opening_start), Arc::new(s.chime.clone()), false, None));
                         list.push(clip(at(dive_frame), Arc::new(s.cue.clone()), false, None));
                     }
+                    if let Some((start, exit)) = warning { list.push(clip(at(start), Arc::new(s.warning.clone()), true, Some(at(exit)))) }
                 }
-                if scene == Scene::Full { list.push(clip(at(logo_start), self.logo_chime.clone(), false, None)) }
+                if let Some(start) = logo_start { list.push(clip(at(start), self.logo_chime.clone(), false, None)) }
             }
             Scene::Warning => {
                 if let Some(s) = &self.sounds { list.push(clip(0, Arc::new(s.warning.clone()), true, Some(at(dive_frame)))) }

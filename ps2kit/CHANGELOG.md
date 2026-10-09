@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-10-09
+
+The boot can now lead somewhere other than the logo.
+
+- `sim::BootOutcome` (`Game`, `Ps1Game`, `Menu`, `Warning`) and `sim::BootPlan`; `BootSequence::from_plan` builds the segments the outcome calls for, `BootSequence::new` is the `Game` shorthand. `BootSequence` gains `outcome`, `warning` (the warning scene's timeline) and `warning_start()`.
+- `sim::Segment` is `#[non_exhaustive]` and gains `Warning` and `Menu`; a sequence no longer always has five segments. `with_logo` sets `outcome = Ps1Game` and is a no-op on a sequence without a logo segment.
+- `disc::HandoffStep::IllegalDisc` (state 0x74); `disc::boot_outcome(&[HandoffStep], enforce)` reads the outcome off the facts.
+- The `RegionCheck` sentence for a rejected disc no longer ends with "The tool does not enforce region locks." (it can now).
+- `RomDir::entries()` lists every module as `(name, offset, size)` in image order.
+
+
 ## 0.2.0 — 2026-10-08
 
 Breaking changes (one per line). Everything the readers compute, every number and every
