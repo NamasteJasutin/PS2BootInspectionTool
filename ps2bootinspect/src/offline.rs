@@ -71,6 +71,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
             cam.view(m.video)
         })
     });
+    // `--path orbit|tornado|crane|eight|zenith [--period s]`: a predetermined camera path.
+    m.camera_mode = match named.get("path").map(String::as_str) {
+        Some("orbit") => crate::model::CameraMode::Orbit, Some("tornado") => crate::model::CameraMode::Tornado, Some("crane") => crate::model::CameraMode::Crane,
+        Some("eight") => crate::model::CameraMode::FigureEight, Some("zenith") => crate::model::CameraMode::Zenith, _ => crate::model::CameraMode::Scripted,
+    };
+    m.camera_period = named.get("period").and_then(|v| v.parse().ok()).unwrap_or(12.0);
+    m.options.solid_towers = m.camera_mode != crate::model::CameraMode::Scripted;
+    m.frame = frame;
+    let free = free.or_else(|| m.view_override());
 
     // Headless device.
     let instance = wgpu::Instance::default();

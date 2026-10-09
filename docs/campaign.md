@@ -29,7 +29,7 @@ Base ─────────────────────────
         PS2 logo, PS1 licence, hand-off facts, ps2kit 0.2
 ```
 
-## Camp 1 — control (this release)
+## Camp 1 — control (on main, 2026-10-09)
 
 Goal: the tool stops only replaying what the files say and starts answering "what would the
 console do if…". Everything is derived from facts ps2kit already computes.
@@ -47,14 +47,18 @@ console do if…". Everything is derived from facts ps2kit already computes.
 Exit criteria: 26+ ps2kit tests green, clippy clean, renders unchanged for the default
 scenario, `--handoff` output unchanged, Camp 1 tagged `v1.1.0`.
 
-## Camp 2 — save data
+## Camp 2 — save data (in progress)
+
+Done: launch histogram, records with dates, ring/spiral layouts with revolve, colour by
+count/age/region/publisher. Open: Pareto/date graphs, eviction simulator, themes, tower
+inspector, time-machine, alternate history, ghost towers, exports.
 
 Graphs (histogram + Pareto, dates over time, prefix donut, eviction simulator), ring and
 spiral layouts that revolve behind the graphs, colour by count/age/region/publisher, theme
 packs, tower inspector, time-machine scrub, alternate-history sliders, ghost towers, CSV/JSON/
 SVG exports. Tag `v1.2.0`.
 
-## Camp 3 — cameras
+## Camp 3 — cameras (started early: orbit, tornado, crane, figure-eight, zenith paths)
 
 A `CameraPath` abstraction in the app (keyframes, Catmull-Rom, easing), the orbit suite,
 tornado, the console homages as data, director mode with JSON import/export and seeded

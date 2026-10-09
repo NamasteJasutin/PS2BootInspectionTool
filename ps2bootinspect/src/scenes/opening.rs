@@ -192,7 +192,8 @@ impl Renderer {
                 let mut quad = [Vertex { pos: Vec4::ZERO, uv: Vec2::ZERO, pad: Vec2::ZERO, color: Vec4::ONE }; 4];
                 for (vi, corner) in corners.iter().enumerate() {
                     let local = Vec3::new(corner.0, corner.1, corner.2 * t.half_length);
-                    let base = if corner.2 > 0.0 { 0.0 } else if fi == 0 { t.brightness } else { t.brightness * 0.8 };
+                    let far = if options.solid_towers { 0.55 } else { 0.0 };
+                    let base = if corner.2 > 0.0 { t.brightness * far } else if fi == 0 { t.brightness } else { t.brightness * 0.8 };
                     let value = (base * lit) as i32;
                     let value = if wrap { value & 255 } else { value.min(255) };
                     let shade = value as f32 / 128.0;

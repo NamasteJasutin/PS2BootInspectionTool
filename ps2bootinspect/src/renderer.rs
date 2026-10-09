@@ -100,8 +100,11 @@ pub struct RenderOptions {
     pub revolve: f32,
     /// Ring radius in world units.
     pub ring_radius: f32,
-    /// Tower colouring; the colours themselves come from [`Renderer::set_tower_tints`].
+    /// Tower colouring; the colours themselves are the renderer's `tower_tints`.
     pub tint: TowerTint,
+    /// Light the towers along their whole length (the console lights only the near cap, so
+    /// from any other viewpoint they fade to black).
+    pub solid_towers: bool,
     pub towers: bool,
     pub trails: bool,
     pub fog: bool,
@@ -118,7 +121,7 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { layout: TowerLayout::Console, revolve: 0.0, ring_radius: 34.0, tint: TowerTint::Console, towers: true, trails: true, fog: true, orbs: true, glass: true, defocus: true, fade: true, lettering: true, letterbox: true, colour_wrap: false, camera_path: false, orb_seed: 4000.0 }
+        Self { layout: TowerLayout::Console, revolve: 0.0, ring_radius: 34.0, tint: TowerTint::Console, solid_towers: false, towers: true, trails: true, fog: true, orbs: true, glass: true, defocus: true, fade: true, lettering: true, letterbox: true, colour_wrap: false, camera_path: false, orb_seed: 4000.0 }
     }
 }
 

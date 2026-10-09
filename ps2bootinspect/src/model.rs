@@ -55,6 +55,61 @@ impl DiscOverride {
     }
 }
 
+/// A predetermined camera path (beyond the PS2), or the console's own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CameraMode { Scripted, Orbit, Tornado, Crane, FigureEight, Zenith }
+
+impl CameraMode {
+    pub const ALL: [Self; 6] = [Self::Scripted, Self::Orbit, Self::Tornado, Self::Crane, Self::FigureEight, Self::Zenith];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Scripted => "the console's camera",
+            Self::Orbit => "orbit around the towers",
+            Self::Tornado => "tornado (tightening helix)",
+            Self::Crane => "crane: street level to overhead",
+            Self::FigureEight => "figure-eight through the field",
+            Self::Zenith => "zenith: straight down (Wii-style grid)",
+        }
+    }
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Scripted => "The route OSDSYS integrates every field (notes/opening.md).",
+            Self::Orbit => "A satellite at a fixed height circling the field's centre. Motion only — no console's artwork.",
+            Self::Tornado => "Starts wide and high, corkscrews inward and down onto the tallest region, then climbs out again.",
+            Self::Crane => "Rises from between the towers to a high shot over the whole field.",
+            Self::FigureEight => "Weaves through the field on a lemniscate, always looking at the centre.",
+            Self::Zenith => "Looks straight down the z axis so the towers read as a grid of tiles.",
+        }
+    }
+
+    /// The view at `seconds` into the scene, for a path of `period` seconds per lap.
+    pub fn view(self, seconds: f32, period: f32, video: VideoMode) -> Option<crate::renderer::ViewCamera> {
+        use std::f32::consts::TAU;
+        let centre = Vec3::new(0.0, 0.0, 170.0);
+        let a = TAU * seconds / period.max(0.5);
+        // +Y is down the screen, so "above" is negative y.
+        let (position, target) = match self {
+            Self::Scripted => return None,
+            Self::Orbit => (centre + Vec3::new(130.0 * a.sin(), -35.0, -130.0 * a.cos()), centre),
+            Self::Tornado => {
+                let t = (seconds / (period * 2.0)) % 1.0;
+                let tight = 1.0 - (t * TAU).cos() * 0.5 - 0.5; // 0 at the ends, 1 in the middle
+                let r = 150.0 - 125.0 * tight;
+                (centre + Vec3::new(r * (a * 1.5).sin(), -90.0 + 85.0 * tight, -r * (a * 1.5).cos()), centre)
+            }
+            Self::Crane => {
+                let t = ((seconds / period) % 1.0 * TAU).cos() * -0.5 + 0.5; // eased 0 → 1 → 0
+                (Vec3::new(20.0, 10.0 - 150.0 * t, 60.0 + 40.0 * t), centre + Vec3::new(0.0, 0.0, 20.0 * t))
+            }
+            Self::FigureEight => (centre + Vec3::new(110.0 * a.sin(), -20.0, 70.0 * (2.0 * a).sin()), centre),
+            Self::Zenith => (centre + Vec3::new(0.0, 0.0, -230.0), centre),
+        };
+        let forward = (target - position).normalize_or(Vec3::Z);
+        let up = if forward.abs_diff_eq(Vec3::Z, 1e-3) || forward.abs_diff_eq(-Vec3::Z, 1e-3) { Vec3::Y } else { Vec3::Y };
+        Some(crate::renderer::ViewCamera { position, forward, up, video })
+    }
+}
+
 /// The console regions a scenario can pretend to be.
 pub const REGIONS: [(Option<Region>, &str); 5] = [(None, "as the BIOS says"), (Some(Region::Japan), "J — Japan"), (Some(Region::America), "A — America"), (Some(Region::Europe), "E — Europe"), (Some(Region::China), "C — China")];
 
@@ -186,6 +241,9 @@ pub struct Model {
     pub options: RenderOptions,
     pub free_camera_enabled: bool,
     pub free_camera: FreeCamera,
+    pub camera_mode: CameraMode,
+    /// Seconds per lap of a predetermined camera path.
+    pub camera_period: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -225,7 +283,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, camera_mode: CameraMode::Scripted, camera_period: 12.0, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -518,6 +576,14 @@ impl Model {
     }
 
     pub fn reset_free_camera(&mut self) { self.free_camera = FreeCamera::behind(&self.camera()) }
+
+    /// The view that replaces the console's camera this frame, if any: the free camera, or a
+    /// predetermined path.
+    pub fn view_override(&self) -> Option<crate::renderer::ViewCamera> {
+        if self.free_camera_enabled { return Some(self.free_camera.view(self.video)) }
+        let seconds = (self.frame - self.start_frame()).max(0.0) / self.timeline.fps();
+        self.camera_mode.view(seconds, self.camera_period, self.video)
+    }
 
     /// One colour multiplier per tower of the scene for the chosen tint (beyond the PS2:
     /// the console draws every tower grey).

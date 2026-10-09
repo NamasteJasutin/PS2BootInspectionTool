@@ -1,7 +1,7 @@
 //! The egui application: sidebar, the picture with camera input, visualiser, hand-off card.
 
 use crate::audio::{VisualizerMode, BAND_COUNT};
-use crate::model::{outcome_name, video_mode_name, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
+use crate::model::{outcome_name, video_mode_name, CameraMode, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
 use crate::renderer::{Renderer, TowerLayout, TowerTint};
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
@@ -47,7 +47,7 @@ impl App {
         if m.options.tint != crate::renderer::TowerTint::Console { self.renderer.tower_tints = m.tower_tints() } else { self.renderer.tower_tints.clear() }
         let mut enc = self.renderer.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scene") });
         self.renderer.begin_frame();
-        let free = m.free_camera_enabled.then(|| m.free_camera.view(m.video));
+        let free = m.view_override();
         let warning_tex = format!("TEXOPNG{}", m.language);
         match m.scene_kind {
             Scene::Full => {
@@ -345,6 +345,14 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
         if rebuild { m.rebuild_timeline() }
     });
     section(ui, "Camera", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Path");
+            egui::ComboBox::from_id_salt("campath").selected_text(m.camera_mode.name()).show_ui(ui, |ui| {
+                for c in CameraMode::ALL { if ui.selectable_value(&mut m.camera_mode, c, c.name()).changed() { m.free_camera_enabled = false; m.options.solid_towers = c != CameraMode::Scripted } }
+            });
+        });
+        ui.small(m.camera_mode.describe());
+        if m.camera_mode != CameraMode::Scripted { ui.add(egui::Slider::new(&mut m.camera_period, 2.0..=60.0).text("seconds per lap").logarithmic(true)); }
         if ui.checkbox(&mut m.free_camera_enabled, "Free camera").changed() && m.free_camera_enabled { m.reset_free_camera() }
         ui.small("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.");
         if ui.add_enabled(m.free_camera_enabled, egui::Button::new("Back to the scripted position")).clicked() { m.reset_free_camera() }
@@ -385,6 +393,7 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
             ui.checkbox(&mut o.lettering, "Lettering");
             ui.checkbox(&mut o.letterbox, "Letterbox bars");
             ui.checkbox(&mut o.colour_wrap, "8-bit overflow on tower caps");
+            ui.checkbox(&mut o.solid_towers, "Light the towers' sides (beyond the PS2)");
         }
     });
 }
