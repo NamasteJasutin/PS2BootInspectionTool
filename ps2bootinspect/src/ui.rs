@@ -94,7 +94,7 @@ impl eframe::App for App {
         if let Some(rs) = frame.wgpu_render_state() { self.render_frame(rs) }
         self.model.cpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        egui::Panel::right("sidebar").exact_size(330.0).show(root, |ui| {
+        egui::Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, &mut self.model));
         });
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(root, |ui| {
@@ -384,12 +384,15 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
         });
         ui.small(m.camera_mode.describe());
         if m.camera_mode != CameraMode::Scripted {
-            ui.add(egui::Slider::new(&mut m.camera_speed, 0.05..=5.0).text("degrees per frame").logarithmic(true));
-            ui.add(egui::Slider::new(&mut m.camera_distance, 0.3..=5.0).text("distance (× the console's start)").logarithmic(true));
-            if !m.in_logo_phase() { ui.add(egui::Slider::new(&mut m.camera_focus, 0.0..=1.0).text("aim: floor → highest top")); }
-            if matches!(m.camera_mode, CameraMode::Orbit | CameraMode::FigureEight | CameraMode::Tornado) && !m.in_logo_phase() { ui.add(egui::Slider::new(&mut m.camera_height, 0.0..=1.5).text("height (× radius)")); }
-        }
-        if m.camera_mode != CameraMode::Scripted || m.free_camera_enabled { ui.add(egui::Slider::new(&mut m.camera_zoom, 0.2..=1.5).text("lens (× the console's)").logarithmic(true)); }
+            let (mode, logo) = (m.camera_mode, m.in_logo_phase());
+            let p = m.path_params_mut();
+            ui.add(egui::Slider::new(&mut p.speed, 0.05..=5.0).text("degrees per frame").logarithmic(true));
+            ui.add(egui::Slider::new(&mut p.distance, 0.3..=5.0).text("distance (× the console's start)").logarithmic(true));
+            if !logo { ui.add(egui::Slider::new(&mut p.focus, 0.0..=1.0).text("aim: floor → highest top")); }
+            if matches!(mode, CameraMode::Orbit | CameraMode::FigureEight | CameraMode::Tornado) && !logo { ui.add(egui::Slider::new(&mut p.height, 0.0..=1.5).text("height (× radius)")); }
+            ui.add(egui::Slider::new(&mut p.zoom, 0.2..=1.5).text("lens (× the console's)").logarithmic(true));
+            if ui.small_button("Reset this path's dials").clicked() { *p = mode.default_params() }
+        } else if m.free_camera_enabled { ui.add(egui::Slider::new(&mut m.free_zoom, 0.2..=1.5).text("lens (× the console's)").logarithmic(true)); }
         if ui.checkbox(&mut m.free_camera_enabled, "Free camera").changed() && m.free_camera_enabled { m.reset_free_camera() }
         ui.small("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.");
         if ui.add_enabled(m.free_camera_enabled, egui::Button::new("Back to the scripted position")).clicked() { m.reset_free_camera() }

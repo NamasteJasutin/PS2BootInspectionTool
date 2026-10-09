@@ -76,11 +76,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some("orbit") => crate::model::CameraMode::Orbit, Some("tornado") => crate::model::CameraMode::Tornado, Some("crane") => crate::model::CameraMode::Crane,
         Some("eight") => crate::model::CameraMode::FigureEight, Some("zenith") => crate::model::CameraMode::Zenith, _ => crate::model::CameraMode::Scripted,
     };
-    m.camera_speed = named.get("degrees").and_then(|v| v.parse().ok()).unwrap_or(1.25);
-    m.camera_height = named.get("height").and_then(|v| v.parse().ok()).unwrap_or(0.78);
-    m.camera_zoom = named.get("zoom").and_then(|v| v.parse().ok()).unwrap_or(0.39);
-    m.camera_distance = named.get("distance").and_then(|v| v.parse().ok()).unwrap_or(0.4);
-    m.camera_focus = named.get("focus").and_then(|v| v.parse().ok()).unwrap_or(0.76);
+    // Each path starts from its own tuned dials; any given here override them.
+    if let Some(v) = named.get("zoom").and_then(|v| v.parse().ok()) { m.free_zoom = v }
+    let p = m.path_params_mut();
+    if let Some(v) = named.get("degrees").and_then(|v| v.parse().ok()) { p.speed = v }
+    if let Some(v) = named.get("height").and_then(|v| v.parse().ok()) { p.height = v }
+    if let Some(v) = named.get("zoom").and_then(|v| v.parse().ok()) { p.zoom = v }
+    if let Some(v) = named.get("distance").and_then(|v| v.parse().ok()) { p.distance = v }
+    if let Some(v) = named.get("focus").and_then(|v| v.parse().ok()) { p.focus = v }
     m.options.solid_towers = m.camera_mode != crate::model::CameraMode::Scripted;
     m.frame = frame;
     let free = free.or_else(|| m.view_override());

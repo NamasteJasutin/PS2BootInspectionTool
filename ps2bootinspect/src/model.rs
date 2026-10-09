@@ -121,6 +121,33 @@ impl CameraMode {
     }
 }
 
+/// The dials of a predetermined camera path; each path keeps its own.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PathParams {
+    /// Degrees per frame along the path.
+    pub speed: f32,
+    /// Distance from the centre, as a multiple of the console's start distance.
+    pub distance: f32,
+    /// Where the path aims, as a fraction of the way up from the towers' floor to the highest top.
+    pub focus: f32,
+    /// Height of a level path above the aim point, as a fraction of the radius.
+    pub height: f32,
+    /// Lens relative to the console's (1 = the same).
+    pub zoom: f32,
+}
+
+impl CameraMode {
+    /// The settings a path starts with (tuned by hand on the 2.00 E opening).
+    pub fn default_params(self) -> PathParams {
+        match self {
+            Self::Tornado => PathParams { speed: 0.55, distance: 2.25, focus: 0.64, height: 0.68, zoom: 0.285 },
+            _ => PathParams { speed: 1.25, distance: 0.4, focus: 0.76, height: 0.78, zoom: 0.39 },
+        }
+    }
+    /// Index into [`Model::path_params`].
+    pub fn index(self) -> usize { Self::ALL.iter().position(|m| *m == self).unwrap_or(0) }
+}
+
 /// The console regions a scenario can pretend to be.
 pub const REGIONS: [(Option<Region>, &str); 5] = [(None, "as the BIOS says"), (Some(Region::Japan), "J — Japan"), (Some(Region::America), "A — America"), (Some(Region::Europe), "E — Europe"), (Some(Region::China), "C — China")];
 
@@ -276,16 +303,10 @@ pub struct Model {
     pub hovered_record: Option<usize>,
     pub free_camera: FreeCamera,
     pub camera_mode: CameraMode,
-    /// Degrees per frame along a predetermined camera path.
-    pub camera_speed: f32,
-    /// Height of a level path above the city's base, as a fraction of the orbit radius.
-    pub camera_height: f32,
-    /// Lens of the free camera and the paths relative to the console's (1 = the same).
-    pub camera_zoom: f32,
-    /// Distance of a path from its centre, as a multiple of the console's start distance.
-    pub camera_distance: f32,
-    /// Where the paths aim, as a fraction of the way up from the towers' floor to the highest top.
-    pub camera_focus: f32,
+    /// One set of dials per [`CameraMode`] (index by `CameraMode::index`).
+    pub path_params: [PathParams; 6],
+    /// Lens of the free camera relative to the console's (1 = the same).
+    pub free_zoom: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -326,7 +347,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.25, camera_height: 0.78, camera_zoom: 0.39, camera_distance: 0.4, camera_focus: 0.76, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -703,10 +724,14 @@ impl Model {
         best.map(|(_, r)| r)
     }
 
+    /// The dials of the current path.
+    pub fn path_params_mut(&mut self) -> &mut PathParams { let i = self.camera_mode.index(); &mut self.path_params[i] }
+
     /// The view that replaces the console's camera this frame, if any: the free camera, or a
     /// predetermined path.
     pub fn view_override(&self) -> Option<crate::renderer::ViewCamera> {
-        if self.free_camera_enabled { let mut v = self.free_camera.view(self.video); v.zoom = self.camera_zoom; return Some(v) }
+        if self.free_camera_enabled { let mut v = self.free_camera.view(self.video); v.zoom = self.free_zoom; return Some(v) }
+        let p = self.path_params[self.camera_mode.index()];
         let frame = (self.frame - self.start_frame()).max(0.0);
         // The paths circle the city's base (the towers' far end, vertical = z; the console's
         // camera starts at z = 16) — or, in the second phase, the logo (vertical = y): the
@@ -728,11 +753,11 @@ impl Model {
             let (xs, ys) = self.scene.towers.iter().fold(((f32::MAX, f32::MIN), (f32::MAX, f32::MIN)), |((x0, x1), (y0, y1)), t| ((x0.min(t.centre.x), x1.max(t.centre.x)), (y0.min(t.centre.y), y1.max(t.centre.y))));
             let (cx, cy) = if xs.0 == f32::MAX { (0.0, 0.0) } else { ((xs.0 + xs.1) / 2.0, (ys.0 + ys.1) / 2.0) };
             // Aim at `camera_focus` of the way up from the floor to the highest top.
-            let aim_z = floor - (floor - top) * self.camera_focus;
-            (Vec3::new(cx, cy, aim_z), floor - 16.0, self.camera_height, Vec3::Z, -Vec3::Y)
+            let aim_z = floor - (floor - top) * p.focus;
+            (Vec3::new(cx, cy, aim_z), floor - 16.0, p.height, Vec3::Z, -Vec3::Y)
         };
-        let radius = radius * self.camera_distance;
-        let v = self.camera_mode.view(frame, self.camera_speed, centre, radius, height, vertical, front, self.video).map(|mut v| { v.zoom = self.camera_zoom; v });
+        let radius = radius * p.distance;
+        let v = self.camera_mode.view(frame, p.speed, centre, radius, height, vertical, front, self.video).map(|mut v| { v.zoom = p.zoom; v });
         if std::env::var_os("PS2_DEBUG_PLANE").is_some() {
             let (lo, hi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.z - t.half_length), hi.max(t.centre.z + t.half_length)));
             let (xlo, xhi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.x), hi.max(t.centre.x)));
