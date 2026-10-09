@@ -185,7 +185,12 @@ pub struct Renderer {
     pub tower_tints: Vec<Vec3>,
     /// The history record whose towers are drawn highlighted (the inspector's hover).
     pub highlight: Option<usize>,
+    /// The last frame replaced the scene with a picture plane, so a cached 2D field is stale.
+    pub plane_drawn: bool,
 }
+
+/// Depth of the picture plane the second phase's 2D screens are hung on under a free camera.
+pub const PICTURE_PLANE_Z: f32 = 100.0;
 
 const VERTEX_BUFFER_SIZE: u64 = 24 << 20;
 
@@ -215,7 +220,7 @@ impl Renderer {
             sampler_repeat: sampler(wgpu::AddressMode::Repeat),
             device, queue, shader, pipelines: HashMap::new(), layout, glass_layout, bind_layout, glass_bind_layout,
             textures: HashMap::new(), targets: HashMap::new(), bind_cache: HashMap::new(), size: (0, 0),
-            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(), highlight: None,
+            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(), highlight: None, plane_drawn: false,
         };
         r.upload_texture("white", 1, 1, &[255, 255, 255, 255], false);
         r.resize(1280, 960);
@@ -454,6 +459,30 @@ impl Renderer {
         if q.iter().all(|v| v.pos.w > 1.0) {
             out.extend_from_slice(&[q[0], q[1], q[2], q[2], q[1], q[3]]);
         }
+    }
+
+    /// Replaces the scene with itself hung as a picture plane at [`PICTURE_PLANE_Z`], sized
+    /// so that a camera at the origin looking down +z sees it exactly as the 2D screen;
+    /// `view` is the camera that looks at it. (`source` names the target the scene is
+    /// parked in first.)
+    pub fn picture_plane(&mut self, enc: &mut wgpu::CommandEncoder, source: &str, view: &ViewCamera) {
+        self.blit(enc, "scene", source);
+        let d = PICTURE_PLANE_Z;
+        let (hx, hy) = (d / 3.2, d / view.y_scale());
+        let corners = [(-hx, -hy, 0.0f32, 0.0f32), (hx, -hy, 1.0, 0.0), (-hx, hy, 0.0, 1.0), (hx, hy, 1.0, 1.0)];
+        let q: Vec<Vertex> = corners.iter().map(|&(x, y, u, v)| Vertex { pos: view.project(Vec3::new(x, y, d)), uv: Vec2::new(u, v), pad: Vec2::ZERO, color: Vec4::ONE }).collect();
+        let mut verts = Vec::new();
+        Self::full_quad(&mut verts, Vec4::new(0.0, 0.0, 0.0, 1.0));
+        let mut batches = vec![Batch::new("white", Blend::Opaque, 0..6)];
+        if std::env::var_os("PS2_DEBUG_PLANE").is_some() { for v in &q { eprintln!("plane corner {:?} ndc ({:.3},{:.3},{:.3})", v.pos, v.pos.x / v.pos.w, v.pos.y / v.pos.w, v.pos.z / v.pos.w) } }
+        if q.iter().all(|v| v.pos.w > 1.0) {
+            let start = verts.len();
+            verts.extend_from_slice(&[q[0], q[1], q[2], q[2], q[1], q[3]]);
+            batches.push(Batch::named(format!("@{source}"), Blend::Opaque, start..verts.len()));
+        }
+        let fmt = self.format_of("scene");
+        self.pass(enc, "scene", true, DepthAction::None, |r, rp| r.draw(rp, &verts, &batches, fmt, false));
+        self.plane_drawn = true;
     }
 
     /// A world-space line drawn `width` target pixels wide, near-clipped.

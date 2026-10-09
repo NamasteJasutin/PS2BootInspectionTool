@@ -436,11 +436,23 @@ pub struct ScreenTri {
     pub colour: [f32; 3],
 }
 
+/// One lit, flat triangle of the logo in the GTE's camera space (x right, y down, z into
+/// the screen, in the shell's units), before projection: what another camera would see.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct LitTri {
+    /// The three corners in camera space.
+    pub xyz: [[f32; 3]; 3],
+    /// RGB, 0..=1, with the lighting and the field's depth cue applied.
+    pub colour: [f32; 3],
+}
+
 impl Ps1Shell {
-    /// Projects and lights the logo for one field of the fade (`field` is clamped to 30):
-    /// flat triangles, back faces dropped, sorted far to near, with the depth cue applied.
+    /// Transforms and lights the logo for one field of the fade (`field` is clamped to 30),
+    /// as the shell's GTE would, but stops before projection: every triangle, in TMD order,
+    /// in camera space. [`project`](Self::project) finishes the shell's own picture.
     #[must_use]
-    pub fn project(&self, tmd: &Tmd, field: usize) -> Vec<ScreenTri> {
+    pub fn lit_triangles(&self, tmd: &Tmd, field: usize) -> Vec<LitTri> {
         let a = LicenceTimeline::fog_near(field) as f32;
         let r = &self.rotation;
         let t = &self.translation;
@@ -453,11 +465,7 @@ impl Ps1Shell {
         for p in &tmd.prims {
             let Some(v) = p.verts.iter().map(|&i| tmd.verts.get(i as usize).copied()).collect::<Option<Vec<_>>>() else { continue };
             let w: Vec<[f32; 3]> = v.into_iter().map(xf).collect();
-            if w.iter().any(|q| q[2] <= 1.0) { continue }
-            let s: Vec<[f32; 2]> = w.iter().map(|q| [320.0 + q[0] * 1024.0 / q[2], 240.0 + q[1] * 1024.0 / q[2]]).collect();
-            // NCLIP: the signed area; the GTE keeps clockwise triangles (positive here).
-            let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
-            if area <= 0.0 { continue }
+            if w.len() != 3 { continue }
             let sz = (w[0][2] + w[1][2] + w[2][2]) / 3.0;
             // NCDS: three directional lights plus the back colour, then the TMD colour.
             let n = tmd.normals.get(p.normal as usize).copied().unwrap_or([0, 0, 4096]);
@@ -469,9 +477,27 @@ impl Ps1Shell {
                 let sum: f32 = (0..3).map(|i| self.light_colours[c][i] as f32 * ll[i]).sum();
                 ((sum / 4096.0 + 100.0 * 16.0) / 4096.0).clamp(0.0, 1.0)         // back colour 100 → 1600 (4.12 of 0..255 × 16)
             };
-            let cue = (1.25 * (1.0 - a / sz)).clamp(0.0, 1.0);
+            let cue = if sz != 0.0 { (1.25 * (1.0 - a / sz)).clamp(0.0, 1.0) } else { 1.0 };
             let colour = [0, 1, 2].map(|c| p.colour[c] as f32 / 255.0 * lit(c) * (1.0 - cue));
-            out.push(ScreenTri { xy: [s[0], s[1], s[2]], sz, colour });
+            out.push(LitTri { xyz: [w[0], w[1], w[2]], colour });
+        }
+        out
+    }
+
+    /// Projects and lights the logo for one field of the fade (`field` is clamped to 30):
+    /// flat triangles, back faces dropped, sorted far to near, with the depth cue applied.
+    #[must_use]
+    pub fn project(&self, tmd: &Tmd, field: usize) -> Vec<ScreenTri> {
+        let mut out = Vec::with_capacity(tmd.prims.len());
+        for tri in self.lit_triangles(tmd, field) {
+            let w = &tri.xyz;
+            if w.iter().any(|q| q[2] <= 1.0) { continue }
+            let s: Vec<[f32; 2]> = w.iter().map(|q| [320.0 + q[0] * 1024.0 / q[2], 240.0 + q[1] * 1024.0 / q[2]]).collect();
+            // NCLIP: the signed area; the GTE keeps clockwise triangles (positive here).
+            let area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
+            if area <= 0.0 { continue }
+            let sz = (w[0][2] + w[1][2] + w[2][2]) / 3.0;
+            out.push(ScreenTri { xy: [s[0], s[1], s[2]], sz, colour: tri.colour });
         }
         out.sort_by(|a, b| b.sz.total_cmp(&a.sz));
         out

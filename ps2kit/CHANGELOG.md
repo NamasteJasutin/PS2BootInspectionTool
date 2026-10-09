@@ -9,6 +9,7 @@ The boot can now lead somewhere other than the logo.
 - `disc::HandoffStep::IllegalDisc` (state 0x74); `disc::boot_outcome(&[HandoffStep], enforce)` reads the outcome off the facts.
 - The `RegionCheck` sentence for a rejected disc no longer ends with "The tool does not enforce region locks." (it can now).
 - `RomDir::entries()` lists every module as `(name, offset, size)` in image order.
+- `ps1::Ps1Shell::lit_triangles(tmd, field) -> Vec<LitTri>`: the logo's lit, depth-cued triangles in GTE camera space before projection, for other cameras; `project` is built on it and unchanged.
 - `PlayHistory::launch(title_id, date, &mut SplitMix) -> LaunchEffect`: the console's `HistoryUpdate` applied to the table (growth, tower bits, freeze at 63, random empty slot, eviction with the console's tie-break quirk, drop when all maxed).
 
 

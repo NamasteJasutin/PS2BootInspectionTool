@@ -56,8 +56,11 @@ impl App {
                 match span.segment {
                     Segment::Opening => self.renderer.render_opening(&mut enc, local as f32 + m.frame.fract(), &m.scene, assets, &m.sequence.opening, free, &m.options),
                     Segment::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
-                        self.renderer.render_ps1_licence(&mut enc, local as f32, shell, logo, layout, m.video, &m.options)
-                    } else if let Some(anim) = m.logo_animation() { self.renderer.render_logo(&mut enc, local as f32, &anim, &m.options) }
+                        self.renderer.render_ps1_licence(&mut enc, local as f32, shell, logo, layout, m.video, free, &m.options)
+                    } else if let Some(anim) = m.logo_animation() {
+                        self.renderer.render_logo(&mut enc, local as f32, &anim, &m.options);
+                        if let Some(view) = &free { self.renderer.picture_plane(&mut enc, "copy", view) }
+                    }
                     Segment::Warning => self.renderer.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex),
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
@@ -65,8 +68,13 @@ impl App {
             Scene::Boot => self.renderer.render_opening(&mut enc, m.frame, &m.scene, assets, &m.timeline, free, &m.options),
             Scene::Warning => self.renderer.render_warning(&mut enc, m.frame, assets, &m.timeline, free, &m.options, &warning_tex),
             Scene::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
-                self.renderer.render_ps1_licence(&mut enc, m.frame, shell, logo, layout, m.video, &m.options)
-            } else if let Some(anim) = m.logo_animation() { if m.frame >= 0.0 { self.renderer.render_logo(&mut enc, m.frame, &anim, &m.options) } else { self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) } }
+                self.renderer.render_ps1_licence(&mut enc, m.frame, shell, logo, layout, m.video, free, &m.options)
+            } else if let Some(anim) = m.logo_animation() {
+                if m.frame >= 0.0 {
+                    self.renderer.render_logo(&mut enc, m.frame, &anim, &m.options);
+                    if let Some(view) = &free { self.renderer.picture_plane(&mut enc, "copy", view) }
+                } else { self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
+            }
         }
         self.renderer.queue.submit([enc.finish()]);
         let _ = rs;
@@ -375,7 +383,7 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
             });
         });
         ui.small(m.camera_mode.describe());
-        if m.camera_mode != CameraMode::Scripted { ui.add(egui::Slider::new(&mut m.camera_period, 2.0..=60.0).text("seconds per lap").logarithmic(true)); }
+        if m.camera_mode != CameraMode::Scripted { ui.add(egui::Slider::new(&mut m.camera_speed, 0.05..=5.0).text("degrees per frame").logarithmic(true)); }
         if ui.checkbox(&mut m.free_camera_enabled, "Free camera").changed() && m.free_camera_enabled { m.reset_free_camera() }
         ui.small("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.");
         if ui.add_enabled(m.free_camera_enabled, egui::Button::new("Back to the scripted position")).clicked() { m.reset_free_camera() }

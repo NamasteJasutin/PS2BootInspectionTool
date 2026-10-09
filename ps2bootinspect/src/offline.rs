@@ -71,12 +71,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
             cam.view(m.video)
         })
     });
-    // `--path orbit|tornado|crane|eight|zenith [--period s]`: a predetermined camera path.
+    // `--path orbit|tornado|crane|eight|zenith [--degrees per-frame]`: a predetermined camera path.
     m.camera_mode = match named.get("path").map(String::as_str) {
         Some("orbit") => crate::model::CameraMode::Orbit, Some("tornado") => crate::model::CameraMode::Tornado, Some("crane") => crate::model::CameraMode::Crane,
         Some("eight") => crate::model::CameraMode::FigureEight, Some("zenith") => crate::model::CameraMode::Zenith, _ => crate::model::CameraMode::Scripted,
     };
-    m.camera_period = named.get("period").and_then(|v| v.parse().ok()).unwrap_or(12.0);
+    m.camera_speed = named.get("degrees").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     m.options.solid_towers = m.camera_mode != crate::model::CameraMode::Scripted;
     m.frame = frame;
     let free = free.or_else(|| m.view_override());
@@ -93,7 +93,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| r.set_ps1_assets(s, &m.ps1_licence_text()));
     let ps1 = |r: &mut Renderer, enc: &mut wgpu::CommandEncoder, f: f32| -> bool {
         if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &ps1_layout) {
-            r.render_ps1_licence(enc, f, shell, logo, layout, m.video, &m.options); true
+            r.render_ps1_licence(enc, f, shell, logo, layout, m.video, free, &m.options); true
         } else { false }
     };
     let mut enc = device.create_command_encoder(&Default::default());
@@ -104,12 +104,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     match m.scene_kind {
         Scene::Boot => r.render_opening(&mut enc, frame, &m.scene, assets, &m.timeline, free, &m.options),
         Scene::Warning => r.render_warning(&mut enc, frame, assets, &m.timeline, free, &m.options, &warning_tex),
-        Scene::Logo => if !ps1(&mut r, &mut enc, frame) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options) },
+        Scene::Logo => if !ps1(&mut r, &mut enc, frame) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options); if let Some(v) = &free { r.picture_plane(&mut enc, "copy", v) } },
         Scene::Full => {
             let (span, local) = m.sequence.span_at(frame.max(0.0) as usize);
             match span.segment {
                 Segment::Opening => r.render_opening(&mut enc, local as f32, &m.scene, assets, &m.sequence.opening, free, &m.options),
-                Segment::Logo => if !ps1(&mut r, &mut enc, local as f32) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options) },
+                Segment::Logo => if !ps1(&mut r, &mut enc, local as f32) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options); if let Some(v) = &free { r.picture_plane(&mut enc, "copy", v) } },
                 Segment::Warning => r.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex),
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }

@@ -3,8 +3,12 @@
 //! wordmark ramps up over 30 fields while the licence text, the TM mark and the drive's
 //! region letters pop in; then everything holds while the game loads.
 
-use crate::renderer::{Batch, Blend, DepthAction, RenderOptions, Renderer, Vertex};
-use glam::{Vec2, Vec4};
+use crate::renderer::{Batch, Blend, DepthAction, RenderOptions, Renderer, Vertex, ViewCamera};
+
+/// The GTE's camera-space units of the PS1 logo, scaled to this renderer's world so that the
+/// logo (translation z 5888) sits at about z = 184 for a free camera.
+pub const PS1_WORLD_SCALE: f32 = 1.0 / 32.0;
+use glam::{Vec2, Vec3, Vec4};
 use ps2kit::ps1::{LicenceTimeline, Ps1Shell, Tmd, TEXT_ROW_HEIGHT};
 use ps2kit::VideoMode;
 
@@ -39,7 +43,7 @@ impl Renderer {
     }
 
     /// One field of the licence screen, `field` counted from the first logo frame.
-    pub fn render_ps1_licence(&mut self, enc: &mut wgpu::CommandEncoder, field: f32, shell: &Ps1Shell, logo: &Tmd, layout: &Ps1Layout, video: VideoMode, _options: &RenderOptions) {
+    pub fn render_ps1_licence(&mut self, enc: &mut wgpu::CommandEncoder, field: f32, shell: &Ps1Shell, logo: &Tmd, layout: &Ps1Layout, video: VideoMode, free: Option<ViewCamera>, _options: &RenderOptions) {
         self.video = video;
         let field = field.max(0.0) as usize;
         let fade = field.min(LicenceTimeline::FADE_FIELDS - 1);
@@ -54,12 +58,25 @@ impl Renderer {
         Renderer::full_quad(&mut verts, Vec4::new(0.0, 0.0, 0.0, 1.0));
         batches.push(Batch::new("white", Blend::Opaque, 0..6));
 
-        // The logo: flat triangles, already sorted far to near.
+        // The logo: flat triangles, already sorted far to near — or, under a free camera, the
+        // same lit triangles in camera space, scaled into this world and projected by that camera.
         let start = verts.len();
-        for t in shell.project(logo, fade) {
-            let c = Vec4::new(t.colour[0], t.colour[1], t.colour[2], 1.0);
-            for p in t.xy {
-                verts.push(Vertex { pos: ndc(p[0], p[1]), uv: Vec2::ZERO, pad: Vec2::ZERO, color: c });
+        if let Some(view) = &free {
+            let mut tris = shell.lit_triangles(logo, fade);
+            let to_world = |p: [f32; 3]| Vec3::new(p[0], p[1], p[2]) * PS1_WORLD_SCALE;
+            let depth = |t: &ps2kit::ps1::LitTri| t.xyz.iter().map(|&p| (to_world(p) - view.position).length()).sum::<f32>();
+            tris.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
+            for t in tris {
+                let c = Vec4::new(t.colour[0], t.colour[1], t.colour[2], 1.0);
+                let q: Vec<Vertex> = t.xyz.iter().map(|&p| Vertex { pos: view.project(to_world(p)), uv: Vec2::ZERO, pad: Vec2::ZERO, color: c }).collect();
+                if q.iter().all(|v| v.pos.w > 1.0) { verts.extend_from_slice(&q) }
+            }
+        } else {
+            for t in shell.project(logo, fade) {
+                let c = Vec4::new(t.colour[0], t.colour[1], t.colour[2], 1.0);
+                for p in t.xy {
+                    verts.push(Vertex { pos: ndc(p[0], p[1]), uv: Vec2::ZERO, pad: Vec2::ZERO, color: c });
+                }
             }
         }
         batches.push(Batch::new("white", Blend::Opaque, start..verts.len()));

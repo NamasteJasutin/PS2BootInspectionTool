@@ -74,39 +74,52 @@ impl CameraMode {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Scripted => "The route OSDSYS integrates every field (notes/opening.md).",
-            Self::Orbit => "A satellite at a fixed height circling the field's centre. Motion only — no console's artwork.",
-            Self::Tornado => "Starts wide and high, corkscrews inward and down onto the tallest region, then climbs out again.",
-            Self::Crane => "Rises from between the towers to a high shot over the whole field.",
-            Self::FigureEight => "Weaves through the field on a lemniscate, always looking at the centre.",
-            Self::Zenith => "Looks straight down the z axis so the towers read as a grid of tiles.",
+            Self::Orbit => "The city's vertical is the z axis (the console looks down on the tower tops). A circle centred on the middle of the towers' base, out to where the console's camera starts; the camera dollies around it looking at the centre.",
+            Self::Tornado => "A helix around the city's axis: starts where the console's camera starts, widens as it descends to the base, tightens again, looking at the centre.",
+            Self::Crane => "Rises from street level at the towers' base to the console's own overhead start, and back.",
+            Self::FigureEight => "A lemniscate above the tower tops, looking down at the centre.",
+            Self::Zenith => "Pulled straight back along the axis so the towers read as a grid of tiles.",
         }
     }
 
-    /// The view at `seconds` into the scene, for a path of `period` seconds per lap.
-    pub fn view(self, seconds: f32, period: f32, video: VideoMode) -> Option<crate::renderer::ViewCamera> {
-        use std::f32::consts::TAU;
-        let centre = Vec3::new(0.0, 0.0, 170.0);
-        let a = TAU * seconds / period.max(0.5);
-        // +Y is down the screen, so "above" is negative y.
-        let (position, target) = match self {
+    /// The view at `frame` of the scene, turning `degrees_per_frame` around `centre`, at
+    /// `radius` (the distance from the centre to where the console's own camera starts).
+    /// `vertical` is the scene's down direction: +z for the city (the console looks down on
+    /// the tower tops), +y for the logo screens (the console looks at them from the front).
+    pub fn view(self, frame: f32, degrees_per_frame: f32, centre: Vec3, radius: f32, vertical: Vec3, video: VideoMode) -> Option<crate::renderer::ViewCamera> {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        let a = (degrees_per_frame * frame).to_radians();
+        let lap = (a / TAU).rem_euclid(1.0);
+        let eased = (lap * TAU).cos() * -0.5 + 0.5;                  // 0 → 1 → 0 over a lap
+        // A frame around the centre: `down` = the scene's vertical, `front` = towards where
+        // the console's camera starts (-z), `side` = screen-right.
+        let down = vertical.normalize_or(Vec3::Y);
+        let front = if down.z.abs() > 0.5 { -Vec3::Z } else { (-Vec3::Z - down * (-Vec3::Z).dot(down)).normalize_or(-Vec3::Z) };
+        let side = down.cross(front).normalize_or(Vec3::X);
+        let (sideways, up) = (side, -down);
+        let position = match self {
             Self::Scripted => return None,
-            Self::Orbit => (centre + Vec3::new(130.0 * a.sin(), -35.0, -130.0 * a.cos()), centre),
+            // Horizontal circle around the vertical axis, starting at the console's side.
+            Self::Orbit => centre + (front * a.cos() + sideways * a.sin()) * radius,
+            // Helix: wide and high at the start, tightening as it descends to the centre's level.
             Self::Tornado => {
-                let t = (seconds / (period * 2.0)) % 1.0;
-                let tight = 1.0 - (t * TAU).cos() * 0.5 - 0.5; // 0 at the ends, 1 in the middle
-                let r = 150.0 - 125.0 * tight;
-                (centre + Vec3::new(r * (a * 1.5).sin(), -90.0 + 85.0 * tight, -r * (a * 1.5).cos()), centre)
+                let r = radius * (0.2 + 0.8 * (1.0 - eased));
+                centre + (front * (3.0 * a).cos() + sideways * (3.0 * a).sin()) * r + up * radius * 0.6 * (1.0 - eased)
             }
-            Self::Crane => {
-                let t = ((seconds / period) % 1.0 * TAU).cos() * -0.5 + 0.5; // eased 0 → 1 → 0
-                (Vec3::new(20.0, 10.0 - 150.0 * t, 60.0 + 40.0 * t), centre + Vec3::new(0.0, 0.0, 20.0 * t))
-            }
-            Self::FigureEight => (centre + Vec3::new(110.0 * a.sin(), -20.0, 70.0 * (2.0 * a).sin()), centre),
-            Self::Zenith => (centre + Vec3::new(0.0, 0.0, -230.0), centre),
+            // From below the centre, in front, rising over the top and back.
+            Self::Crane => { let swing = eased * PI - FRAC_PI_2; centre + (front * swing.cos() + up * swing.sin()) * radius }
+            // A lemniscate in the front plane, looking at the centre.
+            Self::FigureEight => centre + front * radius + sideways * (radius * 0.5 * a.sin()) + up * (radius * 0.3 * (2.0 * a).sin()),
+            // Straight above, looking down the vertical.
+            Self::Zenith => centre + up * radius + front * 0.01 * radius,
         };
-        let forward = (target - position).normalize_or(Vec3::Z);
-        let up = if forward.abs_diff_eq(Vec3::Z, 1e-3) || forward.abs_diff_eq(-Vec3::Z, 1e-3) { Vec3::Y } else { Vec3::Y };
-        Some(crate::renderer::ViewCamera { position, forward, up, video })
+        let forward = (centre - position).normalize_or(front);
+        // `up` is the screen-down direction in this renderer (+Y is down the console's screen):
+        // the scene's vertical projected into the view plane; looking along the vertical,
+        // fall back to the console's front so the picture keeps its bearings.
+        let proj = down - forward * forward.dot(down);
+        let screen_down = if proj.length() < 0.05 { (front - forward * forward.dot(front)).normalize_or(Vec3::Y) } else { proj.normalize() };
+        Some(crate::renderer::ViewCamera { position, forward, up: screen_down, video })
     }
 }
 
@@ -265,8 +278,8 @@ pub struct Model {
     pub hovered_record: Option<usize>,
     pub free_camera: FreeCamera,
     pub camera_mode: CameraMode,
-    /// Seconds per lap of a predetermined camera path.
-    pub camera_period: f32,
+    /// Degrees per frame along a predetermined camera path.
+    pub camera_speed: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -307,7 +320,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_period: 12.0, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -650,6 +663,15 @@ impl Model {
         }
     }
 
+    /// The picture is showing the second phase's logo or licence screen.
+    pub fn in_logo_phase(&self) -> bool {
+        match self.scene_kind {
+            Scene::Logo => true,
+            Scene::Full => self.sequence.span_at(self.frame.max(0.0) as usize).0.segment == Segment::Logo,
+            _ => false,
+        }
+    }
+
     /// The view the picture is drawn with this frame.
     pub fn current_view(&self) -> crate::renderer::ViewCamera {
         self.view_override().unwrap_or_else(|| crate::renderer::ViewCamera::scripted(self.camera(), self.video))
@@ -679,8 +701,22 @@ impl Model {
     /// predetermined path.
     pub fn view_override(&self) -> Option<crate::renderer::ViewCamera> {
         if self.free_camera_enabled { return Some(self.free_camera.view(self.video)) }
-        let seconds = (self.frame - self.start_frame()).max(0.0) / self.timeline.fps();
-        self.camera_mode.view(seconds, self.camera_period, self.video)
+        let frame = (self.frame - self.start_frame()).max(0.0);
+        // The paths circle the city's base (the towers' far end, vertical = z; the console's
+        // camera starts at z = 16) — or, in the second phase, the logo (vertical = y): the
+        // PS1 model's centre, or the picture plane the PS2 logo hangs on.
+        let (centre, radius, vertical) = if self.in_logo_phase() {
+            if self.ps1_active() {
+                let k = crate::scenes::ps1::PS1_WORLD_SCALE;
+                (Vec3::new(0.0, -340.0 * k, 5888.0 * k), 5888.0 * k * 0.7, Vec3::Y)
+            } else {
+                (Vec3::new(0.0, 0.0, crate::renderer::PICTURE_PLANE_Z), crate::renderer::PICTURE_PLANE_Z, Vec3::Y)
+            }
+        } else {
+            let base_z = self.scene.towers.iter().map(|t| t.centre.z + t.half_length).fold(0.0f32, f32::max).max(200.0);
+            (Vec3::new(0.0, 0.0, base_z), base_z - 16.0, Vec3::Z)
+        };
+        self.camera_mode.view(frame, self.camera_speed, centre, radius, vertical, self.video)
     }
 
     /// One colour multiplier per tower of the scene for the chosen tint (beyond the PS2:

@@ -28,6 +28,7 @@ impl Renderer {
         self.video = anim.video;
         let animated = (anim.last_field() - anim.first_field()) as i32;
         let f = (frame as i32).clamp(0, animated);
+        if self.plane_drawn { self.logo_cached_field = None; self.plane_drawn = false }
         if self.logo_cached_field == Some(f) { return }
         let start = match self.logo_cached_field {
             Some(c) if c < f => c + 1,
