@@ -282,6 +282,8 @@ pub struct Model {
     pub camera_height: f32,
     /// Lens of the free camera and the paths relative to the console's (1 = the same).
     pub camera_zoom: f32,
+    /// Distance of a path from its centre, as a multiple of the console's start distance.
+    pub camera_distance: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -322,7 +324,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, camera_zoom: 0.4, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, camera_zoom: 0.4, camera_distance: 1.6, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -721,6 +723,7 @@ impl Model {
             let base_z = self.scene.towers.iter().map(|t| t.centre.z + t.half_length).fold(0.0f32, f32::max).max(200.0);
             (Vec3::new(0.0, 0.0, base_z), base_z - 16.0, self.camera_height, Vec3::Z, -Vec3::Y)
         };
+        let radius = radius * self.camera_distance;
         let v = self.camera_mode.view(frame, self.camera_speed, centre, radius, height, vertical, front, self.video).map(|mut v| { v.zoom = self.camera_zoom; v });
         if std::env::var_os("PS2_DEBUG_PLANE").is_some() {
             let (lo, hi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.z - t.half_length), hi.max(t.centre.z + t.half_length)));

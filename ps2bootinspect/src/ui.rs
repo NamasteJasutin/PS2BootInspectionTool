@@ -385,6 +385,7 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
         ui.small(m.camera_mode.describe());
         if m.camera_mode != CameraMode::Scripted {
             ui.add(egui::Slider::new(&mut m.camera_speed, 0.05..=5.0).text("degrees per frame").logarithmic(true));
+            ui.add(egui::Slider::new(&mut m.camera_distance, 0.3..=5.0).text("distance (× the console's start)").logarithmic(true));
             if matches!(m.camera_mode, CameraMode::Orbit | CameraMode::FigureEight | CameraMode::Tornado) && !m.in_logo_phase() { ui.add(egui::Slider::new(&mut m.camera_height, 0.0..=1.5).text("height (× radius)")); }
         }
         if m.camera_mode != CameraMode::Scripted || m.free_camera_enabled { ui.add(egui::Slider::new(&mut m.camera_zoom, 0.2..=1.5).text("lens (× the console's)").logarithmic(true)); }

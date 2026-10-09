@@ -79,6 +79,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.camera_speed = named.get("degrees").and_then(|v| v.parse().ok()).unwrap_or(1.0);
     m.camera_height = named.get("height").and_then(|v| v.parse().ok()).unwrap_or(0.6);
     m.camera_zoom = named.get("zoom").and_then(|v| v.parse().ok()).unwrap_or(0.4);
+    m.camera_distance = named.get("distance").and_then(|v| v.parse().ok()).unwrap_or(1.6);
     m.options.solid_towers = m.camera_mode != crate::model::CameraMode::Scripted;
     m.frame = frame;
     let free = free.or_else(|| m.view_override());
