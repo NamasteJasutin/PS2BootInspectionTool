@@ -81,6 +81,20 @@ the game. The game is never run.
 - The red "Please insert a PlayStation or PlayStation 2 format disc" screen is included as its
   own scene.
 
+### Beyond the PS2 (the Save data tab)
+
+The sidebar has four tabs: **Boot**, **Save data**, **Disc**, **BIOS**. The Save-data tab reads
+the history file as data: a launch histogram, the records with their last-launch dates, and an
+**alternate history** — launch any title (known or new) the way the console's `HistoryUpdate`
+would record it today, watch a tower bit get planted at the 14th launch, or a 22nd title evict
+the least-played record; undo, reset, export as CSV.
+
+The towers can also leave the console's grid: a **ring** or **spiral** around the camera's
+path, slowly revolving, coloured by launch count, by how long ago the title was last played,
+by region or by publisher family; and the camera can leave its scripted route for an orbit, a
+tornado, a crane shot, a figure-eight or a straight-down view — motion the console never had,
+but nothing that isn't yours.
+
 ## Requirements and set-up
 
 - Windows, Linux or macOS (the app is Rust on wgpu, so the three builds come from one code base).
