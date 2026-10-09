@@ -2,7 +2,7 @@
 //! `tests/oracles.rs` holds the checks against a real BIOS, which skip when none is present.
 
 use ps2kit::disc::{handoff_steps, DiscImage, DiscKind, Ps1Verdict};
-use ps2kit::history::{PlayHistory, Record, RECORD_SIZE};
+use ps2kit::history::{PlayHistory, Record, RECORD_COUNT, RECORD_SIZE};
 use ps2kit::logo::{DiscLogo, LogoMaster};
 use ps2kit::memcard::MemoryCard;
 use ps2kit::rom::{unpack, RomDir};
@@ -371,6 +371,35 @@ fn boot_sequence_follows_the_outcome() {
     assert_eq!(ps1.spans()[3].length, licence.end_frame());
     let past = menu.span_at(10_000);
     assert_eq!(past.0.segment, Segment::Menu);
+}
+
+#[test]
+fn launching_follows_history_update() {
+    use ps2kit::history::{LaunchEffect, SplitMix};
+    let mut h = PlayHistory::synthetic(&[13, 5, 5], &["SLES_000.01".into(), "SLES_000.02".into(), "SLES_000.03".into()], 1);
+    let mut rng = SplitMix(7);
+    let date = 9 | 10 << 5 | 26 << 9;
+    // Launch 14 plants a second tower.
+    let e = h.launch("SLES_000.01", date, &mut rng);
+    let r = &h.records[e.slot];
+    assert_eq!((r.count, r.mask.count_ones(), r.index as u8 == e.new_tower.unwrap(), r.date), (14, 2, true, date));
+    // A new title takes an empty slot.
+    let e = h.launch("SCUS_971.00", date, &mut rng);
+    assert_eq!((h.records[e.slot].count, e.evicted, e.new_tower), (1, None, Some(0)));
+    // Fill the table, then an unknown title evicts the lowest count / earliest date.
+    for i in 0..RECORD_COUNT { if h.records[i].is_empty() { h.records[i] = Record { name: format!("SLUS_2{i:02}.00"), count: 20, mask: 3, index: 1, date }; } }
+    h.records.iter_mut().find(|r| r.name == "SCUS_971.00").unwrap().count = 20;
+    h.records.iter_mut().find(|r| r.name == "SLES_000.02").unwrap().date = 1;
+    let e = h.launch("SLPS_100.00", date, &mut rng);
+    assert_eq!(e.evicted.as_ref().map(|r| r.name.as_str()), Some("SLES_000.02"), "{e:?}");
+    assert_eq!(h.records[e.slot].name, "SLPS_100.00");
+    // The 64th launch freezes a record at 63 / index 7.
+    let mut m = PlayHistory::new(vec![Record { name: "SLES_999.99".into(), count: 63, mask: 0x3F, index: 5, date }], None);
+    let e = m.launch("SLES_999.99", date, &mut rng);
+    assert_eq!((m.records[e.slot].count, m.records[e.slot].index), (63, 7));
+    // All maxed: dropped.
+    let mut full = PlayHistory::new((0..RECORD_COUNT).map(|i| Record { name: format!("SLES_{i:03}.00"), count: 63, mask: 0x3F, index: 7, date }).collect(), None);
+    assert!(matches!(full.launch("SLES_NEW.00", date, &mut rng), LaunchEffect { dropped: true, .. }));
 }
 
 // --- sound -----------------------------------------------------------------------------

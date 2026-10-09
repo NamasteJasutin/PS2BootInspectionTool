@@ -113,6 +113,22 @@ impl CameraMode {
 /// The console regions a scenario can pretend to be.
 pub const REGIONS: [(Option<Region>, &str); 5] = [(None, "as the BIOS says"), (Some(Region::Japan), "J — Japan"), (Some(Region::America), "A — America"), (Some(Region::Europe), "E — Europe"), (Some(Region::China), "C — China")];
 
+/// Today as the history file encodes a date (`day | month << 5 | (year - 2000) << 9`).
+pub fn today_date() -> u16 {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // Civil-from-days (Howard Hinnant), good for the file's 2000..2127 range.
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u16;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u16;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as u16;
+    day | month << 5 | year.saturating_sub(2000).min(127) << 9
+}
+
 pub fn outcome_name(outcome: BootOutcome) -> &'static str {
     match outcome {
         BootOutcome::Game => "the PlayStation 2 logo, then the game",
@@ -222,6 +238,11 @@ pub struct Model {
     pub custom_titles: u32,
     pub custom_launches: u32,
     pub history: PlayHistory,
+    /// Alternate history: the title typed into the Save-data tab, and the launches applied
+    /// since the last rebuild (newest last) so they can be undone.
+    pub launch_title: String,
+    pub launch_log: Vec<(String, PlayHistory)>,
+    launch_rng: ps2kit::history::SplitMix,
     pub scene_kind: Scene,
     pub tab: Tab,
     pub disc_override: DiscOverride,
@@ -280,6 +301,7 @@ impl Model {
             card_path: None, card_status: "No memory card loaded".into(),
             disc_path: None, disc_status: "No disc image — the lettering is filled from the BIOS outline".into(),
             history_source: HistorySource::Empty, custom_titles: 12, custom_launches: 30, history: PlayHistory::default(),
+            launch_title: "SLES_000.00".into(), launch_log: Vec::new(), launch_rng: ps2kit::history::SplitMix(0x5EED),
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
@@ -432,7 +454,33 @@ impl Model {
             HistorySource::Custom => PlayHistory::synthetic(&vec![self.custom_launches; self.custom_titles as usize], &[], 1),
             HistorySource::Empty => PlayHistory::default(),
         };
+        self.launch_log.clear();
         self.rebuild_scene();
+    }
+
+    /// Launches `title_id` once in the alternate history (today's date) and rebuilds the
+    /// skyline; returns what the console would have done.
+    pub fn launch(&mut self, title_id: &str) -> ps2kit::history::LaunchEffect {
+        let before = self.history.clone();
+        let effect = self.history.launch(title_id, today_date(), &mut self.launch_rng);
+        let what = match &effect {
+            e if e.dropped => format!("{title_id}: every record is maxed out — not recorded"),
+            e => {
+                let r = &self.history.records[e.slot];
+                let mut t = format!("{}: count {}", r.name, r.count);
+                if let Some(b) = e.new_tower { t += &format!(", tower bit {b} planted") }
+                if let Some(v) = &e.evicted { t += &format!(", evicted {} ({}×) → history.old", v.name, v.count) }
+                t
+            }
+        };
+        self.launch_log.push((what, before));
+        self.rebuild_scene();
+        effect
+    }
+
+    /// Takes the last alternate-history launch back.
+    pub fn undo_launch(&mut self) {
+        if let Some((_, before)) = self.launch_log.pop() { self.history = before; self.rebuild_scene() }
     }
 
     fn rebuild_scene(&mut self) {

@@ -42,6 +42,20 @@ pub const RECORD_SIZE: usize = 22;
 /// The system folders, one per region, in which the BIOS keeps `history`.
 pub const SYSTEM_FOLDERS: [&str; 4] = ["BIDATA-SYSTEM", "BADATA-SYSTEM", "BEDATA-SYSTEM", "BCDATA-SYSTEM"];
 
+/// What one launch did to the table ([`PlayHistory::launch`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LaunchEffect {
+    /// The record the title occupies afterwards (`usize::MAX` when dropped).
+    pub slot: usize,
+    /// The tower bit planted by this launch, if one was.
+    pub new_tower: Option<u8>,
+    /// The record thrown out to make room (appended to `history.old` by the console).
+    pub evicted: Option<Record>,
+    /// Every record was maxed out: the console did not record the launch.
+    pub dropped: bool,
+}
+
 /// The 21 records of a history file; always exactly [`RECORD_COUNT`] long.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -137,6 +151,55 @@ impl PlayHistory {
                 (Record { count, ..r.clone() }, count >= 14 && (count - 14).is_multiple_of(10))
             }
         }
+    }
+
+    /// Launches `title_id` once, exactly as `HistoryUpdate` (OSDSYS `0x201E98`,
+    /// `notes/osdsys_flow.md` §4.3) rewrites the table: the record's date becomes `date`
+    /// (the file's `day | month << 5 | (year - 2000) << 9`), its count grows, a new tower bit is
+    /// drawn from `rng` at counts 14, 24, 34, 44 and 54, the record freezes at 63 / index 7; an
+    /// unknown title takes a random empty slot, or evicts the record with the lowest count
+    /// (ties broken by the earlier date, with the console's quirk that the date floor is not
+    /// reset when a lower count is found), or is dropped when every record is maxed out.
+    pub fn launch(&mut self, title_id: &str, date: u16, rng: &mut SplitMix) -> LaunchEffect {
+        let name: String = title_id.chars().take(16).collect();
+        let (mut min_count, mut min_date, mut victim) = (i32::MAX, i32::MAX, 0usize);
+        let mut found = None;
+        let mut new_tower = None;
+        for (i, r) in self.records.iter_mut().enumerate() {
+            let c = r.count as i32;
+            if c < min_count { min_count = c; victim = i }
+            if c == min_count && (r.date as i16 as i32) < min_date { min_date = r.date as i16 as i32; victim = i }
+            if r.name == name {
+                found = Some(i);
+                r.date = date;
+                if r.mask & 0x3F == 0x3F {
+                    if c < 0x3F { r.count = (c + 1) as u8 } else { r.count = 0x3F; r.index = 7 }
+                } else {
+                    let c = (c + 1).min(0x7F);
+                    if c >= 14 && (c - 14) % 10 == 0 {
+                        let mut b = (rng.next_u64() % 6) as u8;
+                        while r.mask >> b & 1 == 1 { b = (rng.next_u64() % 6) as u8 }
+                        r.index = b;
+                        r.mask |= 1 << b;
+                        new_tower = Some(b);
+                    }
+                    r.count = c as u8;
+                }
+            }
+        }
+        if let Some(i) = found {
+            return LaunchEffect { slot: i, new_tower, evicted: None, dropped: false };
+        }
+        let empty: Vec<usize> = self.records.iter().enumerate().filter(|(_, r)| r.is_empty()).map(|(i, _)| i).collect();
+        let maxed = self.records.iter().filter(|r| !r.is_empty() && r.index == 7).count();
+        if maxed == RECORD_COUNT { return LaunchEffect { slot: usize::MAX, new_tower: None, evicted: None, dropped: true } }
+        let (slot, evicted) = if empty.is_empty() {
+            (victim, Some(self.records[victim].clone()))
+        } else {
+            (empty[(rng.next_u64() % empty.len() as u64) as usize], None)
+        };
+        self.records[slot] = Record { name, count: 1, mask: 1, index: 0, date };
+        LaunchEffect { slot, new_tower: Some(0), evicted, dropped: false }
     }
 
     /// Title IDs of the games that have saves on a card (`BESLES-52541...` -> `SLES_525.41`).

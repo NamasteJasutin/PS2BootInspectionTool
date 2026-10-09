@@ -478,6 +478,21 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
             TowerTint::Publisher => "Gold SC (Sony), blue SL (licensed), grey anything else.",
         });
     });
+    section(ui, "Alternate history", |ui| {
+        ui.small("Launch a title the way OSDSYS's HistoryUpdate would record it today: counts grow, tower bits are planted at 14/24/34/44/54, a 22nd title evicts the least-played record.");
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut m.launch_title).desired_width(110.0).hint_text("SLES_123.45"));
+            let id = m.launch_title.trim().to_string();
+            if ui.add_enabled(!id.is_empty(), egui::Button::new("Launch")).clicked() { m.launch(&id); }
+            if ui.add_enabled(!m.launch_log.is_empty(), egui::Button::new("Undo")).clicked() { m.undo_launch() }
+            if ui.add_enabled(!m.launch_log.is_empty(), egui::Button::new("Reset")).clicked() { m.rebuild_history() }
+        });
+        let known: Vec<String> = m.history.records.iter().filter(|r| !r.is_empty()).map(|r| r.name.clone()).collect();
+        ui.horizontal_wrapped(|ui| {
+            for name in known { if ui.small_button(&name).on_hover_text("launch again").clicked() { m.launch(&name); } }
+        });
+        for (what, _) in m.launch_log.iter().rev().take(6) { ui.small(what); }
+    });
     let used: Vec<_> = m.history.records.iter().filter(|r| !r.is_empty()).cloned().collect();
     section(ui, "Launches", |ui| {
         if used.is_empty() { ui.small("No titles: the screen shows no towers."); return }
