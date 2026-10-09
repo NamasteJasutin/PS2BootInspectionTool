@@ -531,6 +531,30 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
         }
         ui.small("Gold: maxed-out records (index 7) — their towers no longer grow.");
     });
+    section(ui, "Last launches over time", |ui| {
+        let dated: Vec<_> = used.iter().filter(|r| r.date != 0).collect();
+        if dated.len() < 2 { ui.small("Needs two or more dated records."); return }
+        let days = |r: &ps2kit::history::Record| (r.year() as f32 - 2000.0) * 365.25 + (r.month() as f32 - 1.0) * 30.44 + r.day() as f32;
+        let (lo, hi) = dated.iter().fold((f32::MAX, f32::MIN), |(lo, hi), r| (lo.min(days(r)), hi.max(days(r))));
+        let span = (hi - lo).max(1.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let (x0, x1) = (rect.min.x + 8.0, rect.max.x - 8.0);
+        let axis = rect.min.y + 40.0;
+        painter.line_segment([Pos2::new(x0, axis), Pos2::new(x1, axis)], Stroke::new(1.0, Color32::from_white_alpha(80)));
+        let max = dated.iter().map(|r| r.count).max().unwrap_or(1).max(1) as f32;
+        for r in &dated {
+            let x = x0 + (x1 - x0) * (days(r) - lo) / span;
+            let h = 4.0 + 26.0 * r.count as f32 / max;
+            painter.line_segment([Pos2::new(x, axis), Pos2::new(x, axis - h)], Stroke::new(2.0, Color32::from_rgb(115, 153, 255)));
+            painter.circle_filled(Pos2::new(x, axis - h), 2.5, Color32::WHITE);
+        }
+        let first = dated.iter().min_by(|a, b| days(a).total_cmp(&days(b))).unwrap();
+        let last = dated.iter().max_by(|a, b| days(a).total_cmp(&days(b))).unwrap();
+        painter.text(Pos2::new(x0, axis + 4.0), egui::Align2::LEFT_TOP, format!("{:04}-{:02}-{:02}", first.year(), first.month(), first.day()), egui::FontId::proportional(10.0), Color32::from_white_alpha(170));
+        painter.text(Pos2::new(x1, axis + 4.0), egui::Align2::RIGHT_TOP, format!("{:04}-{:02}-{:02}", last.year(), last.month(), last.day()), egui::FontId::proportional(10.0), Color32::from_white_alpha(170));
+        ui.small("One bar per record at its last-launch date; height = launch count. The file keeps only the last date, so this is when you last came back to each game.");
+    });
     section(ui, "Records", |ui| {
         ui.small("Title, launches, the six tower slots (▪ built, ▫ growing, · empty), last launch.");
         for r in &used {
