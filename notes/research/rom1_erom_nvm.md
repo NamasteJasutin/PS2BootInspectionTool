@@ -232,7 +232,7 @@ areas, the model string, and (2.00 only) the region parameters. [V]
 `nvmlayouts[]` (`CDVD_internal.h`): `{biosVer, config0, config1, config2, consoleId, ilinkId,
 modelNum, regparams, mac}` =
 
-| | ROM < 1.70 (`0x000`) | ROM ≥ 1.70 (`0x146`, i.e. "1.46" as hex compare of BCD "0170"? the code compares `biosVer <= BiosVersion` with `BiosVersion` = `0x0200` for 2.00; both 1.60 ROMs select layout 0, 2.00 selects layout 1) |
+| | ROM < 1.70 (`biosVer 0x000`) | ROM ≥ 1.70 (`biosVer 0x146` = `major<<8 | minor` with decimal minor, i.e. 1.70; `BiosTools.cpp` parses `0160` as `0x13C`, `0200` as `0x200`; so 1.00/1.50/1.60 use layout 0, 2.00 layout 1) |
 |---|---|---|
 | config area 0 ("config0") | `0x280` | `0x270` |
 | config area 1 ("config1") — the OSD area | `0x300` | `0x2B0` |
@@ -295,6 +295,19 @@ file (also for the PCSX2-written ones, because the *IOP side* computes it, not t
   model string (→ "Unknown"), no MechaCon tables, no console ID, no area-2 blocks. The three
   PCSX2 files here are older than the ID default (ilink slot zero) and `scph10000.NVM` is
   entirely zero (PCSX2 will regenerate it with the Japan block on next use).
+* **PCSX2's default OSD block carries a wrong checksum** — `30 21 00 00 00 70 … 41`: the 8-bit
+  sum is `0xC1` (Japan `… 30` should be `0xB0`, China `… 4B` should be `0xCB`; all three are the
+  sum with bit 7 dropped). XCDVDMAN (1.50, 1.60 and 2.00 alike, `FUN_00008348` / 1.60
+  `FUN_000072F0`) compares the full 8-bit sum and reports status 1; OSDSYS re-issues
+  `ReadConfig` while `status & 0x81` (`0x203DD0–0x203E04`); on the retry the MechaCon block
+  index is past the end, PCSX2 then returns a zeroed result (`SetSCMDResultSize` memsets,
+  `cdvdReadConfig` returns 1 without filling) whose checksum is trivially right, and OSDSYS
+  proceeds with an **all-zero block**: region-default language, "not initialised" → the setup
+  wizard runs and writes a proper block (`… E0` / `… BF` in the two PCSX2 files). So the
+  English/Chinese defaults PCSX2 intends are never actually honoured by a 1.50+ ROM; the
+  observable behaviour (wizard on first boot) is the same, the mechanism is not. [V code
+  chain; I that this is what happens in a running PCSX2 — not executed here] The fast-boot hack
+  (`config[2] |= 0x80` when serving block 1) is subject to the same mismatch.
 * **Real dumps** are recognisable by: non-zero bytes below `0x180`, a model string, `FF` runs
   (erased EEPROM), data at `0x320+`, and for a slim the area-2 blocks and the `0x2C0` OSD block.
 * The two layouts are visibly different in the dumps: the devkit has nothing at `0x1B0`,
@@ -368,7 +381,8 @@ Companion-image expectations for a tool ("your BIOS expects…"):
    the PS1-driver bits, the region-parameter string (`EEengEE` → ROM/OSD region, language,
    PS1 and DVD letters), the model string, and classify the file as *real dump* vs
    *PCSX2-fabricated* (§3.4) — e.g. "Version page will show Console: Unknown", "first-boot
-   wizard will run", "area-2 DVD settings present → came from a slim".
+   wizard will run", "area-2 DVD settings present → came from a slim", "this block's checksum
+   is wrong (PCSX2 default) → the IOP will reject it and the OSD will see zeros".
 2. **BIOS-set completeness / provenance check** — per rom0 (§5): is a rom1 present, does its
    build stamp match, does it carry the letter set the NVM's `0x186` selects, is the erom
    there (and is it real: 40 gzip members with CRCs), is rom2 a mirror of rom1 (SCPH-70004

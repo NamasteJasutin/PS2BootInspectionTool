@@ -11,7 +11,7 @@ and four discs (Tekken Tag Tournament USA/EU, Tekken PS1 EU/JP). Every claim is 
 | `osdsys_hooks.md` | OSDSYS: argv vocabulary, the files it looks for (card update, DVD player, HDD), SYSTEM.CNF keys, NVRAM bits, inputs, disc-type dispatch | 396 |
 | `kernel_eeload_hooks.md` | RESET/RDRAM/KERNEL/EELOAD/IOP: hardware probes, EELOAD's grammar, SECRMAN/XCDVDMAN gates, DECI2 and serial, reset strings | 606 |
 | `games_probe.md` | what the four discs ask of the console, IOPRP images, PS1DRV's per-title tables, PS2LOGO's hand-over state | 618 |
-| `rom1_erom_nvm.md` | ROM1 (DVD player), ROM2, EROM, the NVM field map, MEC | (in progress) |
+| `rom1_erom_nvm.md` | ROM1 (DVD player), ROM2, EROM, the NVM field map and command chain, MEC | 434 |
 
 ## What changed in our understanding
 
@@ -47,14 +47,36 @@ and four discs (Tekken Tag Tournament USA/EU, Tekken PS1 EU/JP). Every claim is 
   `argv[1]` on; the kernel wipes RAM. (The games note's checksum "discrepancy" came from
   unstripped 2352-byte sectors; ps2kit's `rotl(b ^ key, 3)` + word sum is right.)
 
+- **rom1 is the DVD player** (3.10 on the SCPH-70004, stamp `20040729`) with per-region
+  `DVDID?`/`DVDVER?` and eight `EROMDRV?` MagicGate KELFs; it is ROM unit 1 registered by
+  `rom0:ADDDRV` on the SSBUS during OSD/DVD IOP boots only. Without it a 1.50+ OSD accepts no
+  card player either. The 70004's rom2 file is a byte mirror of rom1 (rom2 matters only for
+  China). The stray `rom1.bin` is a 2.10 Oceania image from 2001 that PCSX2 never loads.
+- **erom is mostly not encrypted**: 40 CRC-valid gzip members, the DVD player program as a
+  raw image at `0x200000`, parental-control code and its own `eeprom` module; only the
+  directory/loader KELFs are opaque. PCSX2 does not load erom at all.
+- **NVM, verified end to end** (RPC fno → cdvdman ordinal → S-command): the 15+1-byte config
+  block checksum, PCSX2's two layouts against real dumps, the region-parameter string
+  `EEengEE` whose byte 6 selects every `?` suffix, and who reads what (OSDSYS: area 1, model
+  name, region params; EECONF: areas 0/1; DVD player: area 2; the console IDs: nobody on
+  retail). **PCSX2's default OSD block has a wrong 7-bit checksum**, the IOP rejects it, and
+  the OSD runs on zeros — the "defaults" are never honoured.
+- **All three MEC files are PCSX2's default**, parsed by XCDVDMAN as 6.02.00, which opens all
+  ten version gates; a real 5.xx MechaCon would lose `sceCdReadRegionParams`.
+
 ## Tool-worthy, merged and ranked for Camp 4
 
 1. **Hook map** — for the user's ROM + card + NVM + disc: which hand-overs would fire
    (card update file name and gate, DVD player override, HDD boot reachability, TESTMODE bit,
    `BootIllegal` verdict), each with its source address. (osdsys 1/3/5, kernel 1)
-2. **NVRAM config decoder** — bytes `0x0F`–`0x14` and the option nibbles, predicting the
-   first-boot wizard, the menu items, and the S-commands the OSD sends; plus EECONF's 0x60-byte
-   MechaCon cache "what the console learned before the OSD ran". (osdsys 4, kernel 3)
+2. **NVM inspector** — layout by ROM version, checksum validation (flagging PCSX2's bad
+   default), bytes `0x0F`–`0x14` and the option nibbles, region params, real-vs-fabricated
+   classification; predicts the first-boot wizard, the menu items and the S-commands the OSD
+   sends; plus EECONF's 0x60-byte MechaCon cache. (osdsys 4, kernel 3, rom1 1/2)
+2b. **BIOS-set completeness check** — rom1 stamp vs rom0, DVD letter set vs NVM `0x186`, erom
+   present and real, rom2 mirror detection, MEC = default. (rom1 3)
+2c. **erom explorer** — inflate the 40 gzip members, show the player version, strings and the
+   EROMDRV zone bytes, no key needed. (rom1 4)
 3. **ELF / disc probe** — segments, SDK stamps, IRX list, syscalls *called*, libcdvd commands,
    hard-coded video mode, IOPRP module versions vs the ROM, libmc/libpad gates, SYSTEM.CNF key
    audit with who reads each key. (games 1/2/5)
