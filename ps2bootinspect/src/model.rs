@@ -74,7 +74,7 @@ impl CameraMode {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Scripted => "The route OSDSYS integrates every field (notes/opening.md).",
-            Self::Orbit => "The console's camera dives down the city's axis (Y+ → Y−). A level circle around that axis at the chosen height, radius out to the console's start, looking at the base's centre.",
+            Self::Orbit => "The console's camera dives down the city's axis (Y+ → Y−). A level circle around that axis at the chosen height, aimed at the focus point up the towers.",
             Self::Tornado => "A funnel around the axis: wide at the start's height, tightening as it descends to the base, looking at the centre.",
             Self::Crane => "Street level at the city's edge, rising onto the axis above the towers — the console's own vantage — and back.",
             Self::FigureEight => "A level lemniscate at the chosen height, looking down at the centre.",
@@ -284,6 +284,8 @@ pub struct Model {
     pub camera_zoom: f32,
     /// Distance of a path from its centre, as a multiple of the console's start distance.
     pub camera_distance: f32,
+    /// Where the paths aim, as a fraction of the way up from the towers' floor to the highest top.
+    pub camera_focus: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -324,7 +326,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, camera_zoom: 0.4, camera_distance: 1.6, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, camera_zoom: 0.4, camera_distance: 1.6, camera_focus: 0.9, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -720,8 +722,14 @@ impl Model {
                 (Vec3::new(0.0, 0.0, crate::renderer::PICTURE_PLANE_Z), crate::renderer::PICTURE_PLANE_Z, 0.0, Vec3::Y, -Vec3::Z)
             }
         } else {
-            let base_z = self.scene.towers.iter().map(|t| t.centre.z + t.half_length).fold(0.0f32, f32::max).max(200.0);
-            (Vec3::new(0.0, 0.0, base_z), base_z - 16.0, self.camera_height, Vec3::Z, -Vec3::Y)
+            // The city's extent: tops are the near caps (small z), the floor the far ends.
+            let (floor, top) = self.scene.towers.iter().fold((0.0f32, f32::MAX), |(f, t), tw| (f.max(tw.centre.z + tw.half_length), t.min(tw.centre.z - tw.half_length)));
+            let (floor, top) = if top == f32::MAX { (200.0, 150.0) } else { (floor.max(200.0), top) };
+            let (xs, ys) = self.scene.towers.iter().fold(((f32::MAX, f32::MIN), (f32::MAX, f32::MIN)), |((x0, x1), (y0, y1)), t| ((x0.min(t.centre.x), x1.max(t.centre.x)), (y0.min(t.centre.y), y1.max(t.centre.y))));
+            let (cx, cy) = if xs.0 == f32::MAX { (0.0, 0.0) } else { ((xs.0 + xs.1) / 2.0, (ys.0 + ys.1) / 2.0) };
+            // Aim at `camera_focus` of the way up from the floor to the highest top.
+            let aim_z = floor - (floor - top) * self.camera_focus;
+            (Vec3::new(cx, cy, aim_z), floor - 16.0, self.camera_height, Vec3::Z, -Vec3::Y)
         };
         let radius = radius * self.camera_distance;
         let v = self.camera_mode.view(frame, self.camera_speed, centre, radius, height, vertical, front, self.video).map(|mut v| { v.zoom = self.camera_zoom; v });
