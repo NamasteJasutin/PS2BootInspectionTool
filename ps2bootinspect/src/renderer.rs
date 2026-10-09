@@ -73,9 +73,35 @@ impl Batch {
     fn name(&self) -> &str { self.texture_owned.as_deref().unwrap_or(self.texture) }
 }
 
+/// Where the towers stand: on the console's grid, or rearranged (beyond the PS2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TowerLayout { Console, Ring, Spiral }
+
+impl TowerLayout {
+    pub const ALL: [Self; 3] = [Self::Console, Self::Ring, Self::Spiral];
+    pub fn name(self) -> &'static str { match self { Self::Console => "the console's grid", Self::Ring => "a ring around the camera path", Self::Spiral => "a spiral" } }
+}
+
+/// How the towers are coloured: as the console does, or by a fact of their record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TowerTint { Console, Count, Age, Region, Publisher }
+
+impl TowerTint {
+    pub const ALL: [Self; 5] = [Self::Console, Self::Count, Self::Age, Self::Region, Self::Publisher];
+    pub fn name(self) -> &'static str { match self { Self::Console => "as the console", Self::Count => "by launch count", Self::Age => "by last launch", Self::Region => "by title region", Self::Publisher => "by publisher family" } }
+}
+
 /// What to draw; every stage of the console's frame can be switched off for study.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RenderOptions {
+    /// Tower placement (beyond the PS2 when not `Console`).
+    pub layout: TowerLayout,
+    /// Turns of the ring/spiral per second (0 = still).
+    pub revolve: f32,
+    /// Ring radius in world units.
+    pub ring_radius: f32,
+    /// Tower colouring; the colours themselves come from [`Renderer::set_tower_tints`].
+    pub tint: TowerTint,
     pub towers: bool,
     pub trails: bool,
     pub fog: bool,
@@ -92,7 +118,7 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { towers: true, trails: true, fog: true, orbs: true, glass: true, defocus: true, fade: true, lettering: true, letterbox: true, colour_wrap: false, camera_path: false, orb_seed: 4000.0 }
+        Self { layout: TowerLayout::Console, revolve: 0.0, ring_radius: 34.0, tint: TowerTint::Console, towers: true, trails: true, fog: true, orbs: true, glass: true, defocus: true, fade: true, lettering: true, letterbox: true, colour_wrap: false, camera_path: false, orb_seed: 4000.0 }
     }
 }
 
@@ -152,6 +178,8 @@ pub struct Renderer {
     pub video: VideoMode,
     // per-scene state kept across frames
     pub logo_cached_field: Option<i32>,
+    /// One colour multiplier per tower of the opening scene (empty = none); see [`TowerTint`].
+    pub tower_tints: Vec<Vec3>,
 }
 
 const VERTEX_BUFFER_SIZE: u64 = 24 << 20;
@@ -182,7 +210,7 @@ impl Renderer {
             sampler_repeat: sampler(wgpu::AddressMode::Repeat),
             device, queue, shader, pipelines: HashMap::new(), layout, glass_layout, bind_layout, glass_bind_layout,
             textures: HashMap::new(), targets: HashMap::new(), bind_cache: HashMap::new(), size: (0, 0),
-            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None,
+            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(),
         };
         r.upload_texture("white", 1, 1, &[255, 255, 255, 255], false);
         r.resize(1280, 960);

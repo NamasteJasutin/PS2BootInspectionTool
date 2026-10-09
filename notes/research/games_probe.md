@@ -166,7 +166,7 @@ EU-only strings, all UI text and credits) and a 0x1180-byte larger `.text`.
 * libmtap binds `0x80000701`; no version test.
 
 The ROM's modules cannot pass these gates: rom0 `MCMAN`/`MCSERV` are version 0x101 and
-`PADMAN` 0x114 (iopmod headers) in all three ROMs. That is why the disc ships its own (next
+`PADMAN` 0x114 (= 1.20 in `tools/extinfo.py` notation; iopmod headers) in all three ROMs. That is why the disc ships its own (next
 section) — and it is the one place where a wrong/old module set would make the game refuse
 the console.
 
@@ -180,7 +180,7 @@ the console.
 | CDVDFSV | `cdvd_ee_driver` 2.11 (IOPRP) | 1.04 | IOPRP |
 | SIO2MAN | `sio2man` 2.01 | 1.01 | disc IRX |
 | MTAPMAN | `multitap_manager` 2.02 | — | disc IRX |
-| PADMAN | `padman` 2.06 | 1.14 (0x114) | disc IRX |
+| PADMAN | `padman` 2.06 (0x206) | 1.20 (0x114) | disc IRX |
 | MCMAN | **`mcman_tool`** 2.11 (imports `secrman`) | `mcman` 1.01 | disc IRX |
 | MCSERV | `mcserv` 2.08 | 1.01 | disc IRX |
 | RSPU2DRV | `ZsRspu2Driver` 1.01 (SCE "rspu2 driver module version 1.2.0", libsnd2/libspu2 1600 inside) | — | disc IRX |
@@ -211,7 +211,14 @@ PCSX2's serial-number formula predicts for `SLUS_200.01` (`(20001 & 0x1F) << 3 =
 `SCES_500.01` (`(50001 & 0x1F) << 3 = 0x88 | …`) [I: formula from memory of PCSX2 `cdvdReadKey`].
 Sectors 12–15 are zero.
 
-**However the 2.00 E PS2LOGO checksum does not match either image**: the 0x1800-word sum of
+> **Resolved after the survey** (ps2kit, `logo.rs`, verified on both TTT images and in the
+> oracle tests): the drive's descramble is `rotl((b ^ key), 3)` with `key = raw[0]` applied
+> to the 2048-byte user data of each sector — the raw 2352-byte CD sectors of a `.bin` carry
+> a 16-byte sync/header before the data, which the brute force below did not strip. With the
+> user data only, the 32-bit little-endian word sum is `0x62DB1E66` for the US image (J/A
+> master) and `0x78134705` for the EU image (E master). The paragraph is kept as written.
+
+**However the 2.00 E PS2LOGO checksum does not match either image** (see the box above): the 0x1800-word sum of
 the descrambled data is `0x8E77C557` (US) and `0x1E7F486A` (EU), while PS2LOGO wants
 `0x62DB1E66` (J/A) or `0x78134705` (E) (`ps2logo_100000.bin` `0x101640–0x101674`,
 re-verified). A brute force over every key byte × 8 rotations × both orders, and over
@@ -312,8 +319,8 @@ embeds the save name `BESCES-00005<TEKKEN>`.
 So the table is **per ROM region**, not a union: the E ROM only knows European IDs, the A ROM
 American, the J ROM Japanese. The two Tekken discs are in none of them (`SCES_000.05` absent
 from 2.00 E; Tekken Japan has no ID at all). The 1.00 J table contains the typo
-`SLPS_02.261`; 2.00 E has duplicates `SLES_025.15` (two different parameter sets, the first
-match wins… no: the loop does not break, so the **last** match wins) and `SLES_023.43`;
+`SLPS_02.261`; 2.00 E has duplicates `SLES_025.15` (two different parameter sets; the scan loop never breaks on a match, so the
+**last** entry wins) and `SLES_023.43`;
 twelve IDs are lower-case (`sles_006.60`…). The lookup is the EE-optimised `strcmp`
 (`0x211598`, 128-bit compares) — **case-sensitive**, so a lower-case entry only matches a
 disc whose `BOOT` line is lower-case.

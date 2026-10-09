@@ -2,7 +2,7 @@
 
 use crate::audio::{VisualizerMode, BAND_COUNT};
 use crate::model::{outcome_name, video_mode_name, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
-use crate::renderer::Renderer;
+use crate::renderer::{Renderer, TowerLayout, TowerTint};
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use glam::Vec3;
@@ -44,6 +44,7 @@ impl App {
             self.loaded_logo = m.logo_version;
         }
         let Some(assets) = &m.assets else { return };
+        if m.options.tint != crate::renderer::TowerTint::Console { self.renderer.tower_tints = m.tower_tints() } else { self.renderer.tower_tints.clear() }
         let mut enc = self.renderer.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scene") });
         self.renderer.begin_frame();
         let free = m.free_camera_enabled.then(|| m.free_camera.view(m.video));
@@ -441,6 +442,32 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
         }
         if m.history_source == HistorySource::Saves { ui.small("Launch counts are invented; only the titles come from the card."); }
         if changed { m.rebuild_history() }
+    });
+    section(ui, "Towers (beyond the PS2)", |ui| {
+        let o = &mut m.options;
+        ui.horizontal(|ui| {
+            ui.label("Layout");
+            egui::ComboBox::from_id_salt("layout").selected_text(o.layout.name()).show_ui(ui, |ui| {
+                for l in TowerLayout::ALL { ui.selectable_value(&mut o.layout, l, l.name()); }
+            });
+        });
+        if o.layout != TowerLayout::Console {
+            ui.add(egui::Slider::new(&mut o.revolve, -0.2..=0.2).text("revolve (turns/s)"));
+            ui.add(egui::Slider::new(&mut o.ring_radius, 10.0..=60.0).text("radius"));
+        }
+        ui.horizontal(|ui| {
+            ui.label("Colour");
+            egui::ComboBox::from_id_salt("tint").selected_text(o.tint.name()).show_ui(ui, |ui| {
+                for t in TowerTint::ALL { ui.selectable_value(&mut o.tint, t, t.name()); }
+            });
+        });
+        ui.small(match o.tint {
+            TowerTint::Console => "The console draws every tower in the same grey, lit from the front.",
+            TowerTint::Count => "Steel blue → gold with the launch count; maxed-out records pale gold.",
+            TowerTint::Age => "Cold for the oldest last launch in the file, warm for the newest; grey without a date.",
+            TowerTint::Region => "Blue Europe, red USA, yellow Japan, green Asia/Korea/China — from the title ID's third letter.",
+            TowerTint::Publisher => "Gold SC (Sony), blue SL (licensed), grey anything else.",
+        });
     });
     let used: Vec<_> = m.history.records.iter().filter(|r| !r.is_empty()).cloned().collect();
     section(ui, "Launches", |ui| {

@@ -1,7 +1,7 @@
 //! App state: the user's files, the play history in use, the clock, and view settings.
 
 use crate::audio::{Analysis, AudioPlayer, Snapshot, VisualizerMode};
-use crate::renderer::RenderOptions;
+use crate::renderer::{RenderOptions, TowerTint};
 use glam::Vec3;
 use ps2kit::bios::OpeningAssets;
 use ps2kit::disc::{boot_outcome, handoff_steps, DiscImage, HandoffStep};
@@ -518,6 +518,40 @@ impl Model {
     }
 
     pub fn reset_free_camera(&mut self) { self.free_camera = FreeCamera::behind(&self.camera()) }
+
+    /// One colour multiplier per tower of the scene for the chosen tint (beyond the PS2:
+    /// the console draws every tower grey).
+    pub fn tower_tints(&self) -> Vec<Vec3> {
+        let records = &self.history.records;
+        let newest = records.iter().map(|r| r.date).max().unwrap_or(0);
+        let oldest = records.iter().filter(|r| !r.is_empty() && r.date != 0).map(|r| r.date).min().unwrap_or(newest);
+        let days = |d: u16| (d >> 9) as f32 * 365.0 + (d >> 5 & 15) as f32 * 30.4 + (d & 31) as f32;
+        let lerp = |a: Vec3, b: Vec3, t: f32| a + (b - a) * t.clamp(0.0, 1.0);
+        self.scene.towers.iter().map(|t| {
+            let Some(r) = records.get(t.record) else { return Vec3::ONE };
+            match self.options.tint {
+                TowerTint::Console => Vec3::ONE,
+                // Few launches: steel blue; many: gold; maxed out (index 7): white-gold.
+                TowerTint::Count => if r.index == 7 { Vec3::new(1.3, 1.15, 0.8) } else { lerp(Vec3::new(0.55, 0.75, 1.25), Vec3::new(1.3, 1.0, 0.45), r.count as f32 / 63.0) },
+                // Recent: warm; long ago: cold; no date: grey.
+                TowerTint::Age => if r.date == 0 || newest == oldest { Vec3::splat(0.8) } else { lerp(Vec3::new(0.5, 0.7, 1.3), Vec3::new(1.3, 0.8, 0.5), (days(r.date) - days(oldest)) / (days(newest) - days(oldest)).max(1.0)) },
+                // The third letter of the title ID: E Europe, U USA, P Japan, K Korea, A Asia, C China.
+                TowerTint::Region => match r.name.as_bytes().get(2) {
+                    Some(b'E') => Vec3::new(0.6, 0.8, 1.3),
+                    Some(b'U') => Vec3::new(1.3, 0.65, 0.6),
+                    Some(b'P') => Vec3::new(1.3, 1.2, 0.6),
+                    Some(b'K') | Some(b'A') | Some(b'C') => Vec3::new(0.7, 1.25, 0.7),
+                    _ => Vec3::splat(0.9),
+                },
+                // SC = Sony first party, SL = licensed, anything else (homebrew, PSX.EXE) grey.
+                TowerTint::Publisher => match r.name.as_bytes().get(0..2) {
+                    Some(b"SC") => Vec3::new(1.3, 1.1, 0.6),
+                    Some(b"SL") => Vec3::new(0.6, 0.85, 1.3),
+                    _ => Vec3::splat(0.9),
+                },
+            }
+        }).collect()
+    }
 
     /// Puts the free camera beside the route, looking at its middle.
     pub fn view_path_from_side(&mut self) {

@@ -56,7 +56,7 @@ impl Renderer {
             let f = frame - k as f32;
             if f < 0.0 && k != 0 { continue }
             let mut verts = Vec::new();
-            if options.towers && f >= 0.0 { self.towers(&mut verts, scene, f, &camera_at(f), options.colour_wrap) }
+            if options.towers && f >= 0.0 { self.towers(&mut verts, scene, f, &camera_at(f), options) }
             let n = verts.len();
             self.pass(enc, "sub", true, DepthAction::Clear, |r, rp| r.draw(rp, &verts, &[Batch::new("TEXOWAL0", Blend::Opaque, 0..n).depth(DepthMode::Write).repeat()], rgba8, true));
             let weight = if history == 1 { 1.0 } else if k == history - 1 { 0.625f32.powi(k as i32) } else { 0.375 * 0.625f32.powi(k as i32) };
@@ -165,10 +165,24 @@ impl Renderer {
         }
     }
 
-    fn towers(&self, out: &mut Vec<Vertex>, scene: &OpeningScene, frame: f32, camera: &ViewCamera, wrap: bool) {
+    fn towers(&self, out: &mut Vec<Vertex>, scene: &OpeningScene, frame: f32, camera: &ViewCamera, options: &RenderOptions) {
         let lights: [(Vec3, f32); 3] = [(Vec3::new(0.0, 0.0, 1.0), 1.0), (Vec3::new(-0.5, -0.5, 0.0).normalize(), 0.8), (Vec3::new(0.5, 0.5, 0.0).normalize(), 0.8)];
         let sway = motion::sway(frame);
-        for t in &scene.towers {
+        let wrap = options.colour_wrap;
+        // Beyond the PS2: the towers rearranged around the camera's axis, slowly revolving.
+        let n = scene.towers.len().max(1) as f32;
+        let turn = options.revolve * frame / camera.video.fps() * std::f32::consts::TAU;
+        let placed = |i: usize, t: &ps2kit::sim::Tower| -> Vec3 {
+            let (angle, radius) = match options.layout {
+                TowerLayout::Console => return t.centre,
+                TowerLayout::Ring => (std::f32::consts::TAU * i as f32 / n + turn, options.ring_radius),
+                TowerLayout::Spiral => (std::f32::consts::TAU * 2.5 * i as f32 / n + turn, options.ring_radius * (0.35 + 0.65 * i as f32 / n)),
+            };
+            Vec3::new(radius * angle.cos(), radius * angle.sin(), t.centre.z)
+        };
+        for (i, t) in scene.towers.iter().enumerate() {
+            let centre = placed(i, t);
+            let tint = if options.tint == TowerTint::Console { Vec3::ONE } else { self.tower_tints.get(i).copied().unwrap_or(Vec3::ONE) };
             let angle = t.quarter_turns as f32 * std::f32::consts::FRAC_PI_2 + if t.growing { sway } else { 0.0 };
             let (c, s) = (angle.cos(), angle.sin());
             let rotate = |v: Vec3| Vec3::new(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
@@ -182,7 +196,8 @@ impl Renderer {
                     let value = (base * lit) as i32;
                     let value = if wrap { value & 255 } else { value.min(255) };
                     let shade = value as f32 / 128.0;
-                    quad[vi] = Vertex { pos: camera.project(t.centre + rotate(local)), uv: TOWER_UV[vi] + Vec2::splat(t.uv_offset), pad: Vec2::ZERO, color: Vec4::new(shade, shade, shade, 1.0) };
+                    let colour = tint * shade;
+                    quad[vi] = Vertex { pos: camera.project(centre + rotate(local)), uv: TOWER_UV[vi] + Vec2::splat(t.uv_offset), pad: Vec2::ZERO, color: Vec4::new(colour.x, colour.y, colour.z, 1.0) };
                 }
                 out.extend_from_slice(&[quad[0], quad[1], quad[2], quad[2], quad[1], quad[3]]);
             }

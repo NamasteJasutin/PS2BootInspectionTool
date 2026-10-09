@@ -50,6 +50,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.region_override = named.get("region").and_then(|r| r.chars().next()).and_then(ps2kit::Region::from_romver_letter);
     m.disc_override = match named.get("tray").map(String::as_str) { Some("none") => crate::model::DiscOverride::NoDisc, Some("illegal") => crate::model::DiscOverride::Illegal, _ => crate::model::DiscOverride::AsLoaded };
     m.enforce_checks = named.get("lock").map(String::as_str) != Some("0");
+    // Beyond the PS2: `--layout ring|spiral`, `--tint count|age|region|publisher`, `--revolve <turns/s>`.
+    m.options.layout = match named.get("layout").map(String::as_str) { Some("ring") => crate::renderer::TowerLayout::Ring, Some("spiral") => crate::renderer::TowerLayout::Spiral, _ => crate::renderer::TowerLayout::Console };
+    m.options.tint = match named.get("tint").map(String::as_str) { Some("count") => crate::renderer::TowerTint::Count, Some("age") => crate::renderer::TowerTint::Age, Some("region") => crate::renderer::TowerTint::Region, Some("publisher") => crate::renderer::TowerTint::Publisher, _ => crate::renderer::TowerTint::Console };
+    m.options.revolve = named.get("revolve").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     m.rebuild_timeline();
     if named.contains_key("handoff") {
         // `--handoff 1`: print what the sidebar's hand-off card would show.
@@ -85,6 +89,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
     let mut enc = device.create_command_encoder(&Default::default());
     r.begin_frame();
+    if m.options.tint != crate::renderer::TowerTint::Console { r.tower_tints = m.tower_tints() }
     let assets = m.assets.as_ref().unwrap();
     let warning_tex = format!("TEXOPNG{}", m.language);
     match m.scene_kind {
