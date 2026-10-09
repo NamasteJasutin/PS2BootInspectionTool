@@ -493,6 +493,19 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
         });
         for (what, _) in m.launch_log.iter().rev().take(6) { ui.small(what); }
     });
+    section(ui, "Export", |ui| {
+        ui.horizontal(|ui| {
+            if ui.button("History CSV…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-play-history.csv").save_file() { let _ = std::fs::write(p, m.history_csv()); }
+            }
+            if ui.button("Hand-off facts…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-handoff.txt").save_file() {
+                    let text: String = m.handoff_steps().iter().map(|s| format!("{:<44} {s}\n", s.who())).collect();
+                    let _ = std::fs::write(p, text);
+                }
+            }
+        });
+    });
     let used: Vec<_> = m.history.records.iter().filter(|r| !r.is_empty()).cloned().collect();
     section(ui, "Launches", |ui| {
         if used.is_empty() { ui.small("No titles: the screen shows no towers."); return }

@@ -478,6 +478,17 @@ impl Model {
         effect
     }
 
+    /// The history as CSV: slot, title, count, mask, index, last launch.
+    pub fn history_csv(&self) -> String {
+        let mut out = String::from("slot,title_id,count,mask,index,last_launch\n");
+        for (i, r) in self.history.records.iter().enumerate() {
+            if r.is_empty() { continue }
+            let date = if r.date == 0 { String::new() } else { format!("{:04}-{:02}-{:02}", r.year(), r.month(), r.day()) };
+            out += &format!("{i},{},{},0x{:02X},{},{date}\n", r.name, r.count, r.mask, r.index);
+        }
+        out
+    }
+
     /// Takes the last alternate-history launch back.
     pub fn undo_launch(&mut self) {
         if let Some((_, before)) = self.launch_log.pop() { self.history = before; self.rebuild_scene() }
