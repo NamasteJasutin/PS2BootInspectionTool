@@ -382,7 +382,7 @@ fn launching_follows_history_update() {
     // Launch 14 plants a second tower.
     let e = h.launch("SLES_000.01", date, &mut rng);
     let r = &h.records[e.slot];
-    assert_eq!((r.count, r.mask.count_ones(), r.index as u8 == e.new_tower.unwrap(), r.date), (14, 2, true, date));
+    assert_eq!((r.count, r.mask.count_ones(), r.index == e.new_tower.unwrap(), r.date), (14, 2, true, date));
     // A new title takes an empty slot.
     let e = h.launch("SCUS_971.00", date, &mut rng);
     assert_eq!((h.records[e.slot].count, e.evicted, e.new_tower), (1, None, Some(0)));
