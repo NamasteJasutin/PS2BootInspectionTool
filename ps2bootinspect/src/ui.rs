@@ -45,6 +45,7 @@ impl App {
         }
         let Some(assets) = &m.assets else { return };
         if m.options.tint != crate::renderer::TowerTint::Console { self.renderer.tower_tints = m.tower_tints() } else { self.renderer.tower_tints.clear() }
+        self.renderer.highlight = m.hovered_record;
         let mut enc = self.renderer.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scene") });
         self.renderer.begin_frame();
         let free = m.view_override();
@@ -129,6 +130,28 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
                 if i.key_pressed(egui::Key::Home) { m.free_camera.frame_all() }
                 if i.key_pressed(egui::Key::Period) { m.free_camera.pivot = Vec3::new(0.0, 0.0, 150.0) }
             });
+        }
+    }
+
+    // Tower inspector: hover a tower for its record.
+    m.hovered_record = None;
+    if let Some(pos) = response.hover_pos() {
+        if rect.contains(pos) {
+            let (x, y) = ((pos.x - rect.min.x) / rect.width(), (pos.y - rect.min.y) / rect.height());
+            if let Some(r) = m.pick_tower(x, y, 0.03) {
+                m.hovered_record = Some(r);
+                if let Some(rec) = m.history.records.get(r) {
+                    let towers: String = (0..6).map(|k| if rec.mask >> k & 1 == 1 { if k == rec.index { '▫' } else { '▪' } } else { '·' }).collect();
+                    let date = if rec.date == 0 { "no date".to_string() } else { format!("last launch {:04}-{:02}-{:02}", rec.year(), rec.month(), rec.day()) };
+                    let growth = if rec.index == 7 { "maxed out".to_string() } else { format!("next tower at {} launches", if rec.count < 14 { 14 } else { 14 + ((rec.count - 14) / 10 + 1) * 10 }) };
+                    let text = format!("record {r}: {}\n{}× launched — {towers}  {growth}\n{date}\nhistory slot {r} of 21 → grid cells from the ROM's slot table", rec.name, rec.count);
+                    let galley = ui.painter().layout_no_wrap(text, egui::FontId::monospace(11.0), Color32::WHITE);
+                    let at = Pos2::new((pos.x + 16.0).min(rect.max.x - galley.size().x - 12.0), (pos.y + 16.0).min(rect.max.y - galley.size().y - 12.0));
+                    let bg = Rect::from_min_size(at, galley.size() + Vec2::splat(12.0));
+                    ui.painter().rect_filled(bg, 4.0, Color32::from_black_alpha(200));
+                    ui.painter().galley(at + Vec2::splat(6.0), galley, Color32::WHITE);
+                }
+            }
         }
     }
 

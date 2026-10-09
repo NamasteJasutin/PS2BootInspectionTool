@@ -49,9 +49,10 @@ scenario, `--handoff` output unchanged, Camp 1 tagged `v1.1.0`.
 
 ## Camp 2 — save data (in progress)
 
-Done: launch histogram, records with dates, ring/spiral layouts with revolve, colour by
-count/age/region/publisher. Open: Pareto/date graphs, eviction simulator, themes, tower
-inspector, time-machine, alternate history, ghost towers, exports.
+Done: launch histogram, last-launches-over-time, records with dates, ring/spiral layouts
+with revolve, colour by count/age/region/publisher, alternate history (launch/undo/reset via
+`PlayHistory::launch`), tower inspector (hover → record, highlighted), CSV/text exports.
+Open: Pareto curve, themes, time-machine scrub, ghost towers, SVG export.
 
 Graphs (histogram + Pareto, dates over time, prefix donut, eviction simulator), ring and
 spiral layouts that revolve behind the graphs, colour by count/age/region/publisher, theme

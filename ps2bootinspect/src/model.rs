@@ -261,6 +261,8 @@ pub struct Model {
     pub speed: f64,
     pub options: RenderOptions,
     pub free_camera_enabled: bool,
+    /// The record under the pointer in the picture (the tower inspector).
+    pub hovered_record: Option<usize>,
     pub free_camera: FreeCamera,
     pub camera_mode: CameraMode,
     /// Seconds per lap of a predetermined camera path.
@@ -305,7 +307,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, camera_mode: CameraMode::Scripted, camera_period: 12.0, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_period: 12.0, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -635,6 +637,43 @@ impl Model {
     }
 
     pub fn reset_free_camera(&mut self) { self.free_camera = FreeCamera::behind(&self.camera()) }
+
+    /// The opening's frame on its own clock, if the picture is showing the opening.
+    pub fn opening_frame(&self) -> Option<f32> {
+        match self.scene_kind {
+            Scene::Boot => (self.frame >= 0.0).then_some(self.frame),
+            Scene::Full => {
+                let (span, local) = self.sequence.span_at(self.frame.max(0.0) as usize);
+                (span.segment == Segment::Opening).then_some(local as f32 + self.frame.fract())
+            }
+            _ => None,
+        }
+    }
+
+    /// The view the picture is drawn with this frame.
+    pub fn current_view(&self) -> crate::renderer::ViewCamera {
+        self.view_override().unwrap_or_else(|| crate::renderer::ViewCamera::scripted(self.camera(), self.video))
+    }
+
+    /// The record whose tower is nearest to a point of the picture (`x`, `y` in 0..1 of the
+    /// 4:3 frame), within `radius` of it, with the tower's name.
+    pub fn pick_tower(&self, x: f32, y: f32, radius: f32) -> Option<usize> {
+        let frame = self.opening_frame()?;
+        let view = self.current_view();
+        let fps = self.timeline.fps();
+        let n = self.scene.towers.len();
+        let mut best: Option<(f32, usize)> = None;
+        for (i, t) in self.scene.towers.iter().enumerate() {
+            let p = crate::scenes::opening::tower_place(&self.options, i, n, t, frame, fps);
+            let near = p - Vec3::new(0.0, 0.0, t.half_length);
+            let c = view.project(near);
+            if c.w <= 0.5 { continue }
+            let (sx, sy) = ((c.x / c.w + 1.0) / 2.0, (1.0 - c.y / c.w) / 2.0);
+            let d = ((sx - x).powi(2) + (sy - y).powi(2)).sqrt();
+            if d < radius && best.is_none_or(|(bd, _)| d < bd) { best = Some((d, t.record)) }
+        }
+        best.map(|(_, r)| r)
+    }
 
     /// The view that replaces the console's camera this frame, if any: the free camera, or a
     /// predetermined path.

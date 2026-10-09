@@ -183,6 +183,8 @@ pub struct Renderer {
     pub logo_cached_field: Option<i32>,
     /// One colour multiplier per tower of the opening scene (empty = none); see [`TowerTint`].
     pub tower_tints: Vec<Vec3>,
+    /// The history record whose towers are drawn highlighted (the inspector's hover).
+    pub highlight: Option<usize>,
 }
 
 const VERTEX_BUFFER_SIZE: u64 = 24 << 20;
@@ -213,7 +215,7 @@ impl Renderer {
             sampler_repeat: sampler(wgpu::AddressMode::Repeat),
             device, queue, shader, pipelines: HashMap::new(), layout, glass_layout, bind_layout, glass_bind_layout,
             textures: HashMap::new(), targets: HashMap::new(), bind_cache: HashMap::new(), size: (0, 0),
-            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(),
+            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(), highlight: None,
         };
         r.upload_texture("white", 1, 1, &[255, 255, 255, 255], false);
         r.resize(1280, 960);

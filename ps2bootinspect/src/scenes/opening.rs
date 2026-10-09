@@ -35,6 +35,20 @@ pub struct GlassParams {
     pub reflection: (f32, f32),
 }
 
+/// Where tower `i` of `n` stands at `frame`: on the console's grid, or (beyond the PS2) on a
+/// ring or spiral around the camera's axis, revolving at `options.revolve` turns per second.
+pub fn tower_place(options: &RenderOptions, i: usize, n: usize, t: &ps2kit::sim::Tower, frame: f32, fps: f32) -> Vec3 {
+    use std::f32::consts::TAU;
+    let n = n.max(1) as f32;
+    let turn = options.revolve * frame / fps * TAU;
+    let (angle, radius) = match options.layout {
+        TowerLayout::Console => return t.centre,
+        TowerLayout::Ring => (TAU * i as f32 / n + turn, options.ring_radius),
+        TowerLayout::Spiral => (TAU * 2.5 * i as f32 / n + turn, options.ring_radius * (0.35 + 0.65 * i as f32 / n)),
+    };
+    Vec3::new(radius * angle.cos(), radius * angle.sin(), t.centre.z)
+}
+
 impl Renderer {
     /// Renders one frame of the opening into the "scene" target.
     pub fn render_opening(&mut self, enc: &mut wgpu::CommandEncoder, frame: f32, scene: &OpeningScene, assets: &OpeningAssets, timeline: &Timeline, free: Option<ViewCamera>, options: &RenderOptions) {
@@ -169,20 +183,11 @@ impl Renderer {
         let lights: [(Vec3, f32); 3] = [(Vec3::new(0.0, 0.0, 1.0), 1.0), (Vec3::new(-0.5, -0.5, 0.0).normalize(), 0.8), (Vec3::new(0.5, 0.5, 0.0).normalize(), 0.8)];
         let sway = motion::sway(frame);
         let wrap = options.colour_wrap;
-        // Beyond the PS2: the towers rearranged around the camera's axis, slowly revolving.
-        let n = scene.towers.len().max(1) as f32;
-        let turn = options.revolve * frame / camera.video.fps() * std::f32::consts::TAU;
-        let placed = |i: usize, t: &ps2kit::sim::Tower| -> Vec3 {
-            let (angle, radius) = match options.layout {
-                TowerLayout::Console => return t.centre,
-                TowerLayout::Ring => (std::f32::consts::TAU * i as f32 / n + turn, options.ring_radius),
-                TowerLayout::Spiral => (std::f32::consts::TAU * 2.5 * i as f32 / n + turn, options.ring_radius * (0.35 + 0.65 * i as f32 / n)),
-            };
-            Vec3::new(radius * angle.cos(), radius * angle.sin(), t.centre.z)
-        };
+        let n = scene.towers.len();
         for (i, t) in scene.towers.iter().enumerate() {
-            let centre = placed(i, t);
-            let tint = if options.tint == TowerTint::Console { Vec3::ONE } else { self.tower_tints.get(i).copied().unwrap_or(Vec3::ONE) };
+            let centre = tower_place(options, i, n, t, frame, camera.video.fps());
+            let mut tint = if options.tint == TowerTint::Console { Vec3::ONE } else { self.tower_tints.get(i).copied().unwrap_or(Vec3::ONE) };
+            if self.highlight == Some(t.record) { tint = Vec3::new(1.6, 1.4, 0.6) }
             let angle = t.quarter_turns as f32 * std::f32::consts::FRAC_PI_2 + if t.growing { sway } else { 0.0 };
             let (c, s) = (angle.cos(), angle.sin());
             let rotate = |v: Vec3| Vec3::new(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
