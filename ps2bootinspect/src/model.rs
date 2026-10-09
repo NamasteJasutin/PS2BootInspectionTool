@@ -117,7 +117,7 @@ impl CameraMode {
         // fall back to the lap's front so the picture keeps its bearings.
         let proj = down - forward * forward.dot(down);
         let screen_down = if proj.length() < 0.05 { (front - forward * forward.dot(front)).normalize_or(Vec3::Y) } else { proj.normalize() };
-        Some(crate::renderer::ViewCamera { position, forward, up: screen_down, video })
+        Some(crate::renderer::ViewCamera { position, forward, up: screen_down, video, zoom: 1.0 })
     }
 }
 
@@ -214,7 +214,7 @@ impl FreeCamera {
     pub fn forward(&self) -> Vec3 { Vec3::new(self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), self.yaw.cos() * self.pitch.cos()) }
     pub fn position(&self) -> Vec3 { self.pivot - self.forward() * self.distance }
     pub fn view(&self, video: VideoMode) -> crate::renderer::ViewCamera {
-        crate::renderer::ViewCamera { position: self.position(), forward: self.forward(), up: Vec3::Y, video }
+        crate::renderer::ViewCamera { position: self.position(), forward: self.forward(), up: Vec3::Y, video, zoom: 1.0 }
     }
     pub fn orbit(&mut self, dx: f32, dy: f32) { self.yaw += dx * 0.006; self.pitch = (self.pitch - dy * 0.006).clamp(-1.55, 1.55) }
     /// Slides the pivot in the view plane, scaled so that a drag follows the pointer.
@@ -280,6 +280,8 @@ pub struct Model {
     pub camera_speed: f32,
     /// Height of a level path above the city's base, as a fraction of the orbit radius.
     pub camera_height: f32,
+    /// Lens of the free camera and the paths relative to the console's (1 = the same).
+    pub camera_zoom: f32,
     pub sound_enabled: bool,
     pub sound_volume: f32,
     pub sound_status: String,
@@ -320,7 +322,7 @@ impl Model {
             scene_kind: Scene::Full, tab: Tab::Boot, disc_override: DiscOverride::AsLoaded, region_override: None, enforce_checks: true, video, language: "E",
             power_on_seconds: 3.0, disc_seconds: 0.0, handoff_seconds: 1.2, warning_exit_seconds: 10.0,
             frame: 0.0, playing: true, looping: true, speed: 1.0,
-            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
+            options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, camera_speed: 1.0, camera_height: 0.6, camera_zoom: 0.4, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
             assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
@@ -700,7 +702,7 @@ impl Model {
     /// The view that replaces the console's camera this frame, if any: the free camera, or a
     /// predetermined path.
     pub fn view_override(&self) -> Option<crate::renderer::ViewCamera> {
-        if self.free_camera_enabled { return Some(self.free_camera.view(self.video)) }
+        if self.free_camera_enabled { let mut v = self.free_camera.view(self.video); v.zoom = self.camera_zoom; return Some(v) }
         let frame = (self.frame - self.start_frame()).max(0.0);
         // The paths circle the city's base (the towers' far end, vertical = z; the console's
         // camera starts at z = 16) — or, in the second phase, the logo (vertical = y): the
@@ -719,10 +721,12 @@ impl Model {
             let base_z = self.scene.towers.iter().map(|t| t.centre.z + t.half_length).fold(0.0f32, f32::max).max(200.0);
             (Vec3::new(0.0, 0.0, base_z), base_z - 16.0, self.camera_height, Vec3::Z, -Vec3::Y)
         };
-        let v = self.camera_mode.view(frame, self.camera_speed, centre, radius, height, vertical, front, self.video);
+        let v = self.camera_mode.view(frame, self.camera_speed, centre, radius, height, vertical, front, self.video).map(|mut v| { v.zoom = self.camera_zoom; v });
         if std::env::var_os("PS2_DEBUG_PLANE").is_some() {
             let (lo, hi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.z - t.half_length), hi.max(t.centre.z + t.half_length)));
-            eprintln!("path centre {centre:?} radius {radius} height {height} tower z {lo}..{hi} view {v:?}");
+            let (xlo, xhi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.x), hi.max(t.centre.x)));
+            let (ylo, yhi) = self.scene.towers.iter().fold((f32::MAX, f32::MIN), |(lo, hi), t| (lo.min(t.centre.y), hi.max(t.centre.y)));
+            eprintln!("path centre {centre:?} radius {radius} height {height} tower x {xlo}..{xhi} y {ylo}..{yhi} z {lo}..{hi} view {v:?}");
         }
         v
     }

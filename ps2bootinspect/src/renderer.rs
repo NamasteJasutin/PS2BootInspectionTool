@@ -132,11 +132,14 @@ pub struct ViewCamera {
     pub forward: Vec3,
     pub up: Vec3,
     pub video: VideoMode,
+    /// Lens relative to the console's (1 = the console's narrow 1024-unit focal length;
+    /// 0.5 = twice as wide).
+    pub zoom: f32,
 }
 
 impl ViewCamera {
     pub fn scripted(s: CameraState, video: VideoMode) -> Self {
-        Self { position: s.position(), forward: s.forward(), up: s.up(), video }
+        Self { position: s.position(), forward: s.forward(), up: s.up(), video, zoom: 1.0 }
     }
 
     /// Screen-right, screen-down and view axes (the console's camera-matrix construction).
@@ -155,7 +158,7 @@ impl ViewCamera {
         let d = p - self.position;
         let v = Vec3::new(d.dot(bx), d.dot(by), d.dot(bz));
         let (near, far) = (1.0f32, 4000.0f32);
-        Vec4::new(v.x * 3.2, -v.y * self.y_scale(), (v.z - near) * far / (far - near), v.z)
+        Vec4::new(v.x * 3.2 * self.zoom, -v.y * self.y_scale() * self.zoom, (v.z - near) * far / (far - near), v.z)
     }
 }
 
