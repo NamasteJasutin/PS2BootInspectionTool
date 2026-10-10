@@ -102,6 +102,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut r = Renderer::new(device.clone(), queue.clone());
     if let Some(a) = &m.assets { r.set_assets(a) }
     r.set_logo_bitmap(m.logo_bitmap().as_ref());
+    let sce_tex = m.sce_intro.as_ref().filter(|_| m.console == crate::model::Console::Ps1).map(|i| r.set_sce_assets(i));
     let ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| r.set_ps1_assets(s, &m.ps1_licence_text()));
     let ps1 = |r: &mut Renderer, enc: &mut wgpu::CommandEncoder, f: f32| -> bool {
         if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &ps1_layout) {
@@ -123,6 +124,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 Segment::Opening => r.render_opening(&mut enc, local as f32, &m.scene, assets.ok_or("no PS2 BIOS")?, &m.sequence.opening, free, &m.options),
                 Segment::Logo => if !ps1(&mut r, &mut enc, local as f32) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options); if let Some(v) = &free { r.picture_plane(&mut enc, "copy", v) } },
                 Segment::Warning => r.render_warning(&mut enc, local as f32, assets.ok_or("no PS2 BIOS")?, &m.sequence.warning, free, &m.options, &warning_tex),
+                Segment::Intro => if let (Some(intro), Some(tex)) = (&m.sce_intro, &sce_tex) { r.render_sce_intro(&mut enc, local as f32, &intro.frame_for_video(local, m.video), tex, m.video) },
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }
         }

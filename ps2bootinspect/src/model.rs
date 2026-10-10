@@ -10,6 +10,7 @@ use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets, LogoBitmap};
 use ps2kit::memcard::MemoryCard;
 use ps2kit::ps1::Ps1Shell;
 use ps2kit::ps1bios::{Ps1Bios, Ps1SetIssue};
+use ps2kit::ps1intro::SceIntro;
 use ps2kit::ps1boot::{ps1_boot_steps, Ps1BootStep, Ps1SystemCnf};
 use ps2kit::pup::Pup;
 use ps2kit::rom::RomDir;
@@ -231,7 +232,6 @@ pub fn phase_caption(phase: BootPhase) -> &'static str {
 const END_CAPTION: &str = "SPU quit; LoadExecPS2(boot ELF) — the game would start here";
 const MENU_CAPTION: &str = "OSDSYS: clock / main-menu module woken (ctx[0x5E8] = 2) — not re-created here";
 const PS1_MENU_CAPTION: &str = "PS1 shell: no PlayStation disc — the memory-card / CD-player menu opens (not re-created here)";
-const PS1_INTRO_CAPTION: &str = "PS1 shell: the SCE intro — grey fade, diamond, logotype (being built)";
 const WARNING_END_CAPTION: &str = "the drive reported a change: the warning scene faded and OSDSYS looks at the disc again";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -351,6 +351,8 @@ pub struct Model {
     /// A standalone PS1 / PSone / POPS BIOS and its shell.
     pub ps1_bios: Option<Ps1Bios>,
     standalone_ps1_shell: Option<Ps1Shell>,
+    /// The standalone shell's SCE intro (absent in POPS and the PS2's LOGO).
+    pub sce_intro: Option<SceIntro>,
     pub ps1_bios_path: Option<PathBuf>,
     pub ps1_bios_status: String,
     /// Every BIOS file in the BIOS folder, PS2 and PS1, for the pickers.
@@ -393,7 +395,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -537,6 +539,7 @@ impl Model {
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         match Ps1Bios::new(data).and_then(|b| Ps1Shell::load_ps1(&b).map(|s| (b, s))) {
             Ok((bios, shell)) => {
+                self.sce_intro = bios.shell_image().ok().and_then(|img| SceIntro::locate(&img, bios.identity()).map_err(|e| eprintln!("SCE intro: {e}")).ok());
                 let id = bios.identity();
                 self.ps1_bios_status = format!("{name} — {}", if id.version.is_empty() { "no version string (1.0)".to_string() } else { id.version.clone() });
                 self.standalone_ps1_shell = Some(shell);
@@ -689,7 +692,8 @@ impl Model {
         plan.warning_seconds = self.warning_exit_seconds;
         self.sequence = BootSequence::from_plan(&plan);
         if self.console == Console::Ps1 {
-            self.sequence = BootSequence::ps1(&plan, 0, self.ps1_active().then(|| self.logo_timeline()));
+            let intro = self.sce_intro.as_ref().map_or(0, |i| i.timeline(self.video).total_fields());
+            self.sequence = BootSequence::ps1(&plan, intro, self.ps1_active().then(|| self.logo_timeline()));
             self.timeline = self.logo_timeline();
             self.logo_version += 1;
             self.arrange_audio();
@@ -706,6 +710,11 @@ impl Model {
     }
 
     fn arrange_audio(&self) {
+        if self.console == Console::Ps1 {
+            let seq = &self.sequence;
+            let has = |g| seq.spans().iter().any(|s| s.segment == g);
+            return self.audio.arrange_ps1(self.timeline.fps(), has(Segment::Intro).then(|| seq.start_of(Segment::Intro)), has(Segment::Logo).then(|| seq.logo_start()));
+        }
         if self.scene_kind == Scene::Full {
             let seq = &self.sequence;
             let logo = matches!(seq.outcome, BootOutcome::Game | BootOutcome::Ps1Game).then(|| seq.logo_start());
@@ -773,7 +782,6 @@ impl Model {
                 Segment::Handoff => phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds).map(phase_caption),
                 Segment::End => Some(if self.sequence.outcome == BootOutcome::Warning { WARNING_END_CAPTION } else { END_CAPTION }),
                 Segment::Menu => Some(if self.console == Console::Ps1 { PS1_MENU_CAPTION } else { MENU_CAPTION }),
-                Segment::Intro => Some(PS1_INTRO_CAPTION),
                 _ => None,
             };
         }
@@ -799,6 +807,11 @@ impl Model {
             _ => self.ps2_logo_chime.clone(),
         };
         self.audio.load_logo_chime(pcm);
+        let intro = match (&self.sce_intro, &self.ps1_shell, self.console) {
+            (Some(intro), Some(shell), Console::Ps1) => intro.render_sound(&shell.bank, self.video),
+            _ => Vec::new(),
+        };
+        self.audio.load_intro_chime(intro);
     }
 
     /// The console's region from the fifth `ROMVER` character.

@@ -6,14 +6,12 @@ use ps2kit::ps1intro::{SceFrame, SceIntro, ScePolygon, SceVertex};
 use ps2kit::VideoMode;
 
 /// Texture names for every uploaded logotype and integer CLUT interpolation step.
-#[allow(dead_code, reason = "The coordinator owns the app's SCE sequence wiring.")]
 pub struct SceTextures {
     names: Vec<Vec<String>>,
 }
 
 impl Renderer {
     /// Uploads the dump's logotypes at every CLUT step once; retain the returned handle.
-    #[allow(dead_code, reason = "The coordinator owns the app's SCE sequence wiring.")]
     pub fn set_sce_assets(&mut self, intro: &SceIntro) -> SceTextures {
         let steps = intro.timeline(VideoMode::Ntsc).text_fade;
         let mut names = Vec::new();
@@ -33,7 +31,6 @@ impl Renderer {
     /// Draws the supplied frame into `scene`; `field` is the sequence's intro field.
     /// PS1 drawing coordinates are interlaced 640×480, unlike the PS2 opening's fields.
     /// PAL displays that drawing with x=3/y=27 in 512 lines (scenes §1).
-    #[allow(dead_code, reason = "The coordinator owns the app's SCE sequence wiring.")]
     pub fn render_sce_intro(&mut self, enc: &mut wgpu::CommandEncoder, _field: f32, frame: &SceFrame, tex: &SceTextures, video: VideoMode) {
         self.video = video;
         let (xoff, yoff, height) = if video == VideoMode::Pal { (3.0, 27.0, 512.0) } else { (0.0, 0.0, 480.0) };

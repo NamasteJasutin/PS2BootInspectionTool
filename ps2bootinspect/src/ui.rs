@@ -18,6 +18,7 @@ pub struct App {
     loaded_assets: u32,
     loaded_logo: u32,
     ps1_layout: Option<crate::scenes::ps1::Ps1Layout>,
+    sce_textures: Option<crate::scenes::sce_intro::SceTextures>,
 }
 
 impl App {
@@ -28,7 +29,7 @@ impl App {
         let view = SceneView::register(rs, &renderer.targets["scene"].1, renderer.size);
         let mut model = Model::new();
         model.load_defaults();
-        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None }
+        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None }
     }
 
     fn render_frame(&mut self, rs: &eframe::egui_wgpu::RenderState) {
@@ -41,6 +42,7 @@ impl App {
             let bitmap = m.logo_bitmap();
             self.renderer.set_logo_bitmap(bitmap.as_ref());
             self.ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| self.renderer.set_ps1_assets(s, &m.ps1_licence_text()));
+            self.sce_textures = m.sce_intro.as_ref().filter(|_| m.console == Console::Ps1).map(|i| self.renderer.set_sce_assets(i));
             self.loaded_logo = m.logo_version;
         }
         // A standalone PS1 console needs no PS2 BIOS: its scenes are the shell's own.
@@ -64,6 +66,10 @@ impl App {
                         if let Some(view) = &free { self.renderer.picture_plane(&mut enc, "copy", view) }
                     }
                     Segment::Warning => if let Some(assets) = assets { self.renderer.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex) },
+                    Segment::Intro => if let (Some(intro), Some(tex)) = (&m.sce_intro, &self.sce_textures) {
+                        let f = intro.frame_for_video(local, m.video);
+                        self.renderer.render_sce_intro(&mut enc, local as f32, &f, tex, m.video)
+                    },
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
             }

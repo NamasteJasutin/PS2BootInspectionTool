@@ -29,6 +29,8 @@ pub struct AudioPlayer {
     _stream: Option<cpal::Stream>,
     pub sounds: Option<Arc<BootSound>>,
     pub logo_chime: Arc<Vec<f32>>,
+    /// The PS1 SCE intro's music, rendered from the standalone shell's own VAB.
+    pub intro_chime: Arc<Vec<f32>>,
     pub ready: bool,
     pub device_rate: f64,
 }
@@ -87,11 +89,22 @@ impl AudioPlayer {
                 }
             }
         }
-        Self { shared, _stream: stream, sounds: None, logo_chime: Arc::new(Vec::new()), ready: false, device_rate }
+        Self { shared, _stream: stream, sounds: None, logo_chime: Arc::new(Vec::new()), intro_chime: Arc::new(Vec::new()), ready: false, device_rate }
     }
 
     pub fn load(&mut self, sound: BootSound) { self.sounds = Some(Arc::new(sound)); self.ready = true }
     pub fn load_logo_chime(&mut self, pcm: Vec<f32>) { self.logo_chime = Arc::new(pcm) }
+    pub fn load_intro_chime(&mut self, pcm: Vec<f32>) { self.intro_chime = Arc::new(pcm) }
+
+    /// A standalone PS1 console's sound: the SCE intro's music, then the licence chime. None of
+    /// the PS2's sounds play, whatever PS2 BIOS is also loaded.
+    pub fn arrange_ps1(&self, fps: f32, intro_start: Option<usize>, logo_start: Option<usize>) {
+        let at = |frame: usize| (frame as f64 / fps as f64 * SAMPLE_RATE as f64) as i64;
+        let mut list = Vec::new();
+        if let Some(s) = intro_start.filter(|_| !self.intro_chime.is_empty()) { list.push(Clip { start: at(s), pcm: self.intro_chime.clone(), looped: false, fade_start: None }) }
+        if let Some(s) = logo_start { list.push(Clip { start: at(s), pcm: self.logo_chime.clone(), looped: false, fade_start: None }) }
+        self.shared.lock().unwrap().clips = list;
+    }
 
     /// Places the clips for a scene; frames are converted with `fps`.
     /// `ps1_disc`: the opening stops the chime with the fast release instead of starting the
