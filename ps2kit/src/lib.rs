@@ -40,6 +40,7 @@ pub mod bios;
 mod bytes;
 pub mod disc;
 pub mod history;
+pub mod hooks;
 pub mod locate;
 pub mod logo;
 pub mod memcard;

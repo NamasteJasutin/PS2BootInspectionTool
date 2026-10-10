@@ -27,5 +27,9 @@ path = "src/bin/pupinfo.rs"
 name = "nvminfo"
 path = "src/bin/nvminfo.rs"
 
+[[bin]]
+name = "hookmap"
+path = "src/bin/hookmap.rs"
+
 [dev-dependencies]
 png = "0.17"
