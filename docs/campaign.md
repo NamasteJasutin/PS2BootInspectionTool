@@ -77,6 +77,23 @@ TESTMODE dossier, DVD-player panel. ps2kit 0.3 carries the new readers. Tag `v1.
 icons, the clock/main-menu scene (FNTASCII text engine, 3D clock, feedback blur), Version
 Information, the browser top level. Tag `v1.5.0`.
 
+## Progress (2026-10-10, parallel builders)
+
+Built in batches by Codex (GPT-6.1-Sol) and AGY (Gemini 3.8 Flash) in git worktrees, reviewed,
+corrected where the ROM disagreed, and merged by Claude; 134 ps2kit tests.
+
+- **PSX range**: R1 (PS2 1.00 J) ✓, R2 (`Ps1Bios` identity + audit) ✓, R3 (standalone licence
+  screen, policy from code) ✓, R4 (PS1 boot facts, `SYSTEM.CNF` grammar as the ROM reads it) ✓,
+  R5 (SCE intro with its music) ✓, R7 (PUP card, snapshots and diffs) ✓; app: console switch,
+  BIOS shelf, PS1 sequence, PS1 end card and Disc/BIOS tabs ✓. Open: R6 panels in the app
+  (narration, layout strip, host-modification view, revision diff), R8 menu mock-up.
+- **Camp 4** (library + CLI; app panels to follow): hook map (`hookmap`) ✓, NVM inspector and
+  BIOS-set completeness (`nvminfo`, also in the BIOS tab) ✓, ELF/disc probe (`discprobe`) ✓,
+  PS1 boot narration (`ps1narrate`) ✓, PS1 memory cards with icons, undelete candidates and
+  SoundScope performances (`ps1card`) ✓. Open: ROM explorer with the identity matrix, font
+  atelier, VAB bench, two-dump diff.
+- **Camp 2**: Pareto and SVG export ✓.
+
 ## The PSX range — PS1, PSone, POPS, and an honest PS3 card
 
 A second ridge beside the PS2 mountain, opened by the round-two surveys (`notes/research/README.md`,
