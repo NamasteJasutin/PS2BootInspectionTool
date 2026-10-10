@@ -544,6 +544,9 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
                     let _ = std::fs::write(p, text);
                 }
             }
+            if ui.button("Graphs SVG…").on_hover_text("Launches per title and the Pareto curve, as a vector file").clicked() {
+                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-play-history.svg").save_file() { let _ = std::fs::write(p, history_svg(&m.history.records)); }
+            }
         });
     });
     let used: Vec<_> = m.history.records.iter().filter(|r| !r.is_empty()).cloned().collect();
@@ -570,6 +573,24 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
             painter.text(Pos2::new(rect.max.x, y + row / 2.0), egui::Align2::RIGHT_CENTER, format!("{}", r.count), egui::FontId::monospace(11.0), Color32::WHITE);
         }
         ui.small("Gold: maxed-out records (index 7) — their towers no longer grow.");
+    });
+    section(ui, "Share of play (Pareto)", |ui| {
+        let Some(curve) = pareto(used.iter().map(|r| r.count)) else { ui.small("Needs two or more titles."); return };
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 84.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let plot = Rect::from_min_max(rect.min + Vec2::new(28.0, 6.0), rect.max - Vec2::new(8.0, 16.0));
+        let at = |i: usize, share: f32| Pos2::new(plot.min.x + plot.width() * i as f32 / curve.len() as f32, plot.max.y - plot.height() * share);
+        for level in [0.5, 0.8, 1.0] {
+            painter.line_segment([at(0, level), at(curve.len(), level)], Stroke::new(1.0, Color32::from_white_alpha(if level == 0.8 { 70 } else { 30 })));
+            painter.text(Pos2::new(rect.min.x, at(0, level).y), egui::Align2::LEFT_CENTER, format!("{:.0}%", level * 100.0), egui::FontId::proportional(9.0), Color32::from_white_alpha(150));
+        }
+        painter.line_segment([at(0, 0.0), at(curve.len(), 1.0)], Stroke::new(1.0, Color32::from_white_alpha(40)));
+        let pts: Vec<Pos2> = std::iter::once(at(0, 0.0)).chain(curve.iter().enumerate().map(|(i, &s)| at(i + 1, s))).collect();
+        for p in &pts[1..] { painter.circle_filled(*p, 2.0, Color32::WHITE); }
+        painter.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgb(230, 190, 80))));
+        let eighty = curve.iter().position(|&s| s >= 0.8).map_or(curve.len(), |i| i + 1);
+        painter.text(Pos2::new(plot.max.x, plot.max.y + 3.0), egui::Align2::RIGHT_TOP, format!("{} titles ranked by launches", curve.len()), egui::FontId::proportional(10.0), Color32::from_white_alpha(170));
+        ui.small(format!("{eighty} of {} titles account for 80% of the launches; the diagonal is an even spread.", curve.len()));
     });
     section(ui, "Last launches over time", |ui| {
         let dated: Vec<_> = used.iter().filter(|r| r.date != 0).collect();
@@ -669,4 +690,74 @@ fn bios_tab(ui: &mut egui::Ui, m: &mut Model) {
             }
         });
     });
+}
+
+/// Cumulative share of all launches after the 1st, 2nd, … title ranked by launch count;
+/// `None` with fewer than two titles or no launches.
+fn pareto(counts: impl Iterator<Item = u8>) -> Option<Vec<f32>> {
+    let mut counts: Vec<u32> = counts.map(u32::from).collect();
+    let total: u32 = counts.iter().sum();
+    if counts.len() < 2 || total == 0 { return None }
+    counts.sort_unstable_by(|a, b| b.cmp(a));
+    Some(counts.iter().scan(0, |acc, &c| { *acc += c; Some(*acc as f32 / total as f32) }).collect())
+}
+
+/// The save-data graphs as a standalone SVG: launches per title (gold = maxed out) above the
+/// Pareto curve. Plain strings only; title IDs are escaped.
+fn history_svg(records: &[ps2kit::history::Record]) -> String {
+    let mut used: Vec<_> = records.iter().filter(|r| !r.is_empty()).collect();
+    used.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let (w, row, label_w) = (640.0f32, 18.0f32, 110.0f32);
+    let bars_h = row * used.len() as f32;
+    let (curve_top, curve_h) = (bars_h + 70.0, 160.0f32);
+    let h = curve_top + curve_h + 40.0;
+    let max = used.iter().map(|r| r.count).max().unwrap_or(1).max(1) as f32;
+    let mut s = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" font-family=\"monospace\" font-size=\"11\">\n<rect width=\"100%\" height=\"100%\" fill=\"#14161c\"/>\n<text x=\"16\" y=\"22\" fill=\"#fff\" font-size=\"14\">Launches per title</text>\n");
+    for (i, r) in used.iter().enumerate() {
+        let y = 34.0 + i as f32 * row;
+        let bw = (w - label_w - 60.0) * r.count as f32 / max;
+        let fill = if r.index == 7 { "#e6be50" } else { "#7399ff" };
+        s += &format!("<text x=\"16\" y=\"{:.1}\" fill=\"#ddd\">{}</text><rect x=\"{label_w}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" rx=\"2\" fill=\"{fill}\"/><text x=\"{:.1}\" y=\"{:.1}\" fill=\"#fff\">{}</text>\n", y + 12.0, esc(&r.name), y + 3.0, bw.max(2.0), row - 6.0, label_w + bw + 6.0, y + 12.0, r.count);
+    }
+    if let Some(curve) = pareto(used.iter().map(|r| r.count)) {
+        let (x0, x1, y0) = (48.0f32, w - 24.0, curve_top + curve_h);
+        let at = |i: usize, share: f32| (x0 + (x1 - x0) * i as f32 / curve.len() as f32, y0 - curve_h * share);
+        s += &format!("<text x=\"16\" y=\"{:.1}\" fill=\"#fff\" font-size=\"14\">Share of play (Pareto)</text>\n", curve_top - 14.0);
+        for level in [0.5f32, 0.8, 1.0] {
+            let (_, y) = at(0, level);
+            s += &format!("<line x1=\"{x0}\" y1=\"{y:.1}\" x2=\"{x1}\" y2=\"{y:.1}\" stroke=\"#fff\" stroke-opacity=\"{}\"/><text x=\"12\" y=\"{:.1}\" fill=\"#aaa\" font-size=\"9\">{:.0}%</text>\n", if level == 0.8 { 0.3 } else { 0.12 }, y + 3.0, level * 100.0);
+        }
+        let (ex, ey) = at(curve.len(), 1.0);
+        s += &format!("<line x1=\"{x0}\" y1=\"{y0}\" x2=\"{ex:.1}\" y2=\"{ey:.1}\" stroke=\"#fff\" stroke-opacity=\"0.15\"/>\n");
+        let pts: Vec<String> = std::iter::once(at(0, 0.0)).chain(curve.iter().enumerate().map(|(i, &v)| at(i + 1, v))).map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+        s += &format!("<polyline points=\"{}\" fill=\"none\" stroke=\"#e6be50\" stroke-width=\"2\"/>\n", pts.join(" "));
+        let eighty = curve.iter().position(|&v| v >= 0.8).map_or(curve.len(), |i| i + 1);
+        s += &format!("<text x=\"{x0}\" y=\"{:.1}\" fill=\"#aaa\">{eighty} of {} titles account for 80% of the launches</text>\n", y0 + 24.0, curve.len());
+    }
+    s + "</svg>\n"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{history_svg, pareto};
+    use ps2kit::history::PlayHistory;
+
+    #[test]
+    fn pareto_ranks_and_accumulates() {
+        assert_eq!(pareto([1u8].into_iter()), None);
+        assert_eq!(pareto([0u8, 0].into_iter()), None);
+        assert_eq!(pareto([10u8, 30, 60].into_iter()), Some(vec![0.6, 0.9, 1.0]));
+    }
+
+    #[test]
+    fn svg_is_well_formed_and_escaped() {
+        let mut h = PlayHistory::synthetic(&[60, 40, 20, 14, 5, 1], &[], 7);
+        h.records[0].name = "A<&>".into();
+        let svg = history_svg(&h.records);
+        assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+        assert!(svg.contains("A&lt;&amp;&gt;") && !svg.contains("A<&>"));
+        assert_eq!(svg.matches("<polyline").count(), 1);
+        if let Ok(p) = std::env::var("PS2_SVG_OUT") { std::fs::write(p, svg).unwrap() }
+    }
 }
