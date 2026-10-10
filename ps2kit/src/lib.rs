@@ -44,6 +44,7 @@ pub mod locate;
 pub mod logo;
 pub mod memcard;
 pub mod ps1;
+pub mod pup;
 pub mod rom;
 pub mod sectors;
 pub mod sim;
