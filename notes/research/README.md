@@ -243,7 +243,8 @@ the repo, each in its own room. Same [V]/[I] discipline. Their ideas feed `docs/
   `0x2022F4`, `0x20230C` branches) where 1.60 E's differs in 98 (8 words) and 39001 patches
   nothing — Sony re-shipped a pruned patch keeping a read tolerance and dropping the DVD/PS1
   fallbacks [V structure confirmed by the coordinator; intent I].
-- **Block A is the gaiji font**: `0x64000` (PS1) = `rom0:KROMG` (PS2): 16×16 1-bit glyphs for
+- **Block A is the gaiji font**: `0x64000` (PS1) = `rom0:KROMG` (PS2): 245 1-bit glyphs of 30 bytes
+  (16 × 15; corrected by the asset bench from "16×16, 32 bytes") for
   accented and half-width characters (closes `ps1_version_matrix.md` §9's first open item).
 - **NVM inspector findings** (Codex, batch 2): the user's 70004 NVM is a real console's — every
   config block valid, area 2 holds DVD-player settings — while the 39001/30004R NVMs carry a
@@ -253,3 +254,26 @@ the repo, each in its own room. Same [V]/[I] discipline. Their ideas feed `docs/
 - **Corrections confirmed by a second reader** (Codex T3b): `BOOT2` shadows a later `BOOT`
   (PS1 3.0 A `0xBFC00B7C`, as fixed in R4); the 70004 EROM's 40 gzip members inflate to
   11 009 004 bytes; the PUP's `update_files.tar` holds 50 regular files (48 packages + 2 RVK).
+
+---
+
+## Round four: the PS3, honestly (2026-10-10)
+
+| note | subject | lines |
+|---|---|---|
+| `ps3_pup.md` | the 4.82 PUP's plaintext container (round two) | 417 |
+| `ps3_boot.md` | the PS3 boot from public documentation (44 cited sources, all [I]): boot chain as far as the user sees and hears, cold-boot animation and chime, game boot, XMB wave, resource formats, PS1/PS2 on PS3, ranked features | 585 |
+
+What is plaintext without anyone decrypting anything: the PUP's container (`ps2kit::pup`, snapshots
+and diffs), a disc's `PS3_DISC.SFB` and `PARAM.SFO` and artwork where they sit outside encrypted
+regions, save metadata (`PARAM.SFO`, `ICON0.PNG`, the PFD header) — now `ps2kit::ps3` (`ps3card`)
+and the Lab's PS3 card, which states the firmware check against the user's own PUP and reports
+encrypted regions as "needs the disc key, not read". What needs a plaintext `dev_flash` the user
+already has from their own console: the cold-boot animation (`coldboot.raf`), its chime
+(`coldboot_stereo.ac3`/`coldboot_multi.ac3` — an AC3 decoder is a large clean-room job, so metadata
+first), the XMB wave resources (`lines.qrc`), and `ps1emu/ps1_rom.bin` (documented as derived from a
+PS2 1.90 ROM's PS1 part — it would enter through `ps2kit::ps1bios` after a compatibility check).
+Firmware 3.00 removed the historical game-start chime [I].
+
+Also corrected this round: 1.00 J's sound banks sit inline in OSDSYS (`OSDSND` is only the driver);
+the PS2 ASCII font sheets hold 96 cells; FONTM advertises 4 418 slots with two offsets unavailable.

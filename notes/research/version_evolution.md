@@ -17,7 +17,7 @@
 3. **Sound Bank Invariance (2000–2004) [V]**: `rom0:SNDIMAGE` is byte-identical across 1.50 A devkit, 1.60 E, 1.60 A, 1.60 A (39004), and 2.00 E (SHA-1 `79baca7658d02297259b0dd15fca7de3cf2df319`). The 1.00 J opening sounds were embedded inside `rom0:OSDSND` (0x477c2 bytes vs 0x2a79d in 1.50+).
 4. **PS2LOGO Ribbon Dynamics Shift**: ~~In 1.00 J, the ribbon angular rate constants were `(pi/2, pi/2)`~~ — see the correction in the PS2LOGO section below: 1.00 J's NTSC rate is already 0.84; 1.50+ added the PAL rate (0.70) and PAL/NTSC aspect scaling (`1.092593`, `0.909090`).
 5. **PS1 Identity & Wordmark Split [V]**: PS1 shells compute logo rotation at runtime (`RotMatrix({260, -30, 0})`). Standalone shells 2.2..4.1 U/E carry both `PlayStation®` and `PlayStation™` TIMs; because the check flag is forced to 0 on U/E, they draw `PlayStation™`! J consoles (flag=1) draw `PlayStation®`.
-6. **Block A / Gaiji Resolved [V]**: The mystery block at `0x64000` (0x1CB7 bytes in PS1, `rom0:KROMG` in PS2) is **Gaiji (外字)**: 16×16 1-bit bitmap glyphs (32 bytes per character) for European accented and half-width graphical characters.
+6. **Block A / Gaiji Resolved [V]**: The mystery block at `0x64000` (0x1CB7 bytes in PS1, `rom0:KROMG` in PS2) is **Gaiji (外字)**: 1-bit bitmap glyphs for European accented and half-width graphical characters. **Correction (2026-10-10, asset bench on every dump [V]):** the glyphs are **30 bytes** (16 pixels × 15 rows), **245** of them — 245 × 30 fits the 7,351-byte block; 32-byte glyphs do not divide it.
 
 ---
 
@@ -262,7 +262,7 @@ When embedding PS1 backward compatibility:
 ### 3.4 Open Question §9: Block A / KROMG Identified [V]
 
 The 0x1CB7 (7,351) byte block at `0x64000` in PS1 U/E images (mirrored as `rom0:KROMG` in PS2) consists of **Gaiji (外字) font glyphs**:
-- 16×16 1-bit bitmap characters (32 bytes per glyph: 16 u16 rows).
+- 1-bit bitmap characters, 30 bytes per glyph (16 pixels × 15 rows), 245 glyphs. **Correction (2026-10-10, asset bench on every dump [V]):** the glyphs are **30 bytes** (16 pixels × 15 rows), **245** of them — 245 × 30 fits the 7,351-byte block; 32-byte glyphs do not divide it.
 - First glyph (`1000 1100 ... 1ff0 1010 2008 ...`) defines non-kanji European accented characters and graphical symbols.
 - In PS1, the shell inlines its own font mapper at `0x80042C70` referencing `0xBFC66000` (KROM) and `0xBFC69D68`. In PS2, the unchanged kernel font routines require `KROMG` to sit at exactly `0x64000`.
 
