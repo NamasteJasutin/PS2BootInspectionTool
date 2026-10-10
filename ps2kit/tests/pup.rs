@@ -276,3 +276,24 @@ fn real_ps3_pup_oracle() {
     assert_eq!(swu2.elf_header.e_entry, 0x4E8800);
     assert_eq!(swu2.program_headers.len(), 7);
 }
+
+#[test]
+fn mutated_pups_never_panic_in_any_reader() {
+    let valid = build_synthetic_pup();
+    let mut rng = ps2kit::history::SplitMix(11);
+    let mut reached = 0;
+    for round in 0..3000 {
+        let mut d = valid.clone();
+        for _ in 0..1 + round % 8 {
+            let i = (rng.next_u64() as usize) % d.len();
+            d[i] = rng.next_u64() as u8;
+        }
+        if round % 5 == 0 { d.truncate((rng.next_u64() as usize) % d.len()) }
+        let Ok(pup) = Pup::parse(&d) else { continue };
+        reached += 1;
+        let _ = (pup.version(), pup.update_flags(), pup.dots(), pup.license_locales(), pup.packages());
+        for id in [0x200, 0x201, 0x300, 0x501, 0x601] { let _ = (pup.tar_entries(id), pup.self_info(id)); }
+    }
+    // Most single-byte mutations land in member data, which the container accepts.
+    assert!(reached > 1000, "only {reached} mutated PUPs parsed; the readers were barely exercised");
+}
