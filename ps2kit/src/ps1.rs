@@ -106,7 +106,7 @@ pub struct Tim {
 }
 
 impl Tim {
-    fn parse_4bit(d: &[u8]) -> Result<Self> {
+    pub(crate) fn parse_4bit(d: &[u8]) -> Result<Self> {
         if d.len() < 0x14 || d.u32(0) != 0x10 || d.u32(4) != 8 {
             return Err(Error::Corrupt(Format::Bios, "not a 4-bit TIM with CLUT".into()));
         }
@@ -365,7 +365,7 @@ fn rotation_from_angles(angles: [i16; 3]) -> [[i16; 3]; 3] {
 }
 
 // Resolve only nearby constant construction (LUI/ADDIU/ORI), never execute user code.
-fn code_constant(d: &[u8], before: usize, reg: u32, depth: usize) -> Option<u32> {
+pub(crate) fn code_constant(d: &[u8], before: usize, reg: u32, depth: usize) -> Option<u32> {
     if reg == 0 { return Some(0) }
     if depth > 3 { return None }
     for o in (before.saturating_sub(32)..before).step_by(4).rev() {
@@ -384,7 +384,7 @@ fn code_constant(d: &[u8], before: usize, reg: u32, depth: usize) -> Option<u32>
     None
 }
 
-fn memory_address(d: &[u8], o: usize) -> Option<u32> {
+pub(crate) fn memory_address(d: &[u8], o: usize) -> Option<u32> {
     code_constant(d, o, d.u32(o) >> 21 & 31, 0).map(|base| base.wrapping_add(d.i16(o) as i32 as u32))
 }
 
@@ -420,7 +420,7 @@ fn runtime_transform(d: &[u8]) -> Option<([i16; 3], [i32; 3])> {
     None
 }
 
-fn address_refs(d: &[u8], address: u32) -> impl Iterator<Item = usize> + '_ {
+pub(crate) fn address_refs(d: &[u8], address: u32) -> impl Iterator<Item = usize> + '_ {
     (0..d.len().saturating_sub(3)).step_by(4).filter(move |&o| {
         let w = d.u32(o);
         matches!(w >> 26, 8 | 9 | 13) && code_constant(d, o + 4, w >> 16 & 31, 0) == Some(address)
@@ -757,38 +757,48 @@ impl Ps1Shell {
     pub fn render_sound(&self, video: VideoMode) -> Vec<f32> {
         let fps = video.fps() as f64;
         let fields_to_samples = |f: f64| (f / fps * SAMPLE_RATE as f64) as usize;
-        struct Voice { start: usize, off: Option<usize>, tone: Tone, prog_vol: u8, vel: u8, pan: u8, prog: u8, note: u8 }
-        let mut voices: Vec<Voice> = Vec::new();
-        let key = |voices: &mut Vec<Voice>, field: f64, prog: u8, note: u8, vel: u8, pan: u8| {
-            let at = fields_to_samples(field);
-            if vel == 0 {
-                for v in voices.iter_mut().filter(|v| v.prog == prog && v.note == note && v.off.is_none()) { v.off = Some(at) }
-            } else if let Some(p) = self.bank.programs.get(prog as usize) {
-                for t in &p.tones {
-                    voices.push(Voice { start: at, off: None, tone: *t, prog_vol: p.vol, vel, pan, prog, note });
-                }
-            }
+        let mut keys = Vec::new();
+        let mut key = |field: f64, prog, note, vel, pan| {
+            keys.push((fields_to_samples(field), NoteEvent { time: 0, prog, note, vel, pan }));
         };
         // Phase A: the drones, keyed before the first frame and off after the 31st.
-        key(&mut voices, 0.0, 2, 31, 0x7F, 0x40);
-        key(&mut voices, 0.0, 0, 36, 0x3C, 0x40);
-        key(&mut voices, LicenceTimeline::FADE_FIELDS as f64, 2, 31, 0, 0);
-        key(&mut voices, LicenceTimeline::FADE_FIELDS as f64, 0, 36, 0, 0);
+        key(0.0, 2, 31, 0x7F, 0x40);
+        key(0.0, 0, 36, 0x3C, 0x40);
+        key(LicenceTimeline::FADE_FIELDS as f64, 2, 31, 0, 0);
+        key(LicenceTimeline::FADE_FIELDS as f64, 0, 36, 0, 0);
         let scale = if video == VideoMode::Pal { 5.0 / 6.0 } else { 1.0 };
         for e in &self.events {
-            key(&mut voices, LicenceTimeline::FADE_FIELDS as f64 + e.time as f64 * scale, e.prog, e.note, e.vel, e.pan);
+            key(LicenceTimeline::FADE_FIELDS as f64 + e.time as f64 * scale, e.prog, e.note, e.vel, e.pan);
         }
         let tail = fields_to_samples(fps * 4.0);
-        let total = voices.iter().map(|v| v.off.unwrap_or(v.start)).max().unwrap_or(0) + tail;
+        self.bank.render_events(&keys, None, tail)
+    }
+}
+
+impl Vab {
+    // Shared libsnd-style mixer for licence and intro clocks; scenes §2, ps1_boot §6.
+    pub(crate) fn render_events(&self, keys: &[(usize, NoteEvent)], samples: Option<usize>, tail: usize) -> Vec<f32> {
+        struct Voice { start: usize, off: Option<usize>, tone: Tone, prog_vol: u8, vel: u8, pan: u8, prog: u8, note: u8 }
+        let mut voices: Vec<Voice> = Vec::new();
+        for &(at, e) in keys {
+            if e.vel == 0 {
+                for v in voices.iter_mut().filter(|v| v.prog == e.prog && v.note == e.note && v.off.is_none()) { v.off = Some(at) }
+            } else if let Some(p) = self.programs.get(e.prog as usize) {
+                for t in &p.tones {
+                    voices.push(Voice { start: at, off: None, tone: *t, prog_vol: p.vol, vel: e.vel, pan: e.pan, prog: e.prog, note: e.note });
+                }
+            }
+        }
+        let total = samples.unwrap_or_else(|| voices.iter().map(|v| v.off.unwrap_or(v.start)).max().unwrap_or(0) + tail);
         let mut mix = vec![0f32; total * 2];
         for v in &voices {
-            let Some((pcm, lp)) = self.bank.samples.get(v.tone.vag as usize) else { continue };
+            let Some((pcm, lp)) = self.samples.get(v.tone.vag as usize) else { continue };
             if pcm.len() < 2 { continue }
             let n = total.saturating_sub(v.start);
             let env = envelope(v.tone.adsr1, v.tone.adsr2, v.off.map(|o| o - v.start).unwrap_or(n), n);
             // libsnd: velocity × tone volume × program volume × bank master, then the tone's
             // pan combined with the note's pan (a stereo pair: one tone hard left, one hard right).
-            let gain = v.vel as f32 / 127.0 * v.tone.vol as f32 / 127.0 * v.prog_vol as f32 / 127.0 * self.bank.master as f32 / 127.0 * (0x3FFF as f32 / 16384.0);
+            let gain = v.vel as f32 / 127.0 * v.tone.vol as f32 / 127.0 * v.prog_vol as f32 / 127.0 * self.master as f32 / 127.0 * (0x3FFF as f32 / 16384.0);
             let pan = ((v.tone.pan as f32 + v.pan as f32 - 64.0) / 127.0).clamp(0.0, 1.0);
             let (gain_l, gain_r) = (gain * (1.0 - pan).sqrt(), gain * pan.sqrt());
             let semis = v.note as f32 - v.tone.centre as f32 + v.tone.shift as f32 / 128.0;
