@@ -4,12 +4,11 @@
 //! `notes/research/ps1_version_matrix.md` §2.1, `notes/menu_survey.md` §4).
 
 use crate::bytes::Bytes;
-use crate::ps1::Vab;
+use crate::locate::ProgramImage;
+use crate::ps1::{NoteEvent, Vab};
 use crate::ps1bios::Ps1Bios;
 use crate::rom::{unpack, RomDir};
-use crate::sound::{
-    embedded_boot_sounds, envelope, mix_voice, DriverTables, ProgramKind, SoundBank, SAMPLE_RATE,
-};
+use crate::sound::{embedded_boot_sounds, envelope, mix_voice, DriverTables, ProgramKind, SoundBank, SAMPLE_RATE};
 use crate::{Error, Format, Result};
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
@@ -70,15 +69,28 @@ pub struct BenchSample {
     pub loop_start: Option<usize>,
 }
 
+/// One UI sound-effect entry from SNDOSDDH or its inline counterpart (sound.md §2.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BenchEffect {
+    /// Effect index within the OSD effect table, distinct from a MIDI program ID.
+    pub id: usize,
+    /// Index into [`SoundBench::samples`].
+    pub sample_index: usize,
+    /// Left and right SPU volume registers before the bank's master volume.
+    pub volume: (u16, u16),
+    /// Recorded SPU pitch register (0x1000 = 44.1 kHz).
+    pub pitch: u16,
+    /// Raw ADSR registers.
+    pub adsr: (u16, u16),
+    /// Raw effect flags, including bit 7 for reverb send.
+    pub flags: u16,
+}
+
 #[derive(Clone)]
 enum SoundBenchBackend {
-    Ps2 {
-        bank: SoundBank,
-        tables: DriverTables,
-    },
-    Ps1 {
-        vab: Vab,
-    },
+    Ps2 { bank: SoundBank, tables: DriverTables },
+    Ps1 { vab: Vab },
 }
 
 /// Asset workbench for sound banks: inspect programs, tones, and samples, and render
@@ -88,8 +100,12 @@ enum SoundBenchBackend {
 pub struct SoundBench {
     /// All programs in the bank, ordered by program ID.
     pub programs: Vec<BenchProgram>,
-    /// All decoded samples referenced by the programs.
+    /// All decoded samples referenced by the programs and UI effects. PS1 VAG zero is absent.
     pub samples: Vec<BenchSample>,
+    /// All OSD UI effects, when the PS2 image includes the second bank.
+    pub effects: Vec<BenchEffect>,
+    effect_samples: Vec<(Vec<f32>, Option<usize>)>,
+    effect_master: u32,
     backend: SoundBenchBackend,
 }
 
@@ -98,6 +114,7 @@ impl std::fmt::Debug for SoundBench {
         f.debug_struct("SoundBench")
             .field("programs", &self.programs.len())
             .field("samples", &self.samples.len())
+            .field("effects", &self.effects.len())
             .finish_non_exhaustive()
     }
 }
@@ -112,20 +129,48 @@ impl SoundBench {
                 let asset = |n: &str| -> Result<Vec<u8>> { unpack(archive.module(n)?, 0) };
                 SoundBank::new(&asset("SNDBOOTH")?, asset("SNDBOOTB")?)?
             }
-            Err(Error::NotFound(..)) if bios.module("OSOPEN").is_ok() => {
-                embedded_boot_sounds(bios)?.0
-            }
+            Err(Error::NotFound(..)) if bios.module("OSOPEN").is_ok() => embedded_boot_sounds(bios)?.0,
             Err(e) => return Err(e),
         };
-        let tables = bios
-            .module("OSDSND")
-            .ok()
-            .and_then(DriverTables::from_driver)
-            .unwrap_or_else(DriverTables::computed);
-        Ok(Self::from_bank_and_tables(bank, tables))
+        let tables =
+            bios.module("OSDSND").ok().and_then(DriverTables::from_driver).unwrap_or_else(DriverTables::computed);
+        let mut bench = Self::from_bank_and_tables(bank, tables);
+        if let Ok(module) = bios.module("SNDIMAGE") {
+            let archive = RomDir::new(module.to_vec())?;
+            if let Ok(header) = archive.module("SNDOSDDH") {
+                bench.add_effects(&unpack(header, 0)?, &unpack(archive.module("SNDOSDDB")?, 0)?)?;
+            }
+        } else {
+            // [V] 1.00 J OSDSYS contains an inline effect header at 0x279680;
+            // OSDSND is the driver. Locate the SShd/table structure, not that address.
+            let image = ProgramImage::from_module(bios.module("OSDSYS")?, 0x200000)?;
+            for signature in image.find_all(b"SShd", 4) {
+                let Some(start) = signature.checked_sub(12) else { continue };
+                let data = &image.data()[start..];
+                if data.len() < 0x30 || data.u32(0x10) != u32::MAX || data.u32(0x2C) == u32::MAX {
+                    continue;
+                }
+                let table = data.u32(0x2C) as usize;
+                let Some(last) = data.get(table..table.saturating_add(8)) else { continue };
+                let Some(count) = (last.u32(4) as usize).checked_add(1) else { continue };
+                let Some(header_len) = count.checked_mul(0x40).and_then(|n| table.checked_add(0x20 + n)) else {
+                    continue;
+                };
+                let body_start = header_len.saturating_add(63) & !63;
+                let Some(header) = data.get(..header_len) else { continue };
+                let Some(body) = data.get(body_start..body_start.saturating_add(data.u32(4) as usize)) else {
+                    continue;
+                };
+                bench.add_effects(header, body)?;
+                break;
+            }
+        }
+        Ok(bench)
     }
 
-    /// Inspects a PlayStation 1 VAB bank (`notes/research/ps1_shell_scenes.md` §2).
+    /// Inspects a PlayStation 1 shell VAB (`notes/research/ps1_shell_scenes.md` §2).
+    /// Reflects [`Vab`]'s shell mixer: contiguous program IDs and full key ranges.
+    /// These match all supplied shell banks; arbitrary VAB splits need a richer parser.
     pub fn ps1(vab: &Vab) -> Self {
         let mut programs = Vec::with_capacity(vab.programs.len());
         for (p_id, p) in vab.programs.iter().enumerate() {
@@ -138,32 +183,27 @@ impl SoundBench {
                     fine: t.shift as i32,
                     adsr1: t.adsr1,
                     adsr2: t.adsr2,
-                    sample_index: t.vag as usize,
+                    sample_index: (t.vag as usize).checked_sub(1).unwrap_or(usize::MAX),
                     volume: t.vol as i32,
                     pan: t.pan as i32,
                     bend_range: 2,
                 });
             }
-            programs.push(BenchProgram {
-                id: p_id as i32,
-                volume: p.vol as i32,
-                kind: ProgramKind::Layer,
-                tones,
-            });
+            programs.push(BenchProgram { id: p_id as i32, volume: p.vol as i32, kind: ProgramKind::Layer, tones });
         }
         let samples = vab
             .samples
             .iter()
+            .skip(1)
             .enumerate()
-            .map(|(i, (pcm, lp))| BenchSample {
-                index: i,
-                length: pcm.len(),
-                loop_start: *lp,
-            })
+            .map(|(i, (pcm, lp))| BenchSample { index: i, length: pcm.len(), loop_start: *lp })
             .collect();
         Self {
             programs,
             samples,
+            effects: Vec::new(),
+            effect_samples: Vec::new(),
+            effect_master: 0,
             backend: SoundBenchBackend::Ps1 { vab: vab.clone() },
         }
     }
@@ -189,12 +229,8 @@ impl SoundBench {
             .iter()
             .enumerate()
             .map(|(i, &off)| {
-                let (pcm, lp) = bank.decode_sample(off);
-                BenchSample {
-                    index: i,
-                    length: pcm.len(),
-                    loop_start: lp,
-                }
+                let (pcm, lp) = decode_bank_sample(&bank, off);
+                BenchSample { index: i, length: pcm.len(), loop_start: lp }
             })
             .collect();
 
@@ -223,20 +259,87 @@ impl SoundBench {
                         }
                     })
                     .collect();
-                programs.push(BenchProgram {
-                    id: k,
-                    volume: p.volume,
-                    kind: p.kind,
-                    tones,
-                });
+                programs.push(BenchProgram { id: k, volume: p.volume, kind: p.kind, tones });
             }
         }
 
         Self {
             programs,
             samples,
+            effects: Vec::new(),
+            effect_samples: Vec::new(),
+            effect_master: 0,
             backend: SoundBenchBackend::Ps2 { bank, tables },
         }
+    }
+
+    fn add_effects(&mut self, header: &[u8], body: &[u8]) -> Result<()> {
+        let bad = || Error::Corrupt(Format::SoundBank, "truncated OSD effect bank".into());
+        if header.len() < 0x30 || &header[0xC..0x10] != b"SShd" {
+            return Err(bad());
+        }
+        let table = header.u32(0x2C) as usize;
+        let prefix = header.get(table..table.saturating_add(0x20)).ok_or_else(bad)?;
+        let count = (prefix.u32(4) as usize).checked_add(1).ok_or_else(bad)?;
+        if count > header.len().saturating_sub(table + 0x20) / 0x40 {
+            return Err(bad());
+        }
+        let mut offsets: Vec<_> = (0..count).map(|i| header.u32(table + 0x20 + i * 0x40 + 16) as usize).collect();
+        offsets.sort_unstable();
+        offsets.dedup();
+        let sample_base = self.samples.len();
+        for (i, &offset) in offsets.iter().enumerate() {
+            if offset.checked_add(16).is_none_or(|end| end > body.len()) {
+                return Err(bad());
+            }
+            let (pcm, lp) = crate::sound::decode_adpcm(body, offset);
+            self.samples.push(BenchSample { index: sample_base + i, length: pcm.len(), loop_start: lp });
+            self.effect_samples.push((pcm, lp));
+        }
+        self.effect_master = prefix.u32(0);
+        for i in 0..count {
+            let entry = table + 0x20 + i * 0x40;
+            let offset = header.u32(entry + 16) as usize;
+            let sample_index = sample_base + offsets.binary_search(&offset).map_err(|_| bad())?;
+            self.effects.push(BenchEffect {
+                id: i,
+                sample_index,
+                volume: (header.u16(entry), header.u16(entry + 2)),
+                pitch: header.u16(entry + 4),
+                adsr: (header.u16(entry + 8), header.u16(entry + 10)),
+                flags: header.u16(entry + 14),
+            });
+        }
+        Ok(())
+    }
+
+    /// Auditions a PS2 UI effect through the shared ADPCM/ADSR mixer (sound.md §2.4).
+    /// Duration rules match [`Self::render`]; pitch and pan come from the effect entry.
+    pub fn render_effect(&self, effect_id: usize, seconds: f64) -> Vec<f32> {
+        let Some((total, on)) = render_length(seconds) else { return Vec::new() };
+        let mut mix = vec![0.0; total * 2];
+        let Some(effect) = self.effects.get(effect_id) else { return mix };
+        let base = self.samples.len().saturating_sub(self.effect_samples.len());
+        let Some((pcm, lp)) = effect.sample_index.checked_sub(base).and_then(|i| self.effect_samples.get(i)) else {
+            return mix;
+        };
+        if pcm.len() < 2 {
+            return mix;
+        }
+        let env = envelope(effect.adsr.0, effect.adsr.1, on, total);
+        let gain =
+            |v: u16| ((u64::from(v) * u64::from(self.effect_master)) >> 7) as f32 / 16384.0 * (0x3FFF as f32 / 16384.0);
+        mix_voice(
+            &mut mix,
+            0,
+            pcm,
+            *lp,
+            &env,
+            effect.pitch as f64 / 4096.0 * 44100.0 / SAMPLE_RATE as f64,
+            gain(effect.volume.0),
+            gain(effect.volume.1),
+        );
+        mix
     }
 
     /// Opens a BIOS dump from disk and inspects its sound bank (PS1 or PS2).
@@ -274,18 +377,16 @@ impl SoundBench {
     }
 
     /// Auditions an instrument: synthesises a note at 48 kHz stereo for `seconds`.
-    /// Reuses the existing ADPCM/ADSR mixing path via [`mix_voice`] (`notes/sound.md` §2).
+    /// Uses the shared ADPCM/ADSR mixers (`notes/sound.md` §2, scenes §2). The key is
+    /// released for the last quarter second (last quarter of short clips). Invalid MIDI
+    /// notes/programs render silence; nonfinite durations or durations above 120 s return empty.
     pub fn render(&self, program_id: i32, note: i32, velocity: i32, seconds: f64) -> Vec<f32> {
-        if seconds <= 0.0 {
-            return Vec::new();
-        }
-        let total = (seconds * SAMPLE_RATE as f64).round() as usize;
+        let Some((total, on_samples)) = render_length(seconds) else { return Vec::new() };
         let mut mix = vec![0.0f32; total * 2];
-        let on_samples = if seconds > 0.5 {
-            ((seconds - 0.25) * SAMPLE_RATE as f64) as usize
-        } else {
-            (total * 3) / 4
-        };
+
+        if !(0..=127).contains(&note) || velocity <= 0 {
+            return mix;
+        }
 
         match &self.backend {
             SoundBenchBackend::Ps2 { bank, tables } => {
@@ -296,24 +397,29 @@ impl SoundBench {
                 let synth = crate::sound::Synth { bank, tables };
 
                 for tone in prog.tones.iter().filter(|t| t.low <= note && note <= t.high) {
-                    let (pcm, lp) = bank.decode_sample(tone.sample_offset);
+                    let (pcm, lp) = decode_bank_sample(bank, tone.sample_offset);
                     if pcm.len() < 2 {
                         continue;
                     }
-                    let p = (64 + tone.pan - 0x40).clamp(0, 0x7F) >> 2;
+                    let p = tone.pan.clamp(0, 0x7F) >> 2;
                     let (gl, gr) = tables.pan.get(p as usize).copied().unwrap_or((0x80, 0x80));
-                    let vel = bank
-                        .velocity
-                        .get(velocity.clamp(0, 127) as usize)
-                        .copied()
-                        .unwrap_or(velocity) as i64;
-                    let (seqv, chv, prv, tv) = (0x7Fi64, 0x7Fi64, prog.volume as i64, tone.volume as i64);
+                    let vel =
+                        bank.velocity.get(velocity.clamp(0, 127) as usize).copied().unwrap_or(velocity).clamp(0, 127)
+                            as i64;
+                    let (seqv, chv, prv, tv) =
+                        (0x7Fi64, 0x7Fi64, prog.volume.clamp(0, 127) as i64, tone.volume.clamp(0, 127) as i64);
                     let vol_l = crate::sound::Synth::volume_register(seqv, chv, prv, vel, tv, gl);
                     let vol_r = crate::sound::Synth::volume_register(seqv, chv, prv, vel, tv, gr);
                     let gain_l = vol_l as f32 / 16384.0 * master;
                     let gain_r = vol_r as f32 / 16384.0 * master;
 
-                    let pitch = synth.pitch_register(tone.root, note, tone.fine, 0x40, tone.bend_range);
+                    let pitch = synth.pitch_register(
+                        tone.root.clamp(0, 127),
+                        note,
+                        tone.fine.clamp(-128, 127),
+                        0x40,
+                        tone.bend_range,
+                    );
                     let step = pitch as f64 / 4096.0;
                     let env = envelope(tone.adsr1, tone.adsr2, on_samples, total);
 
@@ -325,35 +431,31 @@ impl SoundBench {
                 }
             }
             SoundBenchBackend::Ps1 { vab } => {
-                let Some(prog) = vab.programs.get(program_id as usize) else {
-                    return mix;
-                };
-                for tone in &prog.tones {
-                    let Some((pcm, lp)) = vab.samples.get(tone.vag as usize) else {
-                        continue;
-                    };
-                    if pcm.len() < 2 {
-                        continue;
-                    }
-                    let env = envelope(tone.adsr1, tone.adsr2, on_samples, total);
-                    let gain = (velocity.clamp(0, 127) as f32 / 127.0)
-                        * (tone.vol as f32 / 127.0)
-                        * (prog.vol as f32 / 127.0)
-                        * (vab.master as f32 / 127.0)
-                        * (0x3FFF as f32 / 16384.0);
-                    let pan = ((tone.pan as f32) / 127.0).clamp(0.0, 1.0);
-                    let (gain_l, gain_r) = (gain * (1.0 - pan).sqrt(), gain * pan.sqrt());
-
-                    let semis = note as f32 - tone.centre as f32 + tone.shift as f32 / 128.0;
-                    let step = 2f64.powf(semis as f64 / 12.0) * 44100.0 / SAMPLE_RATE as f64;
-
-                    mix_voice(&mut mix, 0, pcm, *lp, &env, step, gain_l, gain_r);
-                }
+                let Ok(prog) = u8::try_from(program_id) else { return mix };
+                let key = NoteEvent { time: 0, prog, note: note as u8, vel: velocity.clamp(0, 127) as u8, pan: 64 };
+                let off = NoteEvent { vel: 0, ..key };
+                return vab.render_events(&[(0, key), (on_samples, off)], Some(total), 0);
             }
         }
 
         mix
     }
+}
+
+fn decode_bank_sample(bank: &SoundBank, offset: usize) -> (Vec<f32>, Option<usize>) {
+    if offset.checked_add(16).is_none_or(|end| end > bank.body().len()) {
+        return (Vec::new(), None);
+    }
+    bank.decode_sample(offset)
+}
+
+fn render_length(seconds: f64) -> Option<(usize, usize)> {
+    if !seconds.is_finite() || seconds <= 0.0 || seconds > 120.0 {
+        return None;
+    }
+    let total = (seconds * SAMPLE_RATE as f64).round() as usize;
+    let on = if seconds > 0.5 { ((seconds - 0.25) * SAMPLE_RATE as f64).round() as usize } else { total * 3 / 4 };
+    Some((total, on))
 }
 
 // =======================================================================================
@@ -378,6 +480,7 @@ trait FontProvider: Send + Sync {
 }
 
 /// A font available in the BIOS, exposing per-glyph bitmaps and atlas generation.
+#[non_exhaustive]
 pub struct BenchFont {
     name: String,
     width: usize,
@@ -403,7 +506,7 @@ impl BenchFont {
         &self.name
     }
 
-    /// Number of accessible glyphs in this font.
+    /// Number of indexed slots in this font; malformed/reserved slots may be unavailable.
     pub fn glyph_count(&self) -> usize {
         self.provider.glyph_count()
     }
@@ -477,61 +580,42 @@ fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usize, usize) {
 // PS1 KROM Font
 // ---------------------------------------------------------------------------------------
 
-/// The 51 canonical interval table entries verified in every retail PS1 kernel and PS2 rom0
-/// (`notes/research/ps1_version_matrix.md` §2.1, ROM `0x16E00` / `0xA2E0`).
-const DEFAULT_KROM_INTERVALS: [(u16, u16); 51] = [
-    (0x8140, 0x0), (0x8180, 0x3f), (0x81b8, 0x6c), (0x81c8, 0x74), (0x81da, 0x7b),
-    (0x81f0, 0x8a), (0x81fc, 0x92), (0x824f, 0x93), (0x8260, 0x9d), (0x8281, 0xb7),
-    (0x829f, 0xd1), (0x8340, 0x124), (0x8380, 0x163), (0x839f, 0x17a), (0x83bf, 0x192),
-    (0x8440, 0x1aa), (0x8470, 0x1cb), (0x8480, 0x1da), (0x849f, 0x1ec),
-    (0x889f, 0x0), (0x8940, 0x5e), (0x899f, 0xbc), (0x8a40, 0x11a), (0x8a9f, 0x178),
-    (0x8b40, 0x1d6), (0x8b9f, 0x234), (0x8c40, 0x292), (0x8c9f, 0x2f0), (0x8d40, 0x34e),
-    (0x8d9f, 0x3ac), (0x8e40, 0x40a), (0x8e9f, 0x468), (0x8f40, 0x4c6), (0x8f9f, 0x524),
-    (0x9040, 0x582), (0x909f, 0x5e0), (0x9140, 0x63e), (0x919f, 0x69c), (0x9240, 0x6fa),
-    (0x929f, 0x758), (0x9340, 0x7b6), (0x939f, 0x814), (0x9440, 0x872), (0x949f, 0x8d0),
-    (0x9540, 0x92e), (0x959f, 0x98c), (0x9640, 0x9ea), (0x969f, 0xa48), (0x9740, 0xaa6),
-    (0x979f, 0xb04), (0x9840, 0xb62),
-];
-
 /// The PS1/PS2 kernel kanji font (`rom0:KROM`, 16×15 in 16×16 cell, 30 bytes per glyph),
 /// addressable by index or by Shift-JIS code via kernel `Krom2RawAdd` (`notes/ps1_boot.md` §4.3).
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct KromFont {
     data: Vec<u8>,
-    intervals: Vec<(u16, u16)>,
+    intervals: Option<Vec<(u16, u16)>>,
 }
 
 impl KromFont {
     /// Total glyphs stored across Charset 2 (524) and Charset 3 (2,965).
     pub const GLYPH_COUNT: usize = 3489;
 
-    /// Parses KROM bytes, locating the kernel interval table by content from `bios_context`
-    /// if provided, or falling back to [`DEFAULT_KROM_INTERVALS`].
+    /// Keeps raw glyph bytes and reads the two kernel interval tables by content.
+    /// Without a valid BIOS table, sequential glyph access remains available, but
+    /// Shift-JIS lookup returns `None` (matrix §2.1; no built-in Sony mapping table).
     pub fn new(krom_data: Vec<u8>, bios_context: Option<&[u8]>) -> Self {
-        let mut intervals = Vec::new();
-        if let Some(bios) = bios_context {
-            // Find interval table signature: 0x8140, 0x0000, 0x8180, 0x003F
-            let pat = [0x40, 0x81, 0x00, 0x00, 0x80, 0x81, 0x3f, 0x00];
-            if let Some(pos) = bios.windows(pat.len()).position(|w| w == pat) {
-                let mut p = pos;
-                while p + 4 <= bios.len() && intervals.len() < 70 {
-                    let code = bios.u16(p);
-                    let idx = bios.u16(p + 2);
-                    if code == 0 && idx == 0 {
-                        break;
-                    }
-                    intervals.push((code, idx));
-                    p += 4;
+        let intervals = bios_context.and_then(|bios| {
+            // Krom2RawAdd's two adjacent arrays: 19 symbol runs, then 32 kanji runs.
+            // Validate increasing codes/indices within each array, including the reset.
+            bios.windows(51 * 4).step_by(4).find_map(|raw| {
+                let entries: Vec<_> = raw.chunks_exact(4).map(|e| (e.u16(0), e.u16(2))).collect();
+                if entries[0] != (0x8140, 0) || entries[19] != (0x889F, 0) {
+                    return None;
                 }
-            }
-        }
-        if intervals.len() < 51 {
-            intervals = DEFAULT_KROM_INTERVALS.to_vec();
-        }
-        Self {
-            data: krom_data,
-            intervals,
-        }
+                let valid = |runs: &[(u16, u16)], end_code: u16, count: u16| {
+                    runs.iter().all(|&(c, i)| c < end_code && i < count)
+                        && runs
+                            .windows(2)
+                            .all(|w| w[1].0 > w[0].0 && w[1].1 > w[0].1 && w[1].1 - w[0].1 <= w[1].0 - w[0].0)
+                        && runs.last().is_some_and(|&(c, i)| count - i == end_code - c)
+                };
+                (valid(&entries[..19], 0x84BF, 524) && valid(&entries[19..], 0x9873, 2965)).then_some(entries)
+            })
+        });
+        Self { data: krom_data, intervals }
     }
 
     /// Number of glyphs in this font.
@@ -544,52 +628,33 @@ impl KromFont {
         "PS1 KROM: 3,489 glyphs (16x16, 15 active rows; 524 Charset 2 symbols/alphabets, 2,965 Charset 3 Level-1 Kanji; SJIS 0x8140-0x84BE, 0x889F-0x9872)"
     }
 
-    /// Translates a 16-bit Shift-JIS character code to its glyph index in KROM.
+    /// Translates a Shift-JIS code using the supplied kernel's interval tables.
+    /// Undefined gaps return `None`, as does a missing/truncated mapping or glyph.
     pub fn code_to_index(&self, sjis: u16) -> Option<usize> {
-        if (0x8140..=0x84BE).contains(&sjis) {
-            let limit = 19.min(self.intervals.len());
-            for &(base_code, base_idx) in self.intervals[..limit].iter().rev() {
-                if sjis >= base_code {
-                    let idx = base_idx as usize + (sjis - base_code) as usize;
-                    return if idx < 524 { Some(idx) } else { None };
-                }
-            }
-        } else if (0x889F..=0x9872).contains(&sjis) {
-            let start = 19.min(self.intervals.len());
-            let end = 51.min(self.intervals.len());
-            for &(base_code, base_idx) in self.intervals[start..end].iter().rev() {
-                if sjis >= base_code {
-                    let idx = base_idx as usize + (sjis - base_code) as usize;
-                    return if idx < 2965 { Some(524 + idx) } else { None };
-                }
-            }
+        let tables = self.intervals.as_ref()?;
+        let (runs, count, offset) = if (0x8140..0x84BF).contains(&sjis) {
+            (&tables[..19], 524usize, 0)
+        } else if (0x889F..0x9873).contains(&sjis) {
+            (&tables[19..], 2965, 524)
+        } else {
+            return None;
+        };
+        let run = runs.iter().rposition(|&(code, _)| code <= sjis)?;
+        let (code, index) = runs[run];
+        let next = runs.get(run + 1).map_or(count, |&(_, i)| i as usize);
+        if sjis & 0xFF == 0x7F {
+            return None;
         }
-        None
+        let skip = usize::from(code & 0xFF <= 0x7F && sjis & 0xFF >= 0x80);
+        let index = index as usize + (sjis - code) as usize - skip;
+        (index < next && offset + index < self.glyph_count()).then_some(offset + index)
     }
 
-    /// Re-implements PS1 kernel syscall `B(51h) Krom2RawAdd(shiftjis_code)`
-    /// (`notes/research/ps1_version_matrix.md` §2.1, problemkaputt PSXSPX).
-    /// Returns the kernel virtual address in ROM (`0xBFC66000` / `0xBFC69D68`), or `None`.
+    /// Re-implements `B(51h) Krom2RawAdd` for valid characters using the dump's tables.
+    /// ROM font bases and 30-byte stride: `ps1_version_matrix.md` §2.1.
     pub fn krom2rawadd(&self, sjis: u16) -> Option<u32> {
-        if (0x8140..=0x84BE).contains(&sjis) {
-            let limit = 19.min(self.intervals.len());
-            for &(base_code, base_idx) in self.intervals[..limit].iter().rev() {
-                if sjis >= base_code {
-                    let idx = base_idx as usize + (sjis - base_code) as usize;
-                    return if idx < 524 { Some(0xBFC6_6000 + (idx * 30) as u32) } else { None };
-                }
-            }
-        } else if (0x889F..=0x9872).contains(&sjis) {
-            let start = 19.min(self.intervals.len());
-            let end = 51.min(self.intervals.len());
-            for &(base_code, base_idx) in self.intervals[start..end].iter().rev() {
-                if sjis >= base_code {
-                    let idx = base_idx as usize + (sjis - base_code) as usize;
-                    return if idx < 2965 { Some(0xBFC6_9D68 + (idx * 30) as u32) } else { None };
-                }
-            }
-        }
-        None
+        let index = self.code_to_index(sjis)?;
+        Some(0xBFC6_6000 + (index * 30) as u32)
     }
 
     /// Decodes the 16×16 RGBA glyph for `sjis`, or `None` if not mapped.
@@ -603,11 +668,7 @@ impl KromFont {
         if index >= self.glyph_count() {
             return None;
         }
-        let offset = if index < 524 {
-            index * 30
-        } else {
-            0x3D68 + (index - 524) * 30
-        };
+        let offset = if index < 524 { index * 30 } else { 0x3D68 + (index - 524) * 30 };
         if offset + 30 > self.data.len() {
             return None;
         }
@@ -622,11 +683,7 @@ impl KromFont {
                 }
             }
         }
-        Some(Glyph {
-            width: 16,
-            height: 16,
-            rgba,
-        })
+        Some(Glyph { width: 16, height: 16, rgba })
     }
 
     /// Packs a range of KROM glyphs into an atlas image.
@@ -656,16 +713,18 @@ impl FontProvider for KromFont {
 // PS1 / PS2 Gaiji Block
 // ---------------------------------------------------------------------------------------
 
-/// The 16×16 1-bit Gaiji (外字) font glyphs at PS1 `0x64000` / PS2 `rom0:KROMG`
-/// (`notes/research/version_evolution.md` §3.4: 32 bytes per glyph, 229 glyphs).
+/// Gaiji (外字) at PS1 `0x64000` / PS2 `rom0:KROMG`, in 16x16 cells.
+/// Dump correction to `version_evolution.md` §3.4: 245 glyphs of 15 big-endian
+/// u16 rows (30 bytes), plus one trailing byte. A 32-byte stride splits the glyphs.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct GaijiFont {
     data: Vec<u8>,
 }
 
 impl GaijiFont {
-    /// Number of glyphs expected in retail dumps (7,351 bytes / 32 = 229).
-    pub const GLYPH_COUNT: usize = 229;
+    /// Complete glyphs in the 7,351-byte retail block (245 × 30, plus a tail byte).
+    pub const GLYPH_COUNT: usize = 245;
 
     /// Parses the Gaiji block bytes.
     pub fn new(data: Vec<u8>) -> Self {
@@ -674,12 +733,12 @@ impl GaijiFont {
 
     /// Number of glyphs in this block.
     pub fn glyph_count(&self) -> usize {
-        self.data.len() / 32
+        self.data.len() / 30
     }
 
     /// Character coverage summary.
     pub fn summary(&self) -> &str {
-        "Gaiji block: 229 glyphs (16x16 1-bit, European accented characters and graphical symbols)"
+        "16x16 cells, 15 active rows, 1-bit gaiji; European accented characters and graphical symbols"
     }
 
     /// Decodes the 16×16 RGBA glyph at index `index`.
@@ -687,13 +746,13 @@ impl GaijiFont {
         if index >= self.glyph_count() {
             return None;
         }
-        let offset = index * 32;
-        if offset + 32 > self.data.len() {
+        let offset = index * 30;
+        if offset + 30 > self.data.len() {
             return None;
         }
-        let raw = &self.data[offset..offset + 32];
+        let raw = &self.data[offset..offset + 30];
         let mut rgba = vec![0u8; 16 * 16 * 4];
-        for row in 0..16 {
+        for row in 0..15 {
             let bits = u16::from_be_bytes([raw[row * 2], raw[row * 2 + 1]]);
             for col in 0..16 {
                 if (bits >> (15 - col)) & 1 != 0 {
@@ -702,11 +761,7 @@ impl GaijiFont {
                 }
             }
         }
-        Some(Glyph {
-            width: 16,
-            height: 16,
-            rgba,
-        })
+        Some(Glyph { width: 16, height: 16, rgba })
     }
 
     /// Packs a range of Gaiji glyphs into an atlas image.
@@ -739,45 +794,94 @@ impl FontProvider for GaijiFont {
 /// The 26×26 4-bit JIS kanji/kana font from `rom0:FONTM`
 /// (`notes/menu_survey.md` §4: 4,418 glyphs, 338 bytes each).
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct FontmFont {
     data: Vec<u8>,
     count: usize,
-    table_offset: usize,
+    offsets: Vec<usize>,
+    row_stride: usize,
+    palette: Option<[[u8; 4]; 16]>,
 }
 
 impl FontmFont {
-    /// Number of glyphs in retail FONTM builds (4,418).
+    /// Number of slots advertised by retail FONTM builds (4,418; two unavailable).
     pub const GLYPH_COUNT: usize = 4418;
 
     /// Parses an unpacked FONTM container (`"FBJ2"` header).
+    /// Offset entries are relative to the block at header +0x0C, as confirmed by
+    /// the OSD font init at 0x20DCF4/0x20DD00 (menu_survey §4). Out-of-file
+    /// slots remain unavailable: retail tables have two such entries at their tail.
     pub fn new(unpacked: Vec<u8>) -> Result<Self> {
         if unpacked.len() < 0x20 || &unpacked[..4] != b"FBJ2" {
             return Err(Error::Corrupt(Format::Bios, "invalid FONTM header".into()));
         }
         let block_off = unpacked.u32(0x0C) as usize;
-        if block_off + 8 > unpacked.len() {
+        if block_off.checked_add(8).is_none_or(|end| end > unpacked.len()) {
             return Err(Error::Corrupt(Format::Bios, "truncated FONTM block table".into()));
         }
         let count = unpacked.u32(block_off) as usize;
         let table_offset = block_off + 8;
-        if table_offset + count * 4 > unpacked.len() {
+        if count > unpacked.len().saturating_sub(table_offset) / 4 {
             return Err(Error::Corrupt(Format::Bios, "truncated FONTM offset table".into()));
         }
         Ok(Self {
-            data: unpacked,
             count,
-            table_offset,
+            offsets: (0..count)
+                .map(|i| block_off.saturating_add(unpacked.u32(table_offset + i * 4) as usize))
+                .collect(),
+            row_stride: 13,
+            palette: None,
+            data: unpacked,
         })
     }
 
-    /// Number of glyphs in this font.
+    /// Parses the 26x26 glyph sheet in `FNTADD00` using the dump's RGBA palette.
+    /// `menu_survey.md` §4 open question: [V] 2.00 E's asset has a 64-byte header,
+    /// five byte endpoints and a 416-pixel-wide PSMT4 sheet (16 cells per row).
+    /// The OSD cache at 0x20C438 copies each glyph row with a 208-byte stride.
+    /// [I] Header endpoints delimit character groups; code mapping remains unknown.
+    pub fn additional(data: Vec<u8>, palette: &[[u8; 4]; 16]) -> Result<Self> {
+        let bad = || Error::Corrupt(Format::Bios, "invalid FNTADD00 glyph sheet".into());
+        if data.len() < 64 || !data.len().saturating_sub(64).is_multiple_of(16 * 338) {
+            return Err(bad());
+        }
+        let mut previous = 64;
+        for i in 0..5 {
+            let end = data.u32(i * 4) as usize;
+            if end < previous || end > data.len() || !(end - 64).is_multiple_of(338) {
+                return Err(bad());
+            }
+            previous = end;
+        }
+        if previous != data.len() {
+            return Err(bad());
+        }
+        let count = (data.len() - 64) / 338;
+        Ok(Self {
+            count,
+            offsets: (0..count).map(|i| 64 + (i / 16) * 26 * 208 + (i % 16) * 13).collect(),
+            row_stride: 208,
+            palette: Some(*palette),
+            data,
+        })
+    }
+
+    /// Number of slots whose full glyph data lies in this container.
+    pub fn available_glyph_count(&self) -> usize {
+        self.offsets
+            .iter()
+            .filter(|&&o| o.checked_add(self.row_stride * 25 + 13).is_some_and(|end| end <= self.data.len()))
+            .count()
+    }
+
+    /// Number of advertised glyph slots; unavailable entries return `None`.
     pub fn glyph_count(&self) -> usize {
         self.count
     }
 
     /// Character coverage summary.
     pub fn summary(&self) -> &str {
-        "PS2 FONTM: 4,418 glyphs (26x26 4-bit, JIS kanji and kana)"
+        "26x26 4-bit JIS kanji/kana; header slots may include unavailable glyphs"
     }
 
     /// Decodes the 26×26 RGBA glyph at index `index`.
@@ -785,28 +889,29 @@ impl FontmFont {
         if index >= self.count {
             return None;
         }
-        let g_off = self.data.u32(self.table_offset + index * 4) as usize;
-        if g_off + 338 > self.data.len() {
+        let g_off = *self.offsets.get(index)?;
+        if g_off.checked_add(self.row_stride * 25 + 13).is_none_or(|end| end > self.data.len()) {
             return None;
         }
-        let raw = &self.data[g_off..g_off + 338];
+        let raw = &self.data[g_off..];
         let mut rgba = vec![0u8; 26 * 26 * 4];
         for y in 0..26 {
             for x in 0..26 {
-                let byte = raw[y * 13 + x / 2];
-                let nib = if x % 2 == 0 { byte >> 4 } else { byte & 0x0F };
-                if nib > 0 {
-                    let a = nib * 17;
-                    let o = (y * 26 + x) * 4;
-                    rgba[o..o + 4].copy_from_slice(&[255, 255, 255, a]);
-                }
+                let byte = raw[y * self.row_stride + x / 2];
+                let low_left = self.palette.is_some();
+                let nib = if (x % 2 == 0) == low_left { byte & 15 } else { byte >> 4 };
+                let colour = if let Some(pal) = &self.palette {
+                    pal[nib as usize]
+                } else if nib > 0 {
+                    [255, 255, 255, nib * 17]
+                } else {
+                    [0; 4]
+                };
+                let o = (y * 26 + x) * 4;
+                rgba[o..o + 4].copy_from_slice(&colour);
             }
         }
-        Some(Glyph {
-            width: 26,
-            height: 26,
-            rgba,
-        })
+        Some(Glyph { width: 26, height: 26, rgba })
     }
 
     /// Packs a range of FONTM glyphs into an atlas image.
@@ -836,28 +941,35 @@ impl FontProvider for FontmFont {
 // PS2 FNTIMAGE Sheets
 // ---------------------------------------------------------------------------------------
 
-/// The 16-entry RGBA CLUT from `tools/font2png.py` and `notes/menu_survey.md` §4.
-const DEFAULT_FNT_CLUT: [[u8; 4]; 16] = [
-    [0, 0, 0, 0],
-    [0, 0, 0, 50],
-    [0, 0, 0, 100],
-    [0, 0, 0, 150],
-    [0, 0, 0, 200],
-    [51, 51, 51, 100],
-    [51, 51, 51, 150],
-    [51, 51, 51, 200],
-    [51, 51, 51, 250],
-    [102, 102, 102, 150],
-    [102, 102, 102, 200],
-    [102, 102, 102, 250],
-    [153, 153, 153, 200],
-    [153, 153, 153, 250],
-    [204, 204, 204, 250],
-    [255, 255, 255, 250],
-];
+// The uploader's grayscale CLUT, located structurally in the executable rather than
+// copied from Sony's data. `menu_survey.md` §4; GS alpha 0x80 represents full opacity.
+fn font_clut(image: &[u8]) -> Option<[[u8; 4]; 16]> {
+    image.windows(64).step_by(4).find_map(|raw| {
+        let mut pal = [[0; 4]; 16];
+        for (c, bytes) in pal.iter_mut().zip(raw.chunks_exact(4)) {
+            c.copy_from_slice(bytes)
+        }
+        if pal[0] != [0; 4]
+            || pal[15][0] != 255
+            || pal.iter().any(|c| c[0] != c[1] || c[1] != c[2] || c[3] > 128)
+            || pal[1..5].iter().any(|c| c[0] != 0 || c[3] == 0)
+            || pal[1..5].windows(2).any(|w| w[0][3] >= w[1][3])
+            || pal[5][0] == 0
+            || pal.windows(2).any(|w| w[0][0] > w[1][0])
+            || pal[5..].iter().any(|c| c[3] == 0)
+        {
+            return None;
+        }
+        for c in &mut pal {
+            c[3] = c[3].saturating_mul(2)
+        }
+        Some(pal)
+    })
+}
 
 /// A 4-bit bitmap font sheet unpacked from `rom0:FNTIMAGE` (`tools/font2png.py`).
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct FntSheet {
     name: String,
     sheet_w: usize,
@@ -875,6 +987,7 @@ impl FntSheet {
     pub const CELL_H: usize = 40;
 
     /// Decodes an unpacked 4-bit sheet (`w * h / 2` bytes) with the given glyph layout.
+    /// Supply a palette extracted from the OSD; `None` is an error, without a built-in fallback.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
@@ -887,11 +1000,26 @@ impl FntSheet {
         clut: Option<&[[u8; 4]; 16]>,
     ) -> Result<Self> {
         let name = name.into();
-        let expected = w * h / 2;
+        let pixels = w
+            .checked_mul(h)
+            .filter(|&n| n <= 64 << 20)
+            .ok_or_else(|| Error::Corrupt(Format::Bios, "invalid font sheet dimensions".into()))?;
+        if w == 0
+            || h == 0
+            || !w.is_multiple_of(2)
+            || glyphs_per_row == 0
+            || glyphs_per_row > w / Self::CELL_W
+            || glyph_count > (h / Self::CELL_H) * glyphs_per_row
+        {
+            return Err(Error::Corrupt(Format::Bios, "invalid font sheet layout".into()));
+        }
+        let expected = pixels / 2;
         if raw_4bit.len() < expected {
             return Err(Error::Corrupt(Format::Bios, format!("sheet {name} is truncated")));
         }
-        let pal = clut.unwrap_or(&DEFAULT_FNT_CLUT);
+        let pal = clut.ok_or_else(|| {
+            Error::NotFound(Format::Bios, "FNTIMAGE needs a palette supplied from the user's OSD image".into())
+        })?;
         let mut rgba = vec![0u8; w * h * 4];
         for y in 0..h {
             for x in 0..w {
@@ -902,15 +1030,7 @@ impl FntSheet {
                 rgba[o..o + 4].copy_from_slice(&c);
             }
         }
-        Ok(Self {
-            name,
-            sheet_w: w,
-            sheet_h: h,
-            glyphs_per_row,
-            glyph_count,
-            summary: summary.into(),
-            rgba,
-        })
+        Ok(Self { name, sheet_w: w, sheet_h: h, glyphs_per_row, glyph_count, summary: summary.into(), rgba })
     }
 
     /// Sheet name.
@@ -948,11 +1068,7 @@ impl FntSheet {
                 g_rgba[dst_o..dst_o + 4].copy_from_slice(&self.rgba[src_o..src_o + 4]);
             }
         }
-        Some(Glyph {
-            width: Self::CELL_W,
-            height: Self::CELL_H,
-            rgba: g_rgba,
-        })
+        Some(Glyph { width: Self::CELL_W, height: Self::CELL_H, rgba: g_rgba })
     }
 
     /// Full sheet image `(width, height, Vec<u8> RGBA)`.
@@ -989,6 +1105,7 @@ impl FontProvider for FntSheet {
 
 /// Complete font atelier: inspects and renders every font glyph in the user's BIOS
 /// (PS1 KROM, Gaiji, PS2 `FONTM`, and `FNTIMAGE` sheets).
+#[non_exhaustive]
 pub struct FontBench {
     fonts: Vec<BenchFont>,
     krom: Option<KromFont>,
@@ -999,22 +1116,21 @@ pub struct FontBench {
 impl std::fmt::Debug for FontBench {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let names: Vec<&str> = self.fonts.iter().map(|f| f.name()).collect();
-        f.debug_struct("FontBench")
-            .field("fonts", &names)
-            .finish_non_exhaustive()
+        f.debug_struct("FontBench").field("fonts", &names).finish_non_exhaustive()
     }
 }
 
 impl FontBench {
     /// Inspects fonts in a PS1 BIOS dump (KROM and optional Gaiji block A).
     pub fn ps1(bios_data: &[u8]) -> Result<Self> {
+        let bios = Ps1Bios::new(bios_data.to_vec())?;
         let mut fonts = Vec::new();
-        let mut krom_opt = None;
+        let krom_opt;
         let mut gaiji_opt = None;
 
         // KROM at 0x66000..0x7FE70 (notes/research/ps1_version_matrix.md §2.1)
-        if bios_data.len() >= 0x7FE70 {
-            let krom_bytes = bios_data[0x66000..0x7FE70].to_vec();
+        {
+            let krom_bytes = bios.krom().to_vec();
             let kf = KromFont::new(krom_bytes, Some(bios_data));
             fonts.push(BenchFont {
                 name: "KROM".into(),
@@ -1028,7 +1144,11 @@ impl FontBench {
         }
 
         // Gaiji Block A at 0x64000..0x65CB7 (7,351 bytes, U/E only)
-        if bios_data.len() >= 0x65CB7 {
+        // Matrix §2.1: early Japanese images overlap this window with shell data.
+        // The supplied 4.0 J dump has a zero-filled block, despite the note's label.
+        if matches!(bios.identity().region_letter, Some('A' | 'E'))
+            || bios.identity().shell_storage == crate::ps1bios::ShellStorage::Pops
+        {
             let gaiji_bytes = &bios_data[0x64000..0x65CB7];
             if gaiji_bytes.iter().any(|&b| b != 0) {
                 let gf = GaijiFont::new(gaiji_bytes.to_vec());
@@ -1048,12 +1168,7 @@ impl FontBench {
             return Err(Error::NotFound(Format::Bios, "no fonts located in PS1 dump".into()));
         }
 
-        Ok(Self {
-            fonts,
-            krom: krom_opt,
-            gaiji: gaiji_opt,
-            fontm: None,
-        })
+        Ok(Self { fonts, krom: krom_opt, gaiji: gaiji_opt, fontm: None })
     }
 
     /// Inspects all fonts in a PS2 BIOS image (`KROM`, `KROMG`, `FONTM`, `FNTIMAGE`).
@@ -1090,45 +1205,59 @@ impl FontBench {
         }
 
         if let Ok(m) = bios.module("FONTM") {
-            if let Ok(unpacked) = unpack(m, 0) {
-                if let Ok(fm) = FontmFont::new(unpacked) {
-                    fonts.push(BenchFont {
-                        name: "FONTM".into(),
-                        width: 26,
-                        height: 26,
-                        count: fm.glyph_count(),
-                        summary: fm.summary().into(),
-                        provider: Box::new(fm.clone()),
-                    });
-                    fontm_opt = Some(fm);
-                }
-            }
+            let fm = FontmFont::new(unpack(m, 0)?)?;
+            fonts.push(BenchFont {
+                name: "FONTM".into(),
+                width: 26,
+                height: 26,
+                count: fm.glyph_count(),
+                summary: format!(
+                    "{}; {} of {} slots available",
+                    fm.summary(),
+                    fm.available_glyph_count(),
+                    fm.glyph_count()
+                ),
+                provider: Box::new(fm.clone()),
+            });
+            fontm_opt = Some(fm);
         }
 
         if let Ok(m) = bios.module("FNTIMAGE") {
-            if let Ok(fnt_dir) = RomDir::new(m.to_vec()) {
-                let sheets_meta = [
-                    ("FNTASCII", 256, 480, 8, 97, "FNTASCII: 97 glyphs (32x40 4-bit, ASCII 0x20..0x80)"),
-                    ("FNTEX000", 512, 760, 16, 304, "FNTEX000: 304 glyphs (32x40 4-bit, Latin/Cyrillic/Hangul)"),
-                    ("FNTEX001", 512, 760, 16, 304, "FNTEX001: 304 glyphs (32x40 4-bit, extended characters)"),
-                    ("FNTEXOSD", 512, 80, 16, 32, "FNTEXOSD: 32 glyphs (32x40 4-bit, OSD symbols)"),
-                ];
-                for (sname, w, h, per_row, count, sum) in sheets_meta {
-                    if let Ok(mod_bytes) = fnt_dir.module(sname) {
-                        if let Ok(unp) = unpack(mod_bytes, 0) {
-                            if let Ok(sheet) = FntSheet::new(sname, &unp, w, h, per_row, count, sum, None) {
-                                fonts.push(BenchFont {
-                                    name: sname.into(),
-                                    width: FntSheet::CELL_W,
-                                    height: FntSheet::CELL_H,
-                                    count: sheet.glyph_count(),
-                                    summary: sheet.summary().into(),
-                                    provider: Box::new(sheet),
-                                });
-                            }
-                        }
-                    }
-                }
+            let fnt_dir = RomDir::new(m.to_vec())?;
+            let image = ProgramImage::from_module(bios.module("OSDSYS")?, 0x200000)?;
+            let clut = font_clut(image.data())
+                .ok_or_else(|| Error::NotFound(Format::Bios, "FNTIMAGE grayscale CLUT in OSDSYS".into()))?;
+            // Sheet layouts from menu_survey §4; pixels and colours come from this dump.
+            let sheets_meta = [
+                ("FNTASCII", 256, 480, 8, 96, "ASCII 0x20..0x7F"),
+                ("FNTASCI2", 256, 480, 8, 96, "China ASCII variant, 0x20..0x7F"),
+                ("FNTEX000", 512, 760, 16, 304, "extended Latin/Cyrillic/Hangul"),
+                ("FNTEX001", 512, 760, 16, 304, "extended characters"),
+                ("FNTEXOSD", 512, 80, 16, 32, "OSD symbols"),
+            ];
+            for (name, w, h, per_row, count, coverage) in sheets_meta {
+                let Ok(module) = fnt_dir.module(name) else { continue };
+                let raw = unpack(module, 0)?;
+                let sheet = FntSheet::new(name, &raw, w, h, per_row, count, coverage, Some(&clut))?;
+                fonts.push(BenchFont {
+                    name: name.into(),
+                    width: FntSheet::CELL_W,
+                    height: FntSheet::CELL_H,
+                    count: sheet.glyph_count(),
+                    summary: sheet.summary().into(),
+                    provider: Box::new(sheet),
+                });
+            }
+            if let Ok(module) = fnt_dir.module("FNTADD00") {
+                let font = FontmFont::additional(unpack(module, 0)?, &clut)?;
+                fonts.push(BenchFont {
+                    name: "FNTADD00".into(),
+                    width: 26,
+                    height: 26,
+                    count: font.glyph_count(),
+                    summary: "extra 26x26 4-bit glyphs; character mapping unknown".into(),
+                    provider: Box::new(font),
+                });
             }
         }
 
@@ -1136,12 +1265,7 @@ impl FontBench {
             return Err(Error::NotFound(Format::Bios, "no fonts located in PS2 dump".into()));
         }
 
-        Ok(Self {
-            fonts,
-            krom: krom_opt,
-            gaiji: gaiji_opt,
-            fontm: fontm_opt,
-        })
+        Ok(Self { fonts, krom: krom_opt, gaiji: gaiji_opt, fontm: fontm_opt })
     }
 
     /// Opens a BIOS dump from disk and inspects its fonts (PS1 or PS2).
@@ -1171,9 +1295,7 @@ impl FontBench {
         let lower = name.to_ascii_lowercase();
         self.fonts.iter().find(|f| {
             let fn_lower = f.name().to_ascii_lowercase();
-            fn_lower == lower
-                || (lower == "gaiji" && fn_lower == "kromg")
-                || (lower == "kromg" && fn_lower == "gaiji")
+            fn_lower == lower || (lower == "gaiji" && fn_lower == "kromg") || (lower == "kromg" && fn_lower == "gaiji")
         })
     }
 
