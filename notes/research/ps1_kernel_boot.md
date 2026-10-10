@@ -131,8 +131,14 @@ device `k:6DC0`, 4 after it, then the dummy/DUART tty (`k:6AC0` = `A0:99` / `k:6
 (`k:6AA0/6AB0`)) and by the shell's `sh:80030798`
 (0 while reading the system area, 1, 2, 5 just before returning to the ROM, 7 before the logo
 error). The full sequence a tool can predict on a good boot is therefore
-`F E 1 2 3 [1 3 4 5 6 2] 4 5 6 7 [0 1 2 5] 8 9` and `F` on any error — an emulator exposing the
-register gives a stage trace for free.
+`F E 1 2 3 4 [1 3 4 5 6 2] 5 6 7 [0 1 2 5] 8 9` and `F` on any error — an emulator exposing the
+register gives a stage trace for free. **Correction (2026-10-10, scph5501 [V]):** the bootstrap
+writes 4 *before* the device installation, not after: `rom:BFC0686C jal 0xBFC01A60` (the POST
+helper) with `a0 = 4` in the delay slot, then `rom:BFC068A4 jal 0xBFC0DB30` (the bracketed run),
+then 5 at `rom:BFC068AC`. First reported by the R6 builder (`ps2kit::ps1narrate`), which derives
+the sequence from each dump's own code: every K2 dump (2.2 → 4.5 and POPS) gives
+`F E 1 2 3 4 [1 3 4 5 6 2] 5 6 7 8 9`, every K1 dump (1.0, 1.1, 2.0) `F E 1 2 3 4 5 6 7 8 9` (no
+device-install stages); the shell's own `[0 1 2 5]` is written by the shell, not the bootstrap.
 
 ### 1.4 Version words and strings **[V]**
 
