@@ -376,30 +376,46 @@ impl ElfProbe {
         })
     }
 
+    /// The SDK library stamps in any byte range (an ELF, an IRX), in file order.
+    #[must_use]
+    pub fn sdk_stamps_in(bytes: &[u8]) -> Vec<SdkStamp> { Self::scan_sdk_stamps(bytes) }
+
+    /// SDK library stamps have one shape (`games_probe.md` §1.1): `PsIIlib` or `lib`, a lowercase
+    /// library name, optional spaces, then a four-digit version (`PsIIlibcdvd 1650`,
+    /// `PsIIlibrspu21620`, `libdma  1620`); stamps are often packed back to back. Anything else
+    /// that merely starts with "lib" (UI text such as "libre en la MEMORY CARD") is not a stamp.
     fn scan_sdk_stamps(bytes: &[u8]) -> Vec<SdkStamp> {
         let mut stamps = Vec::new();
         let mut p = 0;
-        while p + 7 < bytes.len() {
-            let is_ps2 = bytes[p..].starts_with(b"PsIIlib");
-            let is_lib = !is_ps2 && bytes[p..].starts_with(b"lib");
-            if is_ps2 || is_lib {
-                let start = p;
-                let mut q = p;
-                while q < bytes.len() && (bytes[q].is_ascii_graphic() || bytes[q] == b' ') {
-                    q += 1;
-                }
-                let raw = String::from_utf8_lossy(&bytes[start..q]);
-                let s = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-                let has_ver = s.chars().any(|c| c.is_ascii_digit());
-                if has_ver && (s.starts_with("PsIIlib") || s.starts_with("lib")) && s.len() >= 8 {
-                    stamps.push(SdkStamp { offset: start, stamp: s });
-                    p = q;
-                    continue;
-                }
+        while p + 8 <= bytes.len() {
+            match Self::stamp_at(bytes, p) {
+                Some((len, stamp)) => { stamps.push(SdkStamp { offset: p, stamp }); p += len }
+                None => p += 1,
             }
-            p += 1;
         }
         stamps
+    }
+
+    /// The stamp starting at `p`, as `(byte length, normalised text)`.
+    fn stamp_at(b: &[u8], p: usize) -> Option<(usize, String)> {
+        let prefix: &[u8] = if b[p..].starts_with(b"PsIIlib") { b"PsIIlib" } else if b[p..].starts_with(b"lib") { b"lib" } else { return None };
+        let mut q = p + prefix.len();
+        let token_start = q;
+        while q < b.len() && (b[q].is_ascii_lowercase() || b[q].is_ascii_digit()) { q += 1 }
+        let token = &b[token_start..q];
+        let mut r = q;
+        while r < b.len() && b[r] == b' ' { r += 1 }
+        let digits = |s: &[u8]| s.len() == 4 && s.iter().all(u8::is_ascii_digit);
+        let (name, version, end) = if r > q && r + 4 <= b.len() && digits(&b[r..r + 4]) && b.get(r + 4).is_none_or(|c| !c.is_ascii_digit()) {
+            (token, &b[r..r + 4], r + 4)
+        } else if token.len() >= 6 && digits(&token[token.len() - 4..]) {
+            (&token[..token.len() - 4], &token[token.len() - 4..], q)
+        } else {
+            return None;
+        };
+        if name.len() < 2 || !name[0].is_ascii_lowercase() { return None }
+        let text = format!("{}{} {}", String::from_utf8_lossy(prefix), String::from_utf8_lossy(name), String::from_utf8_lossy(version));
+        Some((end - p, text))
     }
 
     fn scan_referenced_modules(bytes: &[u8]) -> Vec<ReferencedModule> {

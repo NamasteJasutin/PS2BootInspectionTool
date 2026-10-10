@@ -558,3 +558,11 @@ fn oracle_tekken_japan_ps1() {
     assert!(!ps1.bios_calls.iter().any(|c| c.name == Some("strcpy")));
     assert!(ps1.bios_calls.iter().any(|c| c.name == Some("InitHeap")));
 }
+
+#[test]
+fn sdk_stamps_have_the_library_shape() {
+    let mut elf = vec![0u8; 64];
+    elf.extend_from_slice(b"libre en la MEMORY CARD(PS2).\0PsIIlibcdvd 1650\0PsIIlibpkt 1620PsIIlibrspu21620\0libdma  1620\0libpad: buffer addr is not 64 byte align. %08x\0");
+    let stamps: Vec<String> = ps2kit::probe::ElfProbe::sdk_stamps_in(&elf).into_iter().map(|s| s.stamp).collect();
+    assert_eq!(stamps, ["PsIIlibcdvd 1650", "PsIIlibpkt 1620", "PsIIlibrspu2 1620", "libdma 1620"]);
+}
