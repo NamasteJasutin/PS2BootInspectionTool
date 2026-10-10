@@ -505,8 +505,12 @@ pub enum Segment {
     /// The warning scene ([`Timeline::warning`], [`BootSequence::warning`]): the drive found
     /// an illegal disc, or OSDSYS rejected the disc's region. Holds until the drive reports a change.
     Warning,
-    /// The clock / main-menu module after an opening with no disc. Holds.
+    /// The clock / main-menu module after an opening with no disc. Holds. On a standalone PS1
+    /// console: the shell's memory-card / CD-player menu.
     Menu,
+    /// A standalone PS1 console's SCE intro (grey fade, diamond, logotype), before the licence
+    /// screen or the menu ([`BootSequence::ps1`]).
+    Intro,
 }
 
 /// Where a boot leads once the drive has settled (`notes/osdsys_flow.md` §4).
@@ -631,6 +635,29 @@ impl BootSequence {
             BootOutcome::Menu => add(Segment::Menu, secs(plan.end_seconds)),
         }
         Self { video, outcome: plan.outcome, spans, opening, logo, warning }
+    }
+
+    /// A standalone PS1 console's boot (`notes/research/ps1_kernel_boot.md` §2–§3): power-on,
+    /// the SCE intro (`intro_fields` long; 0 leaves it out), then the licence screen
+    /// (`licence`: a PlayStation disc the shell starts, outcome [`BootOutcome::Ps1Game`]) or the
+    /// shell's menu (`None`, outcome [`BootOutcome::Menu`]). The PS2's opening is not part of it.
+    #[must_use]
+    pub fn ps1(plan: &BootPlan, intro_fields: usize, licence: Option<Timeline>) -> Self {
+        let video = plan.video;
+        let secs = |s: f32| (s.max(0.0) * video.fps()) as usize;
+        let mut spans = Vec::new();
+        let mut t = 0;
+        let mut add = |segment, length: usize| {
+            if length > 0 { spans.push(Span { segment, start: t, length }); t += length }
+        };
+        add(Segment::PowerOn, secs(plan.power_on_seconds));
+        add(Segment::Intro, intro_fields);
+        let outcome = match &licence {
+            Some(l) => { add(Segment::Logo, l.end_frame()); add(Segment::End, secs(plan.end_seconds).max(1)); BootOutcome::Ps1Game }
+            None => { add(Segment::Menu, secs(plan.end_seconds).max(1)); BootOutcome::Menu }
+        };
+        let logo = licence.unwrap_or_else(|| Timeline::logo(video));
+        Self { video, outcome, spans, opening: Timeline::boot(0, video), logo, warning: Timeline::warning(0, video) }
     }
 
     /// The same sequence with the disc-logo segment replaced by `logo` (a PS1 disc's licence

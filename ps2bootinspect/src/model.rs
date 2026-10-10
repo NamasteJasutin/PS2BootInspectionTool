@@ -8,6 +8,10 @@ use ps2kit::disc::{boot_outcome, handoff_steps, DiscImage, HandoffStep};
 use ps2kit::history::PlayHistory;
 use ps2kit::logo::{DiscLogo, LogoAnimation, LogoAssets, LogoBitmap};
 use ps2kit::memcard::MemoryCard;
+use ps2kit::ps1::Ps1Shell;
+use ps2kit::ps1bios::{Ps1Bios, Ps1SetIssue};
+use ps2kit::ps1boot::{ps1_boot_steps, Ps1BootStep, Ps1SystemCnf};
+use ps2kit::pup::Pup;
 use ps2kit::rom::RomDir;
 use ps2kit::sim::{phase_at, BootOutcome, BootPhase, BootPlan, BootSequence, CameraState, OpeningScene, Segment, Timeline, HANDOFF_PHASES, POWER_ON_PHASES, PS1_HANDOFF_PHASES};
 use ps2kit::sound::BootSound;
@@ -36,6 +40,23 @@ pub fn video_mode_name(video: VideoMode) -> &'static str { if video == VideoMode
 /// The sidebar's tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab { Boot, SaveData, Disc, Bios }
+
+/// Which console's boot the picture plays.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Console { Ps2, Ps1 }
+
+impl Console {
+    pub fn name(self) -> &'static str { match self { Self::Ps2 => "PlayStation 2", Self::Ps1 => "PlayStation" } }
+}
+
+/// A BIOS file found in the BIOS folder, offered in the pickers.
+#[derive(Clone, Debug)]
+pub struct ShelfEntry {
+    pub path: PathBuf,
+    pub console: Console,
+    /// Version and region as read from the file, then the file name.
+    pub label: String,
+}
 
 impl Tab {
     pub const ALL: [Self; 4] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios];
@@ -209,6 +230,8 @@ pub fn phase_caption(phase: BootPhase) -> &'static str {
 /// Shown at the end of the full sequence, where the game would start.
 const END_CAPTION: &str = "SPU quit; LoadExecPS2(boot ELF) — the game would start here";
 const MENU_CAPTION: &str = "OSDSYS: clock / main-menu module woken (ctx[0x5E8] = 2) — not re-created here";
+const PS1_MENU_CAPTION: &str = "PS1 shell: no PlayStation disc — the memory-card / CD-player menu opens (not re-created here)";
+const PS1_INTRO_CAPTION: &str = "PS1 shell: the SCE intro — grey fade, diamond, logotype (being built)";
 const WARNING_END_CAPTION: &str = "the drive reported a change: the warning scene faded and OSDSYS looks at the disc again";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -318,8 +341,25 @@ pub struct Model {
     pub rom: Option<RomDir>,
     pub scene: OpeningScene,
     pub logo_assets: Option<LogoAssets>,
-    /// The PS1 shell inside the BIOS (`rom0:LOGO`), for PlayStation discs.
-    pub ps1_shell: Option<ps2kit::ps1::Ps1Shell>,
+    /// The PS1 shell the picture uses: the PS2's `rom0:LOGO` or the standalone dump's shell,
+    /// per [`Console`].
+    pub ps1_shell: Option<Ps1Shell>,
+    /// Which console boots.
+    pub console: Console,
+    /// The PS2 BIOS's PS1 shell (`rom0:LOGO`).
+    ps2_ps1_shell: Option<Ps1Shell>,
+    /// A standalone PS1 / PSone / POPS BIOS and its shell.
+    pub ps1_bios: Option<Ps1Bios>,
+    standalone_ps1_shell: Option<Ps1Shell>,
+    pub ps1_bios_path: Option<PathBuf>,
+    pub ps1_bios_status: String,
+    /// Every BIOS file in the BIOS folder, PS2 and PS1, for the pickers.
+    pub shelf: Vec<ShelfEntry>,
+    /// Duplicates and file-name/letter disagreements among the PS1 dumps on the shelf.
+    pub ps1_set_issues: Vec<Ps1SetIssue>,
+    /// A PS3 system update found next to the BIOS files: what its plaintext container says
+    /// (read once; the contents are encrypted and never read).
+    pub pup_summary: Vec<String>,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -350,7 +390,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -371,9 +411,17 @@ impl Model {
     pub fn load_defaults(&mut self) {
         let pcsx2 = Self::pcsx2_dir();
         let bios_dir = pcsx2.as_ref().map(|p| p.join("bios"));
-        for p in bios_dir.map(|d| Self::files(&d)).unwrap_or_default() {
-            if self.assets.is_none() { self.load_bios(&p, true) }
+        let files = bios_dir.map(|d| Self::files(&d)).unwrap_or_default();
+        self.scan_shelf(&files);
+        for p in &files {
+            if self.assets.is_none() && self.shelf.iter().any(|e| &e.path == p && e.console == Console::Ps2) { self.load_bios(p, true) }
         }
+        // A retail PS1 BIOS by default; POPS only when it is the only one.
+        let ps1: Vec<PathBuf> = self.shelf.iter().filter(|e| e.console == Console::Ps1).map(|e| e.path.clone()).collect();
+        for p in ps1.iter().filter(|p| !p.to_string_lossy().to_ascii_uppercase().contains("PSXONPSP")).chain(ps1.iter()) {
+            if self.ps1_bios.is_none() { self.load_bios(p, true) }
+        }
+        if let Some(p) = files.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pup"))) { self.pup_summary = Pup::open(p).map(|pup| Self::pup_summary(&pup, p)).unwrap_or_default() }
         for p in pcsx2.as_ref().map(|p| Self::files(&p.join("memcards"))).unwrap_or_default() {
             if self.card.is_none() { self.load_card(&p, true) }
         }
@@ -392,8 +440,57 @@ impl Model {
         self.frame = self.start_frame();
     }
 
+    /// Reads every file in the BIOS folder once: PS2 dumps (a ROMDIR) and PS1 dumps go on the
+    /// shelf with what they say about themselves; the PS1 ones are cross-checked as a set.
+    fn scan_shelf(&mut self, files: &[PathBuf]) {
+        let mut ps1: Vec<(String, Vec<u8>)> = Vec::new();
+        for p in files {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            if p.is_dir() || std::fs::metadata(p).map_or(true, |m| m.len() > 8 << 20) { continue }
+            let Ok(d) = std::fs::read(p) else { continue };
+            if Self::looks_ps1(&d) {
+                let label = match Ps1Bios::new(d.clone()) {
+                    Ok(b) => { let id = b.identity(); format!("{} {} — {name}", if id.version.is_empty() { "1.0".into() } else { id.version.split_whitespace().next().unwrap_or("").to_string() }, id.region_letter.map(String::from).unwrap_or_default()) }
+                    Err(_) => format!("damaged — {name}"),
+                };
+                self.shelf.push(ShelfEntry { path: p.clone(), console: Console::Ps1, label });
+                ps1.push((name, d));
+            } else if let Ok(rom) = RomDir::new(d) {
+                let ver = rom.module("ROMVER").map(|v| String::from_utf8_lossy(&v[..v.len().min(14)]).into_owned()).unwrap_or_default();
+                self.shelf.push(ShelfEntry { path: p.clone(), console: Console::Ps2, label: format!("{} {} — {name}", ver.get(..4).map(|v| format!("{}.{}", &v[..2].trim_start_matches('0'), &v[2..])).unwrap_or_default(), ver.get(4..5).unwrap_or("")) });
+            }
+        }
+        let set: Vec<(&str, &[u8])> = ps1.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+        self.ps1_set_issues = ps2kit::ps1bios::audit_set(&set);
+    }
+
+    /// The PUP identity card in a few lines (`ps2kit::pup`, `notes/research/ps3_pup.md`).
+    fn pup_summary(pup: &Pup, path: &Path) -> Vec<String> {
+        let h = &pup.header;
+        let mut out = vec![format!("{} — PS3 system update {}", path.file_name().unwrap_or_default().to_string_lossy(), pup.version().unwrap_or_else(|_| "?".into()))];
+        out.push(format!("{} members, image version 0x{:X}, {} + {} bytes of header and data", h.file_count, h.image_version, h.header_length, h.data_length));
+        if let Ok(l) = pup.license_locales() { out.push(format!("Licence text in {} locales{}", l.len(), l.first().map(|x| format!(" (dated {})", x.date)).unwrap_or_default())) }
+        if let Ok(pk) = pup.packages() {
+            let ok = pk.iter().filter(|p| p.uncompressed_reconciled && p.stored_reconciled).count();
+            let spkg = pk.iter().filter(|p| p.spkg_hdr_matched == Some(true)).count();
+            out.push(format!("{} update packages: {ok} reconcile their sizes, {spkg} match their spkg_hdr copy", pk.len()));
+        }
+        out.push("Container structure only: the packages are encrypted and are not read.".into());
+        out
+    }
+
+    /// A standalone PS1 dump, or something that was meant to be one (a damaged copy).
+    fn looks_ps1(d: &[u8]) -> bool {
+        Ps1Bios::detect(d) || (d.len() < 0x100000 && d.windows(20).any(|w| w == b"PS-X Realtime Kernel") && !d.windows(10).any(|w| w == b"RESET\0\0\0\0\0"))
+    }
+
     pub fn load_bios(&mut self, path: &Path, quiet: bool) {
-        let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|d| RomDir::new(d).map_err(|e| e.to_string())).and_then(|rom| {
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(e) => { if !quiet { self.bios_status = format!("{}: {e}", path.file_name().unwrap_or_default().to_string_lossy()) } return }
+        };
+        if Self::looks_ps1(&data) { return self.load_ps1_bios(path, data, quiet) }
+        let result = RomDir::new(data).map_err(|e| e.to_string()).and_then(|rom| {
             let assets = OpeningAssets::load(&rom).map_err(|e| e.to_string())?;
             let logo = LogoAssets::load(&rom).ok();
             Ok((rom, assets, logo))
@@ -407,7 +504,8 @@ impl Model {
                 self.assets_version += 1;
                 self.bios_path = Some(path.to_path_buf());
                 if let Some(l) = &logo { self.ps2_logo_chime = l.chime(0x12) }
-                self.ps1_shell = ps2kit::ps1::Ps1Shell::load(&rom).map_err(|e| eprintln!("rom0:LOGO: {e}")).ok();
+                self.ps2_ps1_shell = Ps1Shell::load(&rom).map_err(|e| eprintln!("rom0:LOGO: {e}")).ok();
+                if self.console == Console::Ps2 || !quiet { self.console = Console::Ps2; self.ps1_shell = self.ps2_ps1_shell.clone() }
                 self.logo_assets = logo;
                 self.rom = Some(rom.clone());
                 self.update_logo_sound();
@@ -424,6 +522,40 @@ impl Model {
             }
             Err(e) => if !quiet { self.bios_status = format!("{}: {e}", path.file_name().unwrap_or_default().to_string_lossy()) },
         }
+    }
+
+    /// A standalone PS1 / PSone / POPS dump: identity, shell, licence screen.
+    fn load_ps1_bios(&mut self, path: &Path, data: Vec<u8>, quiet: bool) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        match Ps1Bios::new(data).and_then(|b| Ps1Shell::load_ps1(&b).map(|s| (b, s))) {
+            Ok((bios, shell)) => {
+                let id = bios.identity();
+                self.ps1_bios_status = format!("{name} — {}", if id.version.is_empty() { "no version string (1.0)".to_string() } else { id.version.clone() });
+                self.standalone_ps1_shell = Some(shell);
+                self.ps1_bios = Some(bios);
+                self.ps1_bios_path = Some(path.to_path_buf());
+                if !quiet || self.assets.is_none() { self.set_console(Console::Ps1) } else if self.console == Console::Ps1 { self.set_console(Console::Ps1) }
+            }
+            Err(e) => if !quiet { self.ps1_bios_status = format!("{name}: {e}") },
+        }
+    }
+
+    /// Switches the console the picture boots; the PS1 console uses the standalone dump's shell
+    /// and video mode (letter E = PAL).
+    pub fn set_console(&mut self, console: Console) {
+        if console == Console::Ps1 && self.standalone_ps1_shell.is_none() { return }
+        if console == Console::Ps2 && self.assets.is_none() { return }
+        self.console = console;
+        self.ps1_shell = match console { Console::Ps2 => self.ps2_ps1_shell.clone(), Console::Ps1 => self.standalone_ps1_shell.clone() };
+        self.video = match console {
+            Console::Ps1 => if self.ps1_bios.as_ref().and_then(|b| b.identity().region_letter) == Some('E') { VideoMode::Pal } else { VideoMode::Ntsc },
+            Console::Ps2 => if self.assets.as_ref().is_some_and(|a| a.rom_version().as_bytes().get(4) == Some(&b'E')) { VideoMode::Pal } else { VideoMode::Ntsc },
+        };
+        if console == Console::Ps1 { self.scene_kind = Scene::Full }
+        self.update_logo_sound();
+        self.logo_version += 1;
+        self.rebuild_timeline();
+        self.frame = self.start_frame();
     }
 
     pub fn load_card(&mut self, path: &Path, quiet: bool) {
@@ -548,6 +680,13 @@ impl Model {
         plan.handoff_seconds = self.handoff_seconds;
         plan.warning_seconds = self.warning_exit_seconds;
         self.sequence = BootSequence::from_plan(&plan);
+        if self.console == Console::Ps1 {
+            self.sequence = BootSequence::ps1(&plan, 0, self.ps1_active().then(|| self.logo_timeline()));
+            self.timeline = self.logo_timeline();
+            self.logo_version += 1;
+            self.arrange_audio();
+            return;
+        }
         self.timeline = match self.scene_kind {
             Scene::Boot | Scene::Full => Timeline::boot((self.disc_seconds * fps) as usize, self.video),
             Scene::Warning => Timeline::warning((self.warning_exit_seconds * fps) as usize, self.video),
@@ -570,7 +709,10 @@ impl Model {
     }
 
     /// Where the boot leads under the current scenario.
-    pub fn outcome(&self) -> BootOutcome { boot_outcome(&self.handoff_steps(), self.enforce_checks) }
+    pub fn outcome(&self) -> BootOutcome {
+        if self.console == Console::Ps1 { return if self.ps1_active() { BootOutcome::Ps1Game } else { BootOutcome::Menu } }
+        boot_outcome(&self.handoff_steps(), self.enforce_checks)
+    }
 
     pub fn set_scene(&mut self, kind: Scene) { self.scene_kind = kind; self.rebuild_timeline(); self.frame = self.start_frame() }
 
@@ -622,7 +764,8 @@ impl Model {
                 Segment::PowerOn => phase_at(&POWER_ON_PHASES, local as f32 / fps, self.power_on_seconds).map(phase_caption),
                 Segment::Handoff => phase_at(if self.ps1_active() { &PS1_HANDOFF_PHASES } else { &HANDOFF_PHASES }, local as f32 / fps, self.handoff_seconds).map(phase_caption),
                 Segment::End => Some(if self.sequence.outcome == BootOutcome::Warning { WARNING_END_CAPTION } else { END_CAPTION }),
-                Segment::Menu => Some(MENU_CAPTION),
+                Segment::Menu => Some(if self.console == Console::Ps1 { PS1_MENU_CAPTION } else { MENU_CAPTION }),
+                Segment::Intro => Some(PS1_INTRO_CAPTION),
                 _ => None,
             };
         }
@@ -651,7 +794,10 @@ impl Model {
     }
 
     /// The console's region from the fifth `ROMVER` character.
-    pub fn detected_region(&self) -> Option<Region> { self.assets.as_ref().and_then(|a| a.rom_version().chars().nth(4)).and_then(Region::from_romver_letter) }
+    pub fn detected_region(&self) -> Option<Region> {
+        if self.console == Console::Ps1 { return self.ps1_bios.as_ref().and_then(|b| b.identity().region_letter).and_then(Region::from_romver_letter) }
+        self.assets.as_ref().and_then(|a| a.rom_version().chars().nth(4)).and_then(Region::from_romver_letter)
+    }
     /// The region the scenario pretends the console has, else the detected one.
     pub fn rom_region(&self) -> Option<Region> { self.region_override.or_else(|| self.detected_region()) }
     /// The facts of the hand-off under the current scenario.
@@ -666,7 +812,30 @@ impl Model {
     /// Whether this console's PS1 shell would accept the loaded PlayStation disc.
     pub fn ps1_verdict(&self) -> Option<ps2kit::disc::Ps1Verdict> {
         let d = self.disc.as_ref()?;
+        if self.console == Console::Ps1 && !self.ps1_checks_licence()? { return Some(ps2kit::disc::Ps1Verdict::NotChecked) }
         ps2kit::disc::Ps1Verdict::judge(self.rom_region(), d.ps1_licence.as_ref(), self.ps1_shell.as_ref().map(|s| s.logo_bytes.as_slice()))
+    }
+
+    /// Whether the active PS1 shell compares the disc's licence text and logo: the policy read
+    /// from the shell's code, applied to the console's letter (the scenario's region if forced).
+    pub fn ps1_checks_licence(&self) -> Option<bool> {
+        let shell = self.ps1_shell.as_ref()?;
+        let letter = match self.console {
+            Console::Ps1 => self.region_override.and_then(Region::romver_letter).or_else(|| self.ps1_bios.as_ref().and_then(|b| b.identity().region_letter)),
+            Console::Ps2 => self.rom_region().and_then(Region::romver_letter),
+        };
+        Some(shell.licence_policy.checks(letter))
+    }
+
+    /// The PS1 kernel's own boot steps for the loaded PlayStation disc (`ps2kit::ps1boot`).
+    pub fn ps1_boot_steps(&self) -> Vec<Ps1BootStep> {
+        let cnf = self.disc.as_ref().filter(|d| d.kind == ps2kit::disc::DiscKind::Ps1 && self.disc_override == DiscOverride::AsLoaded && !d.system_cnf_text.is_empty()).map(|d| d.system_cnf_text.as_bytes());
+        ps1_boot_steps(cnf, None, None, self.ps1_checks_licence())
+    }
+
+    /// The loaded PlayStation disc's `SYSTEM.CNF` as the PS1 kernel reads it.
+    pub fn ps1_system_cnf(&self) -> Option<Ps1SystemCnf> {
+        self.disc.as_ref().filter(|d| d.kind == ps2kit::disc::DiscKind::Ps1 && !d.system_cnf_text.is_empty()).map(|d| Ps1SystemCnf::parse(d.system_cnf_text.as_bytes()))
     }
 
     pub fn logo_animation(&self) -> Option<LogoAnimation<'_>> { self.logo_assets.as_ref().map(|a| LogoAnimation::new(a, self.video)) }

@@ -914,3 +914,25 @@ fn handoff_sentences_are_pinned() {
     assert_eq!(boot_outcome(&[HandoffStep::IllegalDisc], false), BootOutcome::Warning);
     assert!(HandoffStep::IllegalDisc.to_string().contains("0x74"));
 }
+
+#[test]
+fn ps1_console_sequence_has_no_opening() {
+    use ps2kit::sim::{BootOutcome, BootPlan, BootSequence, Segment, Timeline};
+    let plan = BootPlan::new(VideoMode::Ntsc, BootOutcome::Ps1Game);
+    let licence = Timeline::ps1_licence(VideoMode::Ntsc, 200);
+    let seq = BootSequence::ps1(&plan, 249, Some(licence));
+    let segs: Vec<Segment> = seq.spans().iter().map(|s| s.segment).collect();
+    assert_eq!(segs, [Segment::PowerOn, Segment::Intro, Segment::Logo, Segment::End]);
+    assert_eq!(seq.outcome, BootOutcome::Ps1Game);
+    assert_eq!(seq.start_of(Segment::Logo), 180 + 249);
+    let menu = BootSequence::ps1(&plan, 0, None);
+    assert_eq!(menu.spans().iter().map(|s| s.segment).collect::<Vec<_>>(), [Segment::PowerOn, Segment::Menu]);
+    assert_eq!(menu.outcome, BootOutcome::Menu);
+}
+
+#[test]
+fn romver_letters_round_trip() {
+    use ps2kit::Region;
+    for c in ['J', 'A', 'E', 'C'] { assert_eq!(Region::from_romver_letter(c).and_then(Region::romver_letter), Some(c)) }
+    assert_eq!(Region::Asia.romver_letter(), None);
+}

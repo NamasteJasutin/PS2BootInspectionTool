@@ -111,6 +111,13 @@ impl Region {
         })
     }
 
+    /// The console `ROMVER` letter of this region (`J`, `A`, `E`, `C`); `None` for
+    /// [`Region::Asia`], which no console letter names.
+    #[must_use]
+    pub fn romver_letter(self) -> Option<char> {
+        match self { Self::Japan => Some('J'), Self::America => Some('A'), Self::Europe => Some('E'), Self::China => Some('C'), Self::Asia => None }
+    }
+
     /// The region a title ID's four-letter prefix implies (`SLES_530.64` → Europe); `None`
     /// for an unknown prefix.
     #[must_use]

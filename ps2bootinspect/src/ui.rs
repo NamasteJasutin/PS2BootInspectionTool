@@ -1,7 +1,7 @@
 //! The egui application: sidebar, the picture with camera input, visualiser, hand-off card.
 
 use crate::audio::{VisualizerMode, BAND_COUNT};
-use crate::model::{outcome_name, video_mode_name, CameraMode, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
+use crate::model::{outcome_name, video_mode_name, CameraMode, Console, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
 use crate::renderer::{Renderer, TowerLayout, TowerTint};
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
@@ -43,7 +43,9 @@ impl App {
             self.ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| self.renderer.set_ps1_assets(s, &m.ps1_licence_text()));
             self.loaded_logo = m.logo_version;
         }
-        let Some(assets) = &m.assets else { return };
+        // A standalone PS1 console needs no PS2 BIOS: its scenes are the shell's own.
+        let assets = m.assets.as_ref();
+        if assets.is_none() && m.ps1_shell.is_none() { return }
         if m.options.tint != crate::renderer::TowerTint::Console { self.renderer.tower_tints = m.tower_tints() } else { self.renderer.tower_tints.clear() }
         self.renderer.highlight = m.hovered_record;
         let mut enc = self.renderer.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scene") });
@@ -54,19 +56,19 @@ impl App {
             Scene::Full => {
                 let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
                 match span.segment {
-                    Segment::Opening => self.renderer.render_opening(&mut enc, local as f32 + m.frame.fract(), &m.scene, assets, &m.sequence.opening, free, &m.options),
+                    Segment::Opening => if let Some(assets) = assets { self.renderer.render_opening(&mut enc, local as f32 + m.frame.fract(), &m.scene, assets, &m.sequence.opening, free, &m.options) },
                     Segment::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
                         self.renderer.render_ps1_licence(&mut enc, local as f32, shell, logo, layout, m.video, free, &m.options)
                     } else if let Some(anim) = m.logo_animation() {
                         self.renderer.render_logo(&mut enc, local as f32, &anim, &m.options);
                         if let Some(view) = &free { self.renderer.picture_plane(&mut enc, "copy", view) }
                     }
-                    Segment::Warning => self.renderer.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex),
+                    Segment::Warning => if let Some(assets) = assets { self.renderer.render_warning(&mut enc, local as f32, assets, &m.sequence.warning, free, &m.options, &warning_tex) },
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
             }
-            Scene::Boot => self.renderer.render_opening(&mut enc, m.frame, &m.scene, assets, &m.timeline, free, &m.options),
-            Scene::Warning => self.renderer.render_warning(&mut enc, m.frame, assets, &m.timeline, free, &m.options, &warning_tex),
+            Scene::Boot => if let Some(assets) = assets { self.renderer.render_opening(&mut enc, m.frame, &m.scene, assets, &m.timeline, free, &m.options) },
+            Scene::Warning => if let Some(assets) = assets { self.renderer.render_warning(&mut enc, m.frame, assets, &m.timeline, free, &m.options, &warning_tex) },
             Scene::Logo => if let (Some(shell), Some(logo), Some(layout)) = (m.ps1_shell.as_ref().filter(|_| m.ps1_active()), m.ps1_logo_model(), &self.ps1_layout) {
                 self.renderer.render_ps1_licence(&mut enc, m.frame, shell, logo, layout, m.video, free, &m.options)
             } else if let Some(anim) = m.logo_animation() {
@@ -181,8 +183,8 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     if let Some(phase) = m.boot_phase() {
         painter.text(avail.min + Vec2::new(10.0, 26.0), egui::Align2::LEFT_TOP, format!("booting: {phase}"), mono.clone(), Color32::from_rgb(230, 210, 80));
     }
-    if m.assets.is_none() {
-        painter.text(avail.center(), egui::Align2::CENTER_CENTER, "Open your PS2 BIOS dump to begin.\nNothing from the BIOS is bundled with this app.", egui::FontId::proportional(16.0), Color32::GRAY);
+    if m.assets.is_none() && m.ps1_shell.is_none() {
+        painter.text(avail.center(), egui::Align2::CENTER_CENTER, "Open your PS2 or PS1 BIOS dump to begin.\nNothing from the BIOS is bundled with this app.", egui::FontId::proportional(16.0), Color32::GRAY);
     }
 
     // Visualiser strip along the bottom.
@@ -237,14 +239,24 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
         let mut y = card.min.y + 14.0;
         painter.text(Pos2::new(card.min.x + 16.0, y), egui::Align2::LEFT_TOP, "End of the boot sequence — what the console would do now", egui::FontId::proportional(16.0), Color32::WHITE);
         y += 28.0;
-        for s in m.handoff_steps() {
-            painter.text(Pos2::new(card.min.x + 236.0, y), egui::Align2::RIGHT_TOP, s.who(), egui::FontId::monospace(11.0), Color32::from_white_alpha(230));
-            let galley = painter.layout(s.to_string(), egui::FontId::monospace(11.0), Color32::WHITE, card.width() - 270.0);
+        for (who, text) in handoff_lines(m) {
+            painter.text(Pos2::new(card.min.x + 236.0, y), egui::Align2::RIGHT_TOP, who, egui::FontId::monospace(11.0), Color32::from_white_alpha(230));
+            let galley = painter.layout(text, egui::FontId::monospace(11.0), Color32::WHITE, card.width() - 270.0);
             let h = galley.size().y;
             painter.galley(Pos2::new(card.min.x + 246.0, y), galley, Color32::WHITE);
             y += h + 6.0;
             if y > card.max.y - 20.0 { break }
         }
+    }
+}
+
+/// The hand-off facts of the console that is booting: OSDSYS's for the PS2, the PS1 kernel's
+/// for a standalone PS1 BIOS.
+fn handoff_lines(m: &Model) -> Vec<(String, String)> {
+    match m.console {
+        Console::Ps1 if m.ps1_active() => m.ps1_boot_steps().iter().map(|s| (s.who().to_string(), s.to_string())).collect(),
+        Console::Ps1 => vec![("PS1 shell (0x80030000)".into(), "no PlayStation disc in the drive: the shell never returns to the kernel's boot path and stays in its memory-card / CD-player menu (ps1_kernel_boot.md §2–§3)".into())],
+        Console::Ps2 => m.handoff_steps().iter().map(|s| (s.who(), s.to_string())).collect(),
     }
 }
 
@@ -257,6 +269,7 @@ pub fn segment_name(segment: Segment, ps1: bool) -> &'static str {
         Segment::Warning => "TWO: warning scene",
         Segment::Menu => "TWO: clock / main menu",
         Segment::End => "end",
+        Segment::Intro => "ONE: SCE intro",
         _ => "?",
     }
 }
@@ -300,8 +313,29 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
 }
 
 fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "Console", |ui| {
+        ui.horizontal(|ui| {
+            for c in [Console::Ps2, Console::Ps1] {
+                let available = match c { Console::Ps2 => m.assets.is_some(), Console::Ps1 => m.ps1_bios.is_some() };
+                if ui.add_enabled(available, egui::Button::selectable(m.console == c, c.name())).clicked() { m.set_console(c) }
+            }
+        });
+        // Every BIOS in the folder, per console: switching re-reads everything from that file.
+        let want = m.console;
+        let current = match want { Console::Ps2 => m.bios_path.clone(), Console::Ps1 => m.ps1_bios_path.clone() };
+        let entries: Vec<_> = m.shelf.iter().filter(|e| e.console == want).cloned().collect();
+        if entries.len() > 1 {
+            let label = entries.iter().find(|e| Some(&e.path) == current.as_ref()).map_or("choose…".to_string(), |e| e.label.clone());
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("shelf").width(ui.available_width() - 8.0).selected_text(label).show_ui(ui, |ui| {
+                for e in &entries { if ui.selectable_label(Some(&e.path) == current.as_ref(), &e.label).clicked() { pick = Some(e.path.clone()) } }
+            });
+            if let Some(p) = pick { m.load_bios(&p, false) }
+        }
+        ui.small(match want { Console::Ps2 => m.bios_status.clone(), Console::Ps1 => m.ps1_bios_status.clone() });
+    });
     section(ui, "Your files", |ui| {
-        if let Some(p) = file_row(ui, "BIOS", &m.bios_status.clone(), false, &["bin", "BIN", "rom"]) { m.load_bios(&p, false) }
+        if let Some(p) = file_row(ui, "BIOS (PS2 or PS1)", "", false, &["bin", "BIN", "rom"]) { m.load_bios(&p, false) }
         if let Some(p) = file_row(ui, "Memory card", &m.card_status.clone(), true, &["ps2"]) { m.load_card(&p, false) }
         if let Some(p) = file_row(ui, "Game disc image", &m.disc_status.clone(), false, &["iso", "bin", "cue", "img"]) { m.load_disc(&p, false) }
     });
@@ -644,7 +678,7 @@ fn disc_tab(ui: &mut egui::Ui, m: &mut Model) {
                 ps2kit::disc::DiscKind::Ps1 => {
                     ui.small(d.ps1_licence.as_ref().map(|l| format!("Licence sector: \"{}\" ({} chars) — logo data {}", l.text, l.line.len(), if l.logo_sectors_present { "present" } else { "absent" })).unwrap_or_else(|| "Licence sector: none".into()));
                     ui.small(match m.ps1_verdict() {
-                        Some(ps2kit::disc::Ps1Verdict::NotChecked) => "This console (A) does not check the licence or the logo.",
+                        Some(ps2kit::disc::Ps1Verdict::NotChecked) => "This console's PS1 shell does not compare the licence line or the logo (its policy, read from its code).",
                         Some(ps2kit::disc::Ps1Verdict::Accepted) => "This console's PS1 shell accepts the licence line and the logo.",
                         Some(ps2kit::disc::Ps1Verdict::TextMismatch) => "This console's PS1 shell would not accept the licence line (black screen, endless re-read). Shown anyway.",
                         Some(ps2kit::disc::Ps1Verdict::LogoMismatch) => "The logo differs from the shell's copy: the console would hang. Shown anyway.",
@@ -653,22 +687,64 @@ fn disc_tab(ui: &mut egui::Ui, m: &mut Model) {
                 }
                 _ => { ui.small("No SYSTEM.CNF and no licence sector."); }
             }
+            if let Some(cnf) = m.ps1_system_cnf() {
+                ui.small(format!("As the PS1 kernel reads SYSTEM.CNF: BOOT {}, TCB {:#x}, EVENT {:#x}, STACK {:#x}{}", cnf.boot.as_deref().unwrap_or("(unset → PSX.EXE)"), cnf.tcb, cnf.event, cnf.stack,
+                    if cnf.argument.is_empty() { String::new() } else { format!(", argument \"{}\" → RAM 0x180", cnf.argument_str()) }));
+                for l in cnf.lints() { ui.small(format!("• {l}")); }
+            }
         } else {
             ui.small("Open a game disc image (.iso or .cue) to see what the console would load.");
         }
     });
     section(ui, "What the console would do next", |ui| {
         ui.small(format!("Under the scenario: {}.", outcome_name(m.outcome())));
-        for s in m.handoff_steps() {
+        for (who, text) in handoff_lines(m) {
             ui.horizontal_wrapped(|ui| {
-                ui.monospace(egui::RichText::new(s.who()).color(Color32::from_rgb(115, 153, 255)).size(11.0));
-                ui.small(s.to_string());
+                ui.monospace(egui::RichText::new(who).color(Color32::from_rgb(115, 153, 255)).size(11.0));
+                ui.small(text);
             });
         }
     });
 }
 
 fn bios_tab(ui: &mut egui::Ui, m: &mut Model) {
+    if m.console == Console::Ps1 { ps1_bios_card(ui, m) } else { ps2_bios_card(ui, m) }
+    if !m.ps1_set_issues.is_empty() {
+        section(ui, "Your PS1 dumps, side by side", |ui| {
+            for i in &m.ps1_set_issues {
+                ui.small(match i {
+                    ps2kit::ps1bios::Ps1SetIssue::Duplicate { first, second } => format!("• {first} and {second} are byte-identical."),
+                    ps2kit::ps1bios::Ps1SetIssue::RegionMismatch { file, filename_letter, version_letter } => format!("• {file}: the name says {filename_letter}, the ROM's version string says {version_letter}."),
+                    other => format!("• {other:?}"),
+                });
+            }
+        });
+    }
+    if !m.pup_summary.is_empty() {
+        section(ui, "PS3 system update", |ui| { for l in &m.pup_summary { ui.small(l); } });
+    }
+}
+
+/// A standalone PS1 BIOS, read from the dump (`ps2kit::ps1bios`, `ps1_version_matrix.md`).
+fn ps1_bios_card(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "PS1 ROM", |ui| {
+        let Some(b) = &m.ps1_bios else { ui.small("No PS1 BIOS loaded."); return };
+        let id = b.identity();
+        ui.monospace(if id.version.is_empty() { "no version string (SCPH-1000 era)".to_string() } else { id.version.clone() });
+        ui.small(format!("built {}  ·  {}  ·  {}", id.header_date.map(|d| format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)).unwrap_or_else(|| "?".into()), id.model, id.maker));
+        ui.small(format!("Kernel: {} — {}", match id.kernel_generation { Some(ps2kit::ps1bios::KernelGeneration::K1) => "K1 (1994–95, A0 table without GetSystemInfo)", Some(ps2kit::ps1bios::KernelGeneration::K2) => "K2 (Dec 1995 on, unchanged through the PSone and POPS)", _ => "unrecognised" }, id.kernel_banner.lines().next().unwrap_or("")));
+        ui.small(format!("Shell: {} — {} bytes at 0x80030000", match id.shell_storage { ps2kit::ps1bios::ShellStorage::Raw => "stored raw", ps2kit::ps1bios::ShellStorage::Packed => "OSD-LZ packed (the PS2's scheme)", ps2kit::ps1bios::ShellStorage::Pops => "POPS loader (PSP)", _ => "?" }, id.shell_length));
+        if let Some(shell) = &m.ps1_shell {
+            ui.small(format!("Licence check: {:?} — {}; {} licence string(s){}", shell.licence_policy,
+                match shell.licence_policy { ps2kit::ps1::LicencePolicy::Unconditional => "always compares text and logo", ps2kit::ps1::LicencePolicy::Always => "compares (flag stored as 1)", ps2kit::ps1::LicencePolicy::Never => "never compares (flag stored as 0)", ps2kit::ps1::LicencePolicy::ByLetter => "compares unless the ROM letter is A", _ => "?" },
+                shell.licence_strings.len(), if shell.reference_logo().is_some() { ", carries a reference logo" } else { ", no reference logo" }));
+        }
+        let audit = ps2kit::ps1bios::audit(b.data());
+        for i in &audit.issues { ui.small(format!("Audit: {i:?}")); }
+    });
+}
+
+fn ps2_bios_card(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "ROM", |ui| {
         let Some(a) = &m.assets else { ui.small("No BIOS loaded."); return };
         let v = a.rom_version();
