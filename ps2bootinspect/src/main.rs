@@ -1,6 +1,7 @@
 //! PS2 Boot Inspection Tool — cross-platform app (egui + wgpu).
 
 mod audio;
+mod director;
 mod model;
 mod offline;
 mod renderer;
