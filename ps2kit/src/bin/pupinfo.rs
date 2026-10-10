@@ -9,7 +9,7 @@
 //! As specified in `notes/research/ps3_pup.md` §6:
 //! This tool inspects container structure only; the payload contents are encrypted and are not read.
 
-use ps2kit::pup::{pup_member_name, Pup, SelfInfo};
+use ps2kit::pup::{pup_member_name, Pup, PupSnapshot, SelfInfo};
 use std::path::Path;
 
 fn main() {
@@ -24,6 +24,17 @@ fn run(args: &[String]) -> ps2kit::Result<()> {
     if args.len() < 2 {
         print_usage();
         std::process::exit(2);
+    }
+
+    if args.iter().any(|a| a == "--snapshot") {
+        let files: Vec<&str> = args.iter().skip(1).filter(|a| !a.starts_with("--")).map(String::as_str).collect();
+        if files.is_empty() {
+            eprintln!("usage: pupinfo --snapshot <file.pup>");
+            std::process::exit(2);
+        }
+        let snap = load_snapshot(Path::new(files[0]))?;
+        print!("{}", snap.to_text());
+        return Ok(());
     }
 
     if args.iter().any(|a| a == "--diff") {
@@ -97,7 +108,8 @@ fn run(args: &[String]) -> ps2kit::Result<()> {
 
 fn print_usage() {
     println!("usage: pupinfo <file.pup> [--members] [--packages] [--selfs] [--licence]");
-    println!("       pupinfo --diff <a.pup> <b.pup>");
+    println!("       pupinfo --snapshot <file.pup>");
+    println!("       pupinfo --diff <a.pup|a.pupsnap> <b.pup|b.pupsnap>");
 }
 
 fn print_identity_card(path: &Path, pup: &Pup) -> ps2kit::Result<()> {
@@ -231,30 +243,44 @@ fn print_single_self(name: &str, id: u64, s: &SelfInfo) {
     }
 }
 
+fn load_snapshot(path: &Path) -> ps2kit::Result<PupSnapshot> {
+    if path.extension().and_then(|s| s.to_str()) == Some("pupsnap") {
+        let text = std::fs::read_to_string(path)?;
+        PupSnapshot::parse(&text)
+    } else {
+        match Pup::open(path) {
+            Ok(pup) => PupSnapshot::from_pup(&pup),
+            Err(_) => {
+                let text = std::fs::read_to_string(path)?;
+                PupSnapshot::parse(&text)
+            }
+        }
+    }
+}
+
 fn diff_pups(path_a: &Path, path_b: &Path) -> ps2kit::Result<()> {
-    let a = Pup::open(path_a)?;
-    let b = Pup::open(path_b)?;
+    let a = load_snapshot(path_a)?;
+    let b = load_snapshot(path_b)?;
 
     println!("Diff between {} and {}:", path_a.display(), path_b.display());
 
     // Header diff
-    if a.header.image_version != b.header.image_version {
-        println!("  Image version:       {:#07x} -> {:#07x}", a.header.image_version, b.header.image_version);
+    if a.image_version != b.image_version {
+        println!("  Image version:       {:#07x} -> {:#07x}", a.image_version, b.image_version);
     }
-    if a.header.header_length != b.header.header_length {
-        println!("  Header length:       {} -> {}", a.header.header_length, b.header.header_length);
+    if a.header_length != b.header_length {
+        println!("  Header length:       {} -> {}", a.header_length, b.header_length);
     }
-    if a.header.data_length != b.header.data_length {
-        println!("  Data length:         {} -> {}", a.header.data_length, b.header.data_length);
+    if a.data_length != b.data_length {
+        println!("  Data length:         {} -> {}", a.data_length, b.data_length);
     }
     if a.header_digest != b.header_digest {
-        println!("  Header digest:       {} -> {}",
-            ps2kit::pup::hex_digest(&a.header_digest), ps2kit::pup::hex_digest(&b.header_digest));
+        println!("  Header digest:       {} -> {}", a.header_digest, b.header_digest);
     }
 
     // Version diff
-    let ver_a = a.version().unwrap_or_else(|_| "?".into());
-    let ver_b = b.version().unwrap_or_else(|_| "?".into());
+    let ver_a = a.version.as_deref().unwrap_or("?");
+    let ver_b = b.version.as_deref().unwrap_or("?");
     if ver_a != ver_b {
         println!("  Firmware version:    {ver_a} -> {ver_b}");
     }
@@ -263,12 +289,10 @@ fn diff_pups(path_a: &Path, path_b: &Path) -> ps2kit::Result<()> {
     println!("\nMember entries comparison:");
     let mut any_member_diff = false;
     for ea in &a.entries {
-        match b.entry(ea.id) {
+        match b.entries.iter().find(|e| e.id == ea.id) {
             Some(eb) => {
-                let da = a.digests.iter().find(|d| d.index == a.entries.iter().position(|e| e.id == ea.id).unwrap_or(999) as u64);
-                let db = b.digests.iter().find(|d| d.index == b.entries.iter().position(|e| e.id == eb.id).unwrap_or(999) as u64);
                 let size_diff = ea.size != eb.size;
-                let digest_diff = da.map(|d| &d.digest) != db.map(|d| &d.digest);
+                let digest_diff = ea.digest != eb.digest;
                 if size_diff || digest_diff {
                     any_member_diff = true;
                     println!("  Member {:#05x} ({}):", ea.id, ea.name());
@@ -276,9 +300,7 @@ fn diff_pups(path_a: &Path, path_b: &Path) -> ps2kit::Result<()> {
                         println!("    Size:   {} -> {}", ea.size, eb.size);
                     }
                     if digest_diff {
-                        println!("    Digest: {} -> {}",
-                            da.map(|d| d.hex()).unwrap_or_default(),
-                            db.map(|d| d.hex()).unwrap_or_default());
+                        println!("    Digest: {} -> {}", ea.digest, eb.digest);
                     }
                 }
             }
@@ -289,7 +311,7 @@ fn diff_pups(path_a: &Path, path_b: &Path) -> ps2kit::Result<()> {
         }
     }
     for eb in &b.entries {
-        if a.entry(eb.id).is_none() {
+        if !a.entries.iter().any(|e| e.id == eb.id) {
             any_member_diff = true;
             println!("  Member {:#05x} ({}) added in second PUP", eb.id, eb.name());
         }
@@ -298,13 +320,46 @@ fn diff_pups(path_a: &Path, path_b: &Path) -> ps2kit::Result<()> {
         println!("  (all member sizes and digests match)");
     }
 
+    // Licence locales diff
+    println!("\nLicence locales comparison:");
+    let mut any_locale_diff = false;
+    for la in &a.license_locales {
+        match b.license_locales.iter().find(|l| l.lang == la.lang) {
+            Some(lb) => {
+                let len_diff = la.byte_length != lb.byte_length;
+                let date_diff = la.date != lb.date;
+                if len_diff || date_diff {
+                    any_locale_diff = true;
+                    println!("  Locale {}:", la.lang);
+                    if len_diff {
+                        println!("    Bytes: {} -> {}", la.byte_length, lb.byte_length);
+                    }
+                    if date_diff {
+                        println!("    Date:  {} -> {}", la.date, lb.date);
+                    }
+                }
+            }
+            None => {
+                any_locale_diff = true;
+                println!("  Locale {} removed in second PUP", la.lang);
+            }
+        }
+    }
+    for lb in &b.license_locales {
+        if !a.license_locales.iter().any(|l| l.lang == lb.lang) {
+            any_locale_diff = true;
+            println!("  Locale {} added in second PUP", lb.lang);
+        }
+    }
+    if !any_locale_diff {
+        println!("  (all licence locales match)");
+    }
+
     // Packages diff
-    let pkgs_a = a.packages().unwrap_or_default();
-    let pkgs_b = b.packages().unwrap_or_default();
     println!("\nPackages comparison:");
     let mut any_pkg_diff = false;
-    for pa in &pkgs_a {
-        match pkgs_b.iter().find(|pb| pb.name == pa.name) {
+    for pa in &a.packages {
+        match b.packages.iter().find(|pb| pb.name == pa.name) {
             Some(pb) => {
                 let size_diff = pa.member_size != pb.member_size;
                 let stamp_a = pa.pkg_descriptor.as_ref().map(|d| d.version_stamp)
@@ -336,8 +391,8 @@ fn diff_pups(path_a: &Path, path_b: &Path) -> ps2kit::Result<()> {
             }
         }
     }
-    for pb in &pkgs_b {
-        if !pkgs_a.iter().any(|pa| pa.name == pb.name) {
+    for pb in &b.packages {
+        if !a.packages.iter().any(|pa| pa.name == pb.name) {
             any_pkg_diff = true;
             println!("  Package {} added in second PUP", pb.name);
         }
