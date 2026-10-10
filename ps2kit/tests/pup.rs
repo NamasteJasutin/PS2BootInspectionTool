@@ -4,7 +4,7 @@
 //! and error handling on malformed input) and oracle tests against the user's
 //! real `bios/PS3UPDAT.PUP` file (skipped silently when absent).
 
-use ps2kit::pup::{Pup, SCE_MAGIC};
+use ps2kit::pup::{Pup, PupSnapshot, SCE_MAGIC};
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
@@ -296,4 +296,96 @@ fn mutated_pups_never_panic_in_any_reader() {
     }
     // Most single-byte mutations land in member data, which the container accepts.
     assert!(reached > 1000, "only {reached} mutated PUPs parsed; the readers were barely exercised");
+}
+
+#[test]
+fn snapshot_round_trip() {
+    let bytes = build_synthetic_pup();
+    let pup = Pup::parse(&bytes).expect("synthetic PUP must parse");
+    let snap = PupSnapshot::from_pup(&pup).expect("snapshot extraction must succeed");
+
+    let text = snap.to_text();
+    assert!(text.starts_with("pupsnap 1\n"));
+
+    let parsed = PupSnapshot::parse(&text).expect("snapshot text must parse");
+    assert_eq!(snap, parsed);
+
+    // Re-serializing parsed snapshot must yield identical text
+    assert_eq!(text, parsed.to_text());
+}
+
+#[test]
+fn snapshot_diff() {
+    let bytes_a = build_synthetic_pup();
+    let pup_a = Pup::parse(&bytes_a).expect("synthetic PUP must parse");
+    let snap_a = PupSnapshot::from_pup(&pup_a).expect("snapshot extraction must succeed");
+
+    // Create a modified PUP (version 1.01 instead of 1.00, different member digest)
+    let mut bytes_b = bytes_a.clone();
+    bytes_b[0x110..0x114].copy_from_slice(b"1.01");
+    // Modify digest of member 0 at offset 0x98..0xAC
+    bytes_b[0x98] = 0xFE;
+
+    let pup_b = Pup::parse(&bytes_b).expect("modified PUP must parse");
+    let snap_b = PupSnapshot::from_pup(&pup_b).expect("snapshot extraction must succeed");
+
+    let diff = snap_a.diff(&snap_b);
+    assert_eq!(diff.version_change, Some((Some("1.00".into()), Some("1.01".into()))));
+    assert!(diff.changed_members.contains(&0x100)); // version.txt digest changed
+    assert!(diff.added_members.is_empty());
+    assert!(diff.removed_members.is_empty());
+
+    // Also test structural additions and removals across snapshots
+    let mut snap_c = snap_a.clone();
+    snap_c.version = Some("2.00".into());
+    snap_c.entries.retain(|e| e.id != 0x202); // remove dots.txt
+    snap_c.packages[0].member_size += 512; // change package size
+    snap_c.license_locales.push(ps2kit::pup::SnapshotLicenseLocale::new("ja", 1234, "2020-01-01"));
+
+    let diff_ac = snap_a.diff(&snap_c);
+    assert_eq!(diff_ac.version_change, Some((Some("1.00".into()), Some("2.00".into()))));
+    assert_eq!(diff_ac.removed_members, vec![0x202]);
+    assert_eq!(diff_ac.changed_packages, vec!["TEST_PACKAGE.pkg".to_string()]);
+    assert_eq!(diff_ac.added_locales, vec!["ja".to_string()]);
+
+    let text_c = snap_c.to_text();
+    let parsed_c = PupSnapshot::parse(&text_c).expect("snap_c must parse");
+    assert_eq!(snap_c, parsed_c);
+}
+
+#[test]
+fn snapshot_malformed_never_panics() {
+    assert!(PupSnapshot::parse("").is_err());
+    assert!(PupSnapshot::parse("invalid magic\n").is_err());
+    assert!(PupSnapshot::parse("pupsnap 2\n").is_err());
+    assert!(PupSnapshot::parse("pupsnap 1\nheader.image_version\n").is_err()); // missing tab
+    assert!(PupSnapshot::parse("pupsnap 1\nheader.image_version\tnot_a_number\n").is_err());
+    assert!(PupSnapshot::parse("pupsnap 1\nheader.package_version\tnot_num\n").is_err());
+
+    // Fuzz test with mutations on valid snapshot text
+    let bytes = build_synthetic_pup();
+    let pup = Pup::parse(&bytes).unwrap();
+    let text = PupSnapshot::from_pup(&pup).unwrap().to_text();
+
+    let mut rng = ps2kit::history::SplitMix(42);
+    for _ in 0..1000 {
+        let mut mutated = text.clone();
+        let idx = (rng.next_u64() as usize) % mutated.len();
+        mutated.replace_range(idx..=idx, "\n\tgarbage!");
+        let _ = PupSnapshot::parse(&mutated);
+    }
+}
+
+#[test]
+fn real_ps3_pup_snapshot_under_64kb() {
+    let path = root().join("bios").join("PS3UPDAT.PUP");
+    let Ok(pup) = Pup::open(&path) else {
+        return;
+    };
+    let snap = PupSnapshot::from_pup(&pup).expect("snapshot must build");
+    let text = snap.to_text();
+    assert!(text.len() < 64 * 1024, "snapshot text was {} bytes, expected < 64 KB", text.len());
+
+    let parsed = PupSnapshot::parse(&text).expect("real snapshot must parse");
+    assert_eq!(snap, parsed);
 }

@@ -1157,3 +1157,932 @@ impl SelfInfo {
         })
     }
 }
+
+/// A lightweight, diffable snapshot of a PS3 PUP container's plaintext structure.
+///
+/// Encodes only container headers, file-entry tables, digests, and metadata.
+/// Payload contents remain encrypted and are not unpacked or stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PupSnapshot {
+    /// Package version from PUP header.
+    pub package_version: u64,
+    /// Image / build version counter.
+    pub image_version: u64,
+    /// Number of file entries.
+    pub file_count: u64,
+    /// Length of the header in bytes.
+    pub header_length: u64,
+    /// Length of member data in bytes.
+    pub data_length: u64,
+    /// 40-character hex string of stored HMAC-SHA1 header digest.
+    pub header_digest: String,
+    /// File-entry table entries with their stored hex digests.
+    pub entries: Vec<SnapshotEntry>,
+    /// Firmware version string from `version.txt` (id 0x100) if present.
+    pub version: Option<String>,
+    /// Update flags from `update_flags.txt` (id 0x103) if present.
+    pub update_flags: Option<String>,
+    /// Progress dots from `dots.txt` (id 0x202) if present.
+    pub dots: Option<String>,
+    /// Licence agreement locales from `license.xml` (id 0x101). No licence prose.
+    pub license_locales: Vec<SnapshotLicenseLocale>,
+    /// Directory listing of `update_files.tar` (id 0x300).
+    pub tar_300: Vec<SnapshotTarEntry>,
+    /// Directory listing of `spkg_hdr.tar` (id 0x501).
+    pub tar_501: Vec<SnapshotTarEntry>,
+    /// Packages in `update_files.tar` with their SCE headers and descriptors.
+    pub packages: Vec<SnapshotPackage>,
+    /// Updater SELF header summaries (e.g. `ps3swu.self` and `ps3swu2.self`).
+    pub selfs: Vec<SnapshotSelf>,
+}
+
+/// An entry in a [`PupSnapshot`]'s file-entry table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotEntry {
+    /// Member ID.
+    pub id: u64,
+    /// Offset within the PUP container.
+    pub offset: u64,
+    /// Size of member in bytes.
+    pub size: u64,
+    /// Stored 20-byte HMAC-SHA1 digest formatted as a 40-character hex string.
+    pub digest: String,
+}
+
+impl SnapshotEntry {
+    /// Creates a new entry table record.
+    #[must_use]
+    pub fn new(id: u64, offset: u64, size: u64, digest: impl Into<String>) -> Self {
+        Self {
+            id,
+            offset,
+            size,
+            digest: digest.into(),
+        }
+    }
+
+    /// Known public name for this entry if recognized.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        pup_member_name(self.id)
+    }
+}
+
+/// Licence agreement locale metadata in a [`PupSnapshot`] (no prose).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotLicenseLocale {
+    /// Language code (e.g. `"en"`, `"ja"`).
+    pub lang: String,
+    /// Byte length of the locale block in `license.xml`.
+    pub byte_length: usize,
+    /// Date line (`msg_update_eula_2`).
+    pub date: String,
+}
+
+impl SnapshotLicenseLocale {
+    /// Creates a new licence locale metadata entry.
+    #[must_use]
+    pub fn new(lang: impl Into<String>, byte_length: usize, date: impl Into<String>) -> Self {
+        Self {
+            lang: lang.into(),
+            byte_length,
+            date: date.into(),
+        }
+    }
+}
+
+/// Archive directory entry in a [`PupSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotTarEntry {
+    /// File path or name.
+    pub name: String,
+    /// Size of file in bytes.
+    pub size: u64,
+    /// Modification time (UNIX epoch).
+    pub mtime: u64,
+}
+
+impl SnapshotTarEntry {
+    /// Creates a new tar archive metadata entry.
+    #[must_use]
+    pub fn new(name: impl Into<String>, size: u64, mtime: u64) -> Self {
+        Self {
+            name: name.into(),
+            size,
+            mtime,
+        }
+    }
+}
+
+/// Package summary in a [`PupSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotPackage {
+    /// TAR member file name.
+    pub name: String,
+    /// Member size in bytes.
+    pub member_size: u64,
+    /// Modification time.
+    pub mtime: u64,
+    /// SCE container version.
+    pub sce_version: u32,
+    /// Key revision.
+    pub sce_key_revision: u16,
+    /// Header type (`1` SELF, `2` RVK, `3` PKG).
+    pub sce_header_type: u16,
+    /// Metadata offset.
+    pub sce_metadata_offset: u32,
+    /// Header length in bytes.
+    pub sce_header_length: u64,
+    /// Plaintext payload length.
+    pub sce_data_length: u64,
+    /// PKG descriptor if type-3 package.
+    pub pkg_descriptor: Option<PkgDescriptor>,
+    /// RVK descriptor if type-2 revocation list.
+    pub rvk_descriptor: Option<RvkDescriptor>,
+    /// Whether uncompressed size reconciles.
+    pub uncompressed_reconciled: bool,
+    /// Whether stored size reconciles.
+    pub stored_reconciled: bool,
+    /// Whether counterpart in `spkg_hdr.tar` matched.
+    pub spkg_hdr_matched: Option<bool>,
+}
+
+/// Updater SELF summary in a [`PupSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotSelf {
+    /// Member ID (e.g. 0x200 or 0x601).
+    pub id: u64,
+    /// SCE container version.
+    pub sce_version: u32,
+    /// Key revision.
+    pub sce_key_revision: u16,
+    /// Header type.
+    pub sce_header_type: u16,
+    /// Metadata offset.
+    pub sce_metadata_offset: u32,
+    /// Header length in bytes.
+    pub sce_header_length: u64,
+    /// Plaintext payload length.
+    pub sce_data_length: u64,
+    /// App authorization ID.
+    pub app_auth_id: u64,
+    /// App vendor ID.
+    pub app_vendor_id: u32,
+    /// App SELF type.
+    pub app_self_type: u32,
+    /// App version.
+    pub app_version: u64,
+    /// ELF class.
+    pub elf_class: u8,
+    /// ELF data encoding.
+    pub elf_data: u8,
+    /// OS / ABI.
+    pub elf_os_abi: u8,
+    /// ELF type.
+    pub elf_type: u16,
+    /// Machine architecture.
+    pub elf_machine: u16,
+    /// Entry point address.
+    pub elf_entry: u64,
+    /// Program header count.
+    pub elf_phnum: u16,
+    /// Section header count.
+    pub elf_shnum: u16,
+    /// Program headers.
+    pub program_headers: Vec<SnapshotPhdr>,
+}
+
+/// Program header summary in a [`PupSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotPhdr {
+    /// Segment type.
+    pub p_type: u32,
+    /// Segment flags.
+    pub p_flags: u32,
+    /// Offset in file.
+    pub p_offset: u64,
+    /// Virtual address.
+    pub p_vaddr: u64,
+    /// Physical address.
+    pub p_paddr: u64,
+    /// File size in bytes.
+    pub p_filesz: u64,
+    /// Memory size in bytes.
+    pub p_memsz: u64,
+    /// Alignment.
+    pub p_align: u64,
+}
+
+/// Differences between two [`PupSnapshot`] instances.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct PupDiff {
+    /// Old and new firmware version string if changed.
+    pub version_change: Option<(Option<String>, Option<String>)>,
+    /// Member IDs added in the second snapshot.
+    pub added_members: Vec<u64>,
+    /// Member IDs removed in the second snapshot.
+    pub removed_members: Vec<u64>,
+    /// Member IDs with changed size or digest.
+    pub changed_members: Vec<u64>,
+    /// Package names added in the second snapshot.
+    pub added_packages: Vec<String>,
+    /// Package names removed in the second snapshot.
+    pub removed_packages: Vec<String>,
+    /// Package names with changed size, descriptor stamp, or uncompressed size.
+    pub changed_packages: Vec<String>,
+    /// Licence locales added in the second snapshot.
+    pub added_locales: Vec<String>,
+    /// Licence locales removed in the second snapshot.
+    pub removed_locales: Vec<String>,
+    /// Licence locales with changed length or date.
+    pub changed_locales: Vec<String>,
+}
+
+impl PupSnapshot {
+    /// Computes structural differences between `self` (old) and `other` (new).
+    #[must_use]
+    pub fn diff(&self, other: &PupSnapshot) -> PupDiff {
+        let version_change = if self.version != other.version {
+            Some((self.version.clone(), other.version.clone()))
+        } else {
+            None
+        };
+
+        let mut added_members = Vec::new();
+        let mut removed_members = Vec::new();
+        let mut changed_members = Vec::new();
+        for ea in &self.entries {
+            match other.entries.iter().find(|e| e.id == ea.id) {
+                Some(eb) => {
+                    if ea.size != eb.size || ea.digest != eb.digest {
+                        changed_members.push(ea.id);
+                    }
+                }
+                None => removed_members.push(ea.id),
+            }
+        }
+        for eb in &other.entries {
+            if !self.entries.iter().any(|e| e.id == eb.id) {
+                added_members.push(eb.id);
+            }
+        }
+
+        let mut added_locales = Vec::new();
+        let mut removed_locales = Vec::new();
+        let mut changed_locales = Vec::new();
+        for la in &self.license_locales {
+            match other.license_locales.iter().find(|l| l.lang == la.lang) {
+                Some(lb) => {
+                    if la.byte_length != lb.byte_length || la.date != lb.date {
+                        changed_locales.push(la.lang.clone());
+                    }
+                }
+                None => removed_locales.push(la.lang.clone()),
+            }
+        }
+        for lb in &other.license_locales {
+            if !self.license_locales.iter().any(|l| l.lang == lb.lang) {
+                added_locales.push(lb.lang.clone());
+            }
+        }
+
+        let mut added_packages = Vec::new();
+        let mut removed_packages = Vec::new();
+        let mut changed_packages = Vec::new();
+        for pa in &self.packages {
+            match other.packages.iter().find(|p| p.name == pa.name) {
+                Some(pb) => {
+                    let size_diff = pa.member_size != pb.member_size;
+                    let stamp_a = pa.pkg_descriptor.as_ref().map(|d| d.version_stamp)
+                        .or_else(|| pa.rvk_descriptor.as_ref().map(|d| d.version_stamp));
+                    let stamp_b = pb.pkg_descriptor.as_ref().map(|d| d.version_stamp)
+                        .or_else(|| pb.rvk_descriptor.as_ref().map(|d| d.version_stamp));
+                    let stamp_diff = stamp_a != stamp_b;
+                    let uncomp_diff = pa.pkg_descriptor.as_ref().map(|d| d.uncompressed_size)
+                        != pb.pkg_descriptor.as_ref().map(|d| d.uncompressed_size);
+                    if size_diff || stamp_diff || uncomp_diff {
+                        changed_packages.push(pa.name.clone());
+                    }
+                }
+                None => removed_packages.push(pa.name.clone()),
+            }
+        }
+        for pb in &other.packages {
+            if !self.packages.iter().any(|p| p.name == pb.name) {
+                added_packages.push(pb.name.clone());
+            }
+        }
+
+        PupDiff {
+            version_change,
+            added_members,
+            removed_members,
+            changed_members,
+            added_packages,
+            removed_packages,
+            changed_packages,
+            added_locales,
+            removed_locales,
+            changed_locales,
+        }
+    }
+
+    /// Extracts a snapshot from an open [`Pup`] container.
+    pub fn from_pup(pup: &Pup) -> Result<Self> {
+        let package_version = pup.header.package_version;
+        let image_version = pup.header.image_version;
+        let file_count = pup.header.file_count;
+        let header_length = pup.header.header_length;
+        let data_length = pup.header.data_length;
+        let header_digest = hex_digest(&pup.header_digest);
+
+        let mut entries = Vec::with_capacity(pup.entries.len());
+        for (i, e) in pup.entries.iter().enumerate() {
+            let digest = pup.digests.get(i).map(|d| d.hex()).unwrap_or_default();
+            entries.push(SnapshotEntry {
+                id: e.id,
+                offset: e.offset,
+                size: e.size,
+                digest,
+            });
+        }
+
+        let version = pup.version().ok();
+        let update_flags = pup.update_flags().ok();
+        let dots = pup.dots().ok();
+
+        let license_locales = pup.license_locales().unwrap_or_default().into_iter().map(|l| {
+            SnapshotLicenseLocale {
+                lang: l.lang,
+                byte_length: l.byte_length,
+                date: l.date,
+            }
+        }).collect();
+
+        let tar_300 = pup.tar_entries(0x300).unwrap_or_default().into_iter().map(|t| {
+            SnapshotTarEntry {
+                name: t.name,
+                size: t.size,
+                mtime: t.mtime,
+            }
+        }).collect();
+
+        let tar_501 = pup.tar_entries(0x501).unwrap_or_default().into_iter().map(|t| {
+            SnapshotTarEntry {
+                name: t.name,
+                size: t.size,
+                mtime: t.mtime,
+            }
+        }).collect();
+
+        let packages = pup.packages().unwrap_or_default().into_iter().map(|p| {
+            SnapshotPackage {
+                name: p.name,
+                member_size: p.member_size,
+                mtime: p.mtime,
+                sce_version: p.sce_header.version,
+                sce_key_revision: p.sce_header.key_revision,
+                sce_header_type: p.sce_header.header_type,
+                sce_metadata_offset: p.sce_header.metadata_offset,
+                sce_header_length: p.sce_header.header_length,
+                sce_data_length: p.sce_header.data_length,
+                pkg_descriptor: p.pkg_descriptor,
+                rvk_descriptor: p.rvk_descriptor,
+                uncompressed_reconciled: p.uncompressed_reconciled,
+                stored_reconciled: p.stored_reconciled,
+                spkg_hdr_matched: p.spkg_hdr_matched,
+            }
+        }).collect();
+
+        let mut selfs = Vec::new();
+        for &id in &[0x200, 0x601] {
+            if pup.entry(id).is_some() {
+                if let Ok(s) = pup.self_info(id) {
+                    selfs.push(SnapshotSelf {
+                        id,
+                        sce_version: s.sce_header.version,
+                        sce_key_revision: s.sce_header.key_revision,
+                        sce_header_type: s.sce_header.header_type,
+                        sce_metadata_offset: s.sce_header.metadata_offset,
+                        sce_header_length: s.sce_header.header_length,
+                        sce_data_length: s.sce_header.data_length,
+                        app_auth_id: s.app_info.auth_id,
+                        app_vendor_id: s.app_info.vendor_id,
+                        app_self_type: s.app_info.self_type,
+                        app_version: s.app_info.version,
+                        elf_class: s.elf_header.class,
+                        elf_data: s.elf_header.data,
+                        elf_os_abi: s.elf_header.os_abi,
+                        elf_type: s.elf_header.e_type,
+                        elf_machine: s.elf_header.e_machine,
+                        elf_entry: s.elf_header.e_entry,
+                        elf_phnum: s.elf_header.e_phnum,
+                        elf_shnum: s.elf_header.e_shnum,
+                        program_headers: s.program_headers.into_iter().map(|p| SnapshotPhdr {
+                            p_type: p.p_type,
+                            p_flags: p.p_flags,
+                            p_offset: p.p_offset,
+                            p_vaddr: p.p_vaddr,
+                            p_paddr: p.p_paddr,
+                            p_filesz: p.p_filesz,
+                            p_memsz: p.p_memsz,
+                            p_align: p.p_align,
+                        }).collect(),
+                    });
+                }
+            }
+        }
+
+        Ok(Self {
+            package_version,
+            image_version,
+            file_count,
+            header_length,
+            data_length,
+            header_digest,
+            entries,
+            version,
+            update_flags,
+            dots,
+            license_locales,
+            tar_300,
+            tar_501,
+            packages,
+            selfs,
+        })
+    }
+
+    /// Formats the snapshot into a stable, diffable, line-oriented text format (`.pupsnap`).
+    ///
+    /// The first line is `pupsnap 1`, followed by `section.key<TAB>value` sorted within sections.
+    #[must_use]
+    pub fn to_text(&self) -> String {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+
+        // header
+        pairs.push(("header.data_length".into(), self.data_length.to_string()));
+        pairs.push(("header.file_count".into(), self.file_count.to_string()));
+        pairs.push(("header.header_digest".into(), self.header_digest.clone()));
+        pairs.push(("header.header_length".into(), self.header_length.to_string()));
+        pairs.push(("header.image_version".into(), format!("{:#x}", self.image_version)));
+        pairs.push(("header.package_version".into(), self.package_version.to_string()));
+
+        // meta
+        if let Some(dots) = &self.dots {
+            pairs.push(("meta.dots".into(), dots.clone()));
+        }
+        if let Some(flags) = &self.update_flags {
+            pairs.push(("meta.update_flags".into(), flags.clone()));
+        }
+        if let Some(ver) = &self.version {
+            pairs.push(("meta.version".into(), ver.clone()));
+        }
+
+        // entries
+        for (i, e) in self.entries.iter().enumerate() {
+            let pfx = format!("entry.{i:03}");
+            pairs.push((format!("{pfx}.digest"), e.digest.clone()));
+            pairs.push((format!("{pfx}.id"), format!("{:#x}", e.id)));
+            pairs.push((format!("{pfx}.offset"), e.offset.to_string()));
+            pairs.push((format!("{pfx}.size"), e.size.to_string()));
+        }
+
+        // licence locales
+        for (i, l) in self.license_locales.iter().enumerate() {
+            let pfx = format!("licence.{i:03}");
+            pairs.push((format!("{pfx}.bytes"), l.byte_length.to_string()));
+            pairs.push((format!("{pfx}.date"), l.date.clone()));
+            pairs.push((format!("{pfx}.lang"), l.lang.clone()));
+        }
+
+        // tar_300
+        for (i, t) in self.tar_300.iter().enumerate() {
+            let pfx = format!("tar_300.{i:03}");
+            pairs.push((format!("{pfx}.mtime"), t.mtime.to_string()));
+            pairs.push((format!("{pfx}.name"), t.name.clone()));
+            pairs.push((format!("{pfx}.size"), t.size.to_string()));
+        }
+
+        // tar_501
+        for (i, t) in self.tar_501.iter().enumerate() {
+            let pfx = format!("tar_501.{i:03}");
+            pairs.push((format!("{pfx}.mtime"), t.mtime.to_string()));
+            pairs.push((format!("{pfx}.name"), t.name.clone()));
+            pairs.push((format!("{pfx}.size"), t.size.to_string()));
+        }
+
+        // packages
+        for (i, p) in self.packages.iter().enumerate() {
+            let pfx = format!("pkg.{i:03}");
+            pairs.push((format!("{pfx}.member_size"), p.member_size.to_string()));
+            pairs.push((format!("{pfx}.mtime"), p.mtime.to_string()));
+            pairs.push((format!("{pfx}.name"), p.name.clone()));
+            pairs.push((format!("{pfx}.sce_data_len"), p.sce_data_length.to_string()));
+            pairs.push((format!("{pfx}.sce_hdr_len"), p.sce_header_length.to_string()));
+            pairs.push((format!("{pfx}.sce_hdr_type"), p.sce_header_type.to_string()));
+            pairs.push((format!("{pfx}.sce_key_rev"), p.sce_key_revision.to_string()));
+            pairs.push((format!("{pfx}.sce_meta_off"), p.sce_metadata_offset.to_string()));
+            pairs.push((format!("{pfx}.sce_ver"), p.sce_version.to_string()));
+            let spkg_str = match p.spkg_hdr_matched {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "none",
+            };
+            pairs.push((format!("{pfx}.spkg_matched"), spkg_str.into()));
+            pairs.push((format!("{pfx}.stored_ok"), p.stored_reconciled.to_string()));
+            pairs.push((format!("{pfx}.uncomp_ok"), p.uncompressed_reconciled.to_string()));
+
+            if let Some(d) = &p.pkg_descriptor {
+                pairs.push((format!("{pfx}.pkg_constant"), d.constant.to_string()));
+                pairs.push((format!("{pfx}.pkg_flags"), format!("{:#x}", d.flags)));
+                pairs.push((format!("{pfx}.pkg_kind"), d.kind.to_string()));
+                pairs.push((format!("{pfx}.pkg_seq"), format!("{:#x}", d.sequence)));
+                pairs.push((format!("{pfx}.pkg_stored"), d.stored_size.to_string()));
+                pairs.push((format!("{pfx}.pkg_uncomp"), d.uncompressed_size.to_string()));
+                pairs.push((format!("{pfx}.pkg_stamp"), format!("{:#x}", d.version_stamp)));
+            } else if let Some(r) = &p.rvk_descriptor {
+                pairs.push((format!("{pfx}.rvk_entries"), r.entries.to_string()));
+                pairs.push((format!("{pfx}.rvk_kind"), r.kind.to_string()));
+                pairs.push((format!("{pfx}.rvk_seq"), format!("{:#x}", r.sequence)));
+                pairs.push((format!("{pfx}.rvk_stamp"), format!("{:#x}", r.version_stamp)));
+            }
+        }
+
+        // selfs
+        for (i, s) in self.selfs.iter().enumerate() {
+            let pfx = format!("self.{i:02}");
+            pairs.push((format!("{pfx}.app_auth_id"), format!("{:#x}", s.app_auth_id)));
+            pairs.push((format!("{pfx}.app_self_type"), s.app_self_type.to_string()));
+            pairs.push((format!("{pfx}.app_vendor_id"), format!("{:#x}", s.app_vendor_id)));
+            pairs.push((format!("{pfx}.app_version"), format!("{:#x}", s.app_version)));
+            pairs.push((format!("{pfx}.elf_class"), s.elf_class.to_string()));
+            pairs.push((format!("{pfx}.elf_data"), s.elf_data.to_string()));
+            pairs.push((format!("{pfx}.elf_entry"), format!("{:#x}", s.elf_entry)));
+            pairs.push((format!("{pfx}.elf_machine"), s.elf_machine.to_string()));
+            pairs.push((format!("{pfx}.elf_os_abi"), s.elf_os_abi.to_string()));
+            pairs.push((format!("{pfx}.elf_phnum"), s.elf_phnum.to_string()));
+            pairs.push((format!("{pfx}.elf_shnum"), s.elf_shnum.to_string()));
+            pairs.push((format!("{pfx}.elf_type"), s.elf_type.to_string()));
+            pairs.push((format!("{pfx}.id"), format!("{:#x}", s.id)));
+            pairs.push((format!("{pfx}.sce_data_len"), s.sce_data_length.to_string()));
+            pairs.push((format!("{pfx}.sce_hdr_len"), s.sce_header_length.to_string()));
+            pairs.push((format!("{pfx}.sce_hdr_type"), s.sce_header_type.to_string()));
+            pairs.push((format!("{pfx}.sce_key_rev"), s.sce_key_revision.to_string()));
+            pairs.push((format!("{pfx}.sce_meta_off"), s.sce_metadata_offset.to_string()));
+            pairs.push((format!("{pfx}.sce_ver"), s.sce_version.to_string()));
+
+            for (j, p) in s.program_headers.iter().enumerate() {
+                let ppfx = format!("{pfx}.phdr.{j:02}");
+                pairs.push((format!("{ppfx}.align"), format!("{:#x}", p.p_align)));
+                pairs.push((format!("{ppfx}.filesz"), p.p_filesz.to_string()));
+                pairs.push((format!("{ppfx}.flags"), format!("{:#x}", p.p_flags)));
+                pairs.push((format!("{ppfx}.memsz"), p.p_memsz.to_string()));
+                pairs.push((format!("{ppfx}.offset"), format!("{:#x}", p.p_offset)));
+                pairs.push((format!("{ppfx}.paddr"), format!("{:#x}", p.p_paddr)));
+                pairs.push((format!("{ppfx}.type"), p.p_type.to_string()));
+                pairs.push((format!("{ppfx}.vaddr"), format!("{:#x}", p.p_vaddr)));
+            }
+        }
+
+        // Sort lines alphabetically by key -> guarantees deterministic order within sections
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut out = String::with_capacity(36 * 1024);
+        out.push_str("pupsnap 1\n");
+        for (k, v) in pairs {
+            out.push_str(&k);
+            out.push('\t');
+            out.push_str(&v);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Parses a [`PupSnapshot`] from text in `.pupsnap` format.
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut lines = text.lines();
+        let header_line = lines.next().ok_or_else(|| {
+            Error::Corrupt(Format::Bios, "empty pupsnap text".into())
+        })?;
+        if header_line.trim() != "pupsnap 1" {
+            return Err(Error::NotA(Format::Bios, "invalid pupsnap magic (expected 'pupsnap 1')".into()));
+        }
+
+        let mut map: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for line in lines {
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let (k, v) = trimmed.split_once('\t').ok_or_else(|| {
+                Error::Corrupt(Format::Bios, format!("pupsnap line missing tab delimiter: {trimmed}"))
+            })?;
+            map.insert(k, v);
+        }
+
+        let parse_u64 = |k: &str| -> Result<u64> {
+            let v = map.get(k).ok_or_else(|| Error::Corrupt(Format::Bios, format!("missing key: {k}")))?;
+            parse_int_u64(v).map_err(|e| Error::Corrupt(Format::Bios, format!("invalid integer for {k}: {e}")))
+        };
+        let parse_u32 = |k: &str| -> Result<u32> {
+            let v = map.get(k).ok_or_else(|| Error::Corrupt(Format::Bios, format!("missing key: {k}")))?;
+            parse_int_u32(v).map_err(|e| Error::Corrupt(Format::Bios, format!("invalid integer for {k}: {e}")))
+        };
+        let parse_u16 = |k: &str| -> Result<u16> {
+            let v = map.get(k).ok_or_else(|| Error::Corrupt(Format::Bios, format!("missing key: {k}")))?;
+            parse_int_u16(v).map_err(|e| Error::Corrupt(Format::Bios, format!("invalid integer for {k}: {e}")))
+        };
+        let parse_u8 = |k: &str| -> Result<u8> {
+            let v = map.get(k).ok_or_else(|| Error::Corrupt(Format::Bios, format!("missing key: {k}")))?;
+            parse_int_u8(v).map_err(|e| Error::Corrupt(Format::Bios, format!("invalid integer for {k}: {e}")))
+        };
+        let parse_usize = |k: &str| -> Result<usize> {
+            let v = map.get(k).ok_or_else(|| Error::Corrupt(Format::Bios, format!("missing key: {k}")))?;
+            parse_int_usize(v).map_err(|e| Error::Corrupt(Format::Bios, format!("invalid integer for {k}: {e}")))
+        };
+        let parse_bool = |k: &str| -> Result<bool> {
+            let v = map.get(k).ok_or_else(|| Error::Corrupt(Format::Bios, format!("missing key: {k}")))?;
+            match *v {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                other => Err(Error::Corrupt(Format::Bios, format!("invalid boolean for {k}: {other}"))),
+            }
+        };
+
+        let data_length = parse_u64("header.data_length")?;
+        let file_count = parse_u64("header.file_count")?;
+        let header_digest = map.get("header.header_digest").ok_or_else(|| {
+            Error::Corrupt(Format::Bios, "missing header.header_digest".into())
+        })?.to_string();
+        let header_length = parse_u64("header.header_length")?;
+        let image_version = parse_u64("header.image_version")?;
+        let package_version = parse_u64("header.package_version")?;
+
+        let dots = map.get("meta.dots").map(|s| s.to_string());
+        let update_flags = map.get("meta.update_flags").map(|s| s.to_string());
+        let version = map.get("meta.version").map(|s| s.to_string());
+
+        // Parse entries
+        let mut entries = Vec::new();
+        for i in 0.. {
+            let pfx = format!("entry.{i:03}");
+            let id_key = format!("{pfx}.id");
+            if !map.contains_key(id_key.as_str()) {
+                break;
+            }
+            let id = parse_u64(&id_key)?;
+            let offset = parse_u64(&format!("{pfx}.offset"))?;
+            let size = parse_u64(&format!("{pfx}.size"))?;
+            let digest = map.get(format!("{pfx}.digest").as_str()).unwrap_or(&"").to_string();
+            entries.push(SnapshotEntry { id, offset, size, digest });
+        }
+
+        // Parse licence locales
+        let mut license_locales = Vec::new();
+        for i in 0.. {
+            let pfx = format!("licence.{i:03}");
+            let lang_key = format!("{pfx}.lang");
+            let Some(&lang) = map.get(lang_key.as_str()) else { break };
+            let byte_length = parse_usize(&format!("{pfx}.bytes"))?;
+            let date = map.get(format!("{pfx}.date").as_str()).unwrap_or(&"").to_string();
+            license_locales.push(SnapshotLicenseLocale {
+                lang: lang.to_string(),
+                byte_length,
+                date,
+            });
+        }
+
+        // Parse tar_300
+        let mut tar_300 = Vec::new();
+        for i in 0.. {
+            let pfx = format!("tar_300.{i:03}");
+            let name_key = format!("{pfx}.name");
+            let Some(&name) = map.get(name_key.as_str()) else { break };
+            let size = parse_u64(&format!("{pfx}.size"))?;
+            let mtime = parse_u64(&format!("{pfx}.mtime"))?;
+            tar_300.push(SnapshotTarEntry { name: name.to_string(), size, mtime });
+        }
+
+        // Parse tar_501
+        let mut tar_501 = Vec::new();
+        for i in 0.. {
+            let pfx = format!("tar_501.{i:03}");
+            let name_key = format!("{pfx}.name");
+            let Some(&name) = map.get(name_key.as_str()) else { break };
+            let size = parse_u64(&format!("{pfx}.size"))?;
+            let mtime = parse_u64(&format!("{pfx}.mtime"))?;
+            tar_501.push(SnapshotTarEntry { name: name.to_string(), size, mtime });
+        }
+
+        // Parse packages
+        let mut packages = Vec::new();
+        for i in 0.. {
+            let pfx = format!("pkg.{i:03}");
+            let name_key = format!("{pfx}.name");
+            let Some(&name) = map.get(name_key.as_str()) else { break };
+            let member_size = parse_u64(&format!("{pfx}.member_size"))?;
+            let mtime = parse_u64(&format!("{pfx}.mtime"))?;
+            let sce_version = parse_u32(&format!("{pfx}.sce_ver"))?;
+            let sce_key_revision = parse_u16(&format!("{pfx}.sce_key_rev"))?;
+            let sce_header_type = parse_u16(&format!("{pfx}.sce_hdr_type"))?;
+            let sce_metadata_offset = parse_u32(&format!("{pfx}.sce_meta_off"))?;
+            let sce_header_length = parse_u64(&format!("{pfx}.sce_hdr_len"))?;
+            let sce_data_length = parse_u64(&format!("{pfx}.sce_data_len"))?;
+            let stored_reconciled = parse_bool(&format!("{pfx}.stored_ok"))?;
+            let uncompressed_reconciled = parse_bool(&format!("{pfx}.uncomp_ok"))?;
+            let spkg_hdr_matched = match map.get(format!("{pfx}.spkg_matched").as_str()).copied() {
+                Some("true") => Some(true),
+                Some("false") => Some(false),
+                _ => None,
+            };
+
+            let pkg_descriptor = if map.contains_key(format!("{pfx}.pkg_kind").as_str()) {
+                Some(PkgDescriptor {
+                    constant: parse_u32(&format!("{pfx}.pkg_constant"))?,
+                    kind: parse_u32(&format!("{pfx}.pkg_kind"))?,
+                    sequence: parse_u64(&format!("{pfx}.pkg_seq"))?,
+                    version_stamp: parse_u64(&format!("{pfx}.pkg_stamp"))?,
+                    uncompressed_size: parse_u64(&format!("{pfx}.pkg_uncomp"))?,
+                    stored_size: parse_u64(&format!("{pfx}.pkg_stored"))?,
+                    flags: parse_u64(&format!("{pfx}.pkg_flags"))?,
+                })
+            } else {
+                None
+            };
+
+            let rvk_descriptor = if map.contains_key(format!("{pfx}.rvk_kind").as_str()) {
+                Some(RvkDescriptor {
+                    kind: parse_u32(&format!("{pfx}.rvk_kind"))?,
+                    sequence: parse_u32(&format!("{pfx}.rvk_seq"))?,
+                    version_stamp: parse_u64(&format!("{pfx}.rvk_stamp"))?,
+                    entries: parse_u32(&format!("{pfx}.rvk_entries"))?,
+                })
+            } else {
+                None
+            };
+
+            packages.push(SnapshotPackage {
+                name: name.to_string(),
+                member_size,
+                mtime,
+                sce_version,
+                sce_key_revision,
+                sce_header_type,
+                sce_metadata_offset,
+                sce_header_length,
+                sce_data_length,
+                pkg_descriptor,
+                rvk_descriptor,
+                uncompressed_reconciled,
+                stored_reconciled,
+                spkg_hdr_matched,
+            });
+        }
+
+        // Parse selfs
+        let mut selfs = Vec::new();
+        for i in 0.. {
+            let pfx = format!("self.{i:02}");
+            let id_key = format!("{pfx}.id");
+            let Some(&_id_str) = map.get(id_key.as_str()) else { break };
+            let id = parse_u64(&id_key)?;
+            let sce_version = parse_u32(&format!("{pfx}.sce_ver"))?;
+            let sce_key_revision = parse_u16(&format!("{pfx}.sce_key_rev"))?;
+            let sce_header_type = parse_u16(&format!("{pfx}.sce_hdr_type"))?;
+            let sce_metadata_offset = parse_u32(&format!("{pfx}.sce_meta_off"))?;
+            let sce_header_length = parse_u64(&format!("{pfx}.sce_hdr_len"))?;
+            let sce_data_length = parse_u64(&format!("{pfx}.sce_data_len"))?;
+
+            let app_auth_id = parse_u64(&format!("{pfx}.app_auth_id"))?;
+            let app_vendor_id = parse_u32(&format!("{pfx}.app_vendor_id"))?;
+            let app_self_type = parse_u32(&format!("{pfx}.app_self_type"))?;
+            let app_version = parse_u64(&format!("{pfx}.app_version"))?;
+
+            let elf_class = parse_u8(&format!("{pfx}.elf_class"))?;
+            let elf_data = parse_u8(&format!("{pfx}.elf_data"))?;
+            let elf_os_abi = parse_u8(&format!("{pfx}.elf_os_abi"))?;
+            let elf_type = parse_u16(&format!("{pfx}.elf_type"))?;
+            let elf_machine = parse_u16(&format!("{pfx}.elf_machine"))?;
+            let elf_entry = parse_u64(&format!("{pfx}.elf_entry"))?;
+            let elf_phnum = parse_u16(&format!("{pfx}.elf_phnum"))?;
+            let elf_shnum = parse_u16(&format!("{pfx}.elf_shnum"))?;
+
+            let mut program_headers = Vec::new();
+            for j in 0.. {
+                let ppfx = format!("{pfx}.phdr.{j:02}");
+                let type_key = format!("{ppfx}.type");
+                if !map.contains_key(type_key.as_str()) {
+                    break;
+                }
+                let p_type = parse_u32(&type_key)?;
+                let p_flags = parse_u32(&format!("{ppfx}.flags"))?;
+                let p_offset = parse_u64(&format!("{ppfx}.offset"))?;
+                let p_vaddr = parse_u64(&format!("{ppfx}.vaddr"))?;
+                let p_paddr = parse_u64(&format!("{ppfx}.paddr"))?;
+                let p_filesz = parse_u64(&format!("{ppfx}.filesz"))?;
+                let p_memsz = parse_u64(&format!("{ppfx}.memsz"))?;
+                let p_align = parse_u64(&format!("{ppfx}.align"))?;
+                program_headers.push(SnapshotPhdr {
+                    p_type,
+                    p_flags,
+                    p_offset,
+                    p_vaddr,
+                    p_paddr,
+                    p_filesz,
+                    p_memsz,
+                    p_align,
+                });
+            }
+
+            selfs.push(SnapshotSelf {
+                id,
+                sce_version,
+                sce_key_revision,
+                sce_header_type,
+                sce_metadata_offset,
+                sce_header_length,
+                sce_data_length,
+                app_auth_id,
+                app_vendor_id,
+                app_self_type,
+                app_version,
+                elf_class,
+                elf_data,
+                elf_os_abi,
+                elf_type,
+                elf_machine,
+                elf_entry,
+                elf_phnum,
+                elf_shnum,
+                program_headers,
+            });
+        }
+
+        Ok(Self {
+            package_version,
+            image_version,
+            file_count,
+            header_length,
+            data_length,
+            header_digest,
+            entries,
+            version,
+            update_flags,
+            dots,
+            license_locales,
+            tar_300,
+            tar_501,
+            packages,
+            selfs,
+        })
+    }
+}
+
+fn parse_int_u64(s: &str) -> std::result::Result<u64, std::num::ParseIntError> {
+    if let Some(stripped) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(stripped, 16)
+    } else {
+        s.parse::<u64>()
+    }
+}
+
+fn parse_int_u32(s: &str) -> std::result::Result<u32, std::num::ParseIntError> {
+    if let Some(stripped) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(stripped, 16)
+    } else {
+        s.parse::<u32>()
+    }
+}
+
+fn parse_int_u16(s: &str) -> std::result::Result<u16, std::num::ParseIntError> {
+    if let Some(stripped) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u16::from_str_radix(stripped, 16)
+    } else {
+        s.parse::<u16>()
+    }
+}
+
+fn parse_int_u8(s: &str) -> std::result::Result<u8, std::num::ParseIntError> {
+    if let Some(stripped) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u8::from_str_radix(stripped, 16)
+    } else {
+        s.parse::<u8>()
+    }
+}
+
+fn parse_int_usize(s: &str) -> std::result::Result<usize, std::num::ParseIntError> {
+    if let Some(stripped) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        usize::from_str_radix(stripped, 16)
+    } else {
+        s.parse::<usize>()
+    }
+}
+
