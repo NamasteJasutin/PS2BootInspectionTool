@@ -68,7 +68,7 @@ fn ps1_post_sequence_oracles() {
             KernelGeneration::K1 => {
                 assert_eq!(seq.len(), 11, "{}: K1 sequence must have 11 stages", c.label);
                 let values: Vec<u8> = seq.iter().map(|s| s.value).collect();
-                assert_eq!(values, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 0xA, 0xB]);
+                assert_eq!(values, vec![0xF, 0xE, 1, 2, 3, 4, 5, 6, 7, 8, 9], "{}: K1 stage values", c.label);
             }
             KernelGeneration::K2 => {
                 // In K2 dumps: 11 bootstrap stages + 6 kernel InstallDevices stages = 17 stages
@@ -76,7 +76,7 @@ fn ps1_post_sequence_oracles() {
                 let values: Vec<u8> = seq.iter().map(|s| s.value).collect();
                 assert_eq!(
                     values,
-                    vec![1, 2, 3, 4, 1, 3, 4, 5, 6, 2, 5, 6, 7, 8, 9, 0xA, 0xB],
+                    vec![0xF, 0xE, 1, 2, 3, 4, 1, 3, 4, 5, 6, 2, 5, 6, 7, 8, 9],
                     "{}: K2 stage values mismatch",
                     c.label
                 );
