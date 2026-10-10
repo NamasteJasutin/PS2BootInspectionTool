@@ -19,6 +19,7 @@ pub struct App {
     loaded_logo: u32,
     ps1_layout: Option<crate::scenes::ps1::Ps1Layout>,
     sce_textures: Option<crate::scenes::sce_intro::SceTextures>,
+    loaded_icons: u32,
 }
 
 impl App {
@@ -29,7 +30,7 @@ impl App {
         let view = SceneView::register(rs, &renderer.targets["scene"].1, renderer.size);
         let mut model = Model::new();
         model.load_defaults();
-        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None }
+        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None, loaded_icons: u32::MAX }
     }
 
     fn render_frame(&mut self, rs: &eframe::egui_wgpu::RenderState) {
@@ -44,6 +45,13 @@ impl App {
             self.ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| self.renderer.set_ps1_assets(s, &m.ps1_licence_text()));
             self.sce_textures = m.sce_intro.as_ref().filter(|_| m.console == Console::Ps1).map(|i| self.renderer.set_sce_assets(i));
             self.loaded_logo = m.logo_version;
+        }
+        // The card's own save icons over their games' towers (Camp 5): re-tagged when the card
+        // or the history changes.
+        if self.loaded_icons != m.icons_version {
+            if !m.card_icons.is_empty() { self.renderer.set_card_icons(&m.card_icons) }
+            self.renderer.set_icon_history(&m.history);
+            self.loaded_icons = m.icons_version;
         }
         // A standalone PS1 console needs no PS2 BIOS: its scenes are the shell's own.
         let assets = m.assets.as_ref();
@@ -541,6 +549,8 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
                 for l in TowerLayout::ALL { ui.selectable_value(&mut o.layout, l, l.name()); }
             });
         });
+        ui.add_enabled(!m.card_icons.is_empty(), egui::Checkbox::new(&mut o.icon_tags, "Tag towers with your card's save icons"))
+            .on_disabled_hover_text("Load a PS2 memory card that has saves with icons.");
         if o.layout != TowerLayout::Console {
             ui.add(egui::Slider::new(&mut o.revolve, -0.2..=0.2).text("revolve (turns/s)"));
             ui.add(egui::Slider::new(&mut o.ring_radius, 10.0..=60.0).text("radius"));

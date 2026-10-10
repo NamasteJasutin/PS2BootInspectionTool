@@ -377,6 +377,10 @@ pub struct Model {
     pub pup_path: Option<PathBuf>,
     /// Lab: the last snapshot comparison, as lines.
     pub pup_diff: Vec<String>,
+    /// The loaded card's save icons (`ps2kit::icon`), for tagging towers.
+    pub card_icons: Vec<ps2kit::icon::SaveIcon>,
+    /// Bumped when the icons or the history they tag change.
+    pub icons_version: u32,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -407,7 +411,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -617,6 +621,7 @@ impl Model {
                     self.card_status = format!("{name} — no history file; {n} titles have saves");
                     self.history_source = if n > 0 { HistorySource::Saves } else { HistorySource::Empty };
                 }
+                self.card_icons = ps2kit::icon::SaveIcon::from_card(&c);
                 self.card = Some(c);
                 self.card_path = Some(path.to_path_buf());
                 self.rebuild_history();
@@ -667,6 +672,7 @@ impl Model {
     }
 
     pub fn rebuild_history(&mut self) {
+        self.icons_version += 1;
         self.history = match self.history_source {
             HistorySource::Card => self.card_history.clone().unwrap_or_default(),
             HistorySource::Saves => {
@@ -718,6 +724,7 @@ impl Model {
     }
 
     fn rebuild_scene(&mut self) {
+        self.icons_version += 1;
         if let Some(a) = &self.assets { self.scene = OpeningScene::new(a, &self.history) }
     }
 
