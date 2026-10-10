@@ -36,6 +36,7 @@
 
 #![warn(missing_docs)]
 
+pub mod bench;
 pub mod bios;
 mod bytes;
 pub mod disc;
