@@ -39,5 +39,9 @@ path = "src/bin/ps1card.rs"
 name = "hookmap"
 path = "src/bin/hookmap.rs"
 
+[[bin]]
+name = "romdiff"
+path = "src/bin/romdiff.rs"
+
 [dev-dependencies]
 png = "0.17"

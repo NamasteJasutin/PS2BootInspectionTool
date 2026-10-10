@@ -54,6 +54,7 @@ pub mod ps1narrate;
 pub mod ps1card;
 pub mod pup;
 pub mod rom;
+pub mod romdiff;
 pub mod sectors;
 pub mod sim;
 pub mod sound;
