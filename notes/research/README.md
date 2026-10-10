@@ -197,3 +197,53 @@ Same [V]/[I] discipline. They feed the PSX range in `docs/campaign.md`.
     directory, never a PUP; never decrypt, fetch keys or name tools. (pup b)
 12. **No-disc menu mock-up** — static screens from the shell's TIMs and screen table; last.
     (scenes 5)
+
+---
+
+## Round three: hidden input, version evolution, influences (2026-10-10)
+
+Two thinkers per question from two labs (Codex GPT-6.1-Sol, AGY Gemini 3.8 Flash), read-only on
+the repo, each in its own room. Same [V]/[I] discipline. Their ideas feed `docs/options.md` §G.
+
+| note | subject | by | lines |
+|---|---|---|---|
+| `hidden_input.md` | every pad read and non-pad trigger in the PS2 OSD (1.00 MCLOCK/MBROWS/MOPEN — first decompilation — 1.50, 1.60, 2.00) and PS1 shells 1.0 → 4.5 → POPS | Codex | 589 |
+| `version_evolution.md` | PS2 1.00 → 2.00 and PS1 1.0 → 4.5 lined up in time: what changed, what never did | AGY | 313 |
+| `../ideas/influences_codex.md`, `../ideas/influences_gemini.md` | other systems' boot sequences (motion and structure only) and the research's overlooked facts, as app features | both | 443 / 278 |
+
+### What we learnt
+
+- **Hidden input exists, and none of it is in the boot path.** The boot itself reads no buttons
+  (rounds one and two stand). The menus do:
+  - **PS2 2.00 E: a hidden "Remote Control Off/On" option page.** Version Information → Console,
+    then Select + Start + L1 + L2 + R1 + R2 on **controller port 2** (mask `0x090F`, OSDSYS
+    `0x2266F0`; registration `0x206CC8`). Gated by config byte `0x13` bit 7 — **clear in the
+    user's 70004 NVM** (file `0x2C4 = 0x20`) — and cleared again at boot when the drive answers
+    S-command `0x30` with status `0x100` (`0x209EB8`). Absent in 1.00, 1.50, 1.60. Pad words are
+    merged across ports (`0x208DB8`): shoulders may come from port 1 [I]. Purpose of the gate
+    unresolved (factory provisioning is a hypothesis).
+  - **PS1 memory-card undelete, 1.0 J → 4.5**: L1 + L2 + R1 + R2 in the card manager restores
+    the last-deleted file through BIOS B0:46 (1.0 J `0x8003B9D4` … 4.5 A `0x8003ADF0`).
+  - **PS1 SoundScope** (Select in the CD player) is already in 4.0 J (`0x800349F0`), not only
+    the PSone; 24 preset selectors; and a **performance recorder**: Cross/shoulder chords record
+    and replay controller performances and save/load them to the card as `BPLAYSTATION`
+    (4.5 A `0x800427E0`, `0x80042FD8`, `0x80043074`).
+  - The PS2 aspect-recovery hold needs **121** qualifying frames, then Start alone (1.50
+    `0x23F8A8`, 1.60 `0x240178`, 2.00 `0x2482B8`) — corrects the earlier "120". 1.00's clock
+    display toggles with Square (`0x606118`). A PS1 4.5 mouse mapping can never satisfy its own
+    undo comparison (`0x8003E418`) — a bug-shaped branch.
+- **The PS2 opening never changed.** Tower grid, slot table, growth tables, orb colours, cubes and
+  prisms are byte-identical in all six PS2 builds (1.00 J 2000 → 2.00 E 2004); the coordinator's
+  1.00 J render is pixel-identical to 1.60 A's. `SNDIMAGE` is identical 1.50 → 2.00; 1.00 kept
+  its samples inline in a larger `OSDSND`. What did change: the PS2 logo's ribbon rates
+  (1.00: π/2, π/2; 1.50+: 0.84, 0.70 with PAL/NTSC aspect factors).
+- **The six-week pair**: SCPH-39001 (02-07) and SCPH-39004 (03-19) unpack to the same OSDSYS, but
+  the 39004's loader stub differs in 40 bytes (a **3-word** hot-patch: `0x2024E4` nop,
+  `0x2022F4`, `0x20230C` branches) where 1.60 E's differs in 98 (8 words) and 39001 patches
+  nothing — Sony re-shipped a pruned patch keeping a read tolerance and dropping the DVD/PS1
+  fallbacks [V structure confirmed by the coordinator; intent I].
+- **Block A is the gaiji font**: `0x64000` (PS1) = `rom0:KROMG` (PS2): 16×16 1-bit glyphs for
+  accented and half-width characters (closes `ps1_version_matrix.md` §9's first open item).
+- **Corrections confirmed by a second reader** (Codex T3b): `BOOT2` shadows a later `BOOT`
+  (PS1 3.0 A `0xBFC00B7C`, as fixed in R4); the 70004 EROM's 40 gzip members inflate to
+  11 009 004 bytes; the PUP's `update_files.tar` holds 50 regular files (48 packages + 2 RVK).

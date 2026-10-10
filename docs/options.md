@@ -87,7 +87,44 @@ launch), so "age" needs no inference from folder timestamps.
 63. **PS2-on-a-TV diorama** — the boot on a CRT model in a dark room. [K] M
 64. **Konami code → tornado**; audio-reactive towers from the mic. [C] S–M
 
-## Top picks
+## G. Round three (2026-10-10): hidden input, evolution, influences
+
+Contributors: **[X]** Codex GPT-6.1-Sol, **[A]** AGY Gemini 3.8 Flash, **[C]** Claude. Sources:
+`notes/research/hidden_input.md`, `version_evolution.md`, `notes/ideas/influences_*.md`.
+Homages borrow motion and structure only.
+
+65. **Virtual pad on the Scenario bar** — two controllers, press real chords; the menus answer with what the ROM does (undelete, SoundScope, the 2.00 Remote Control page), each with its address and gate. [X][C] M
+66. **PS1 undelete experiment** — delete a save on the user's card image (in memory only), hold four shoulders, watch the directory entry come back via B0:46. [X] M
+67. **SoundScope performance inspector** — find `BPLAYSTATION` files on a PS1 card, decode the recorded performance, replay it on a timeline. [X] M
+68. **2.00 Remote Control page** — the three config gates shown side by side from the user's NVM, the port-2 chord, and why it stays hidden on this console. [X] M
+69. **Aspect-recovery lesson** — the 121-frame hold drawn frame by frame. [X] S
+70. **Trigger origins on the hand-off card** — every branch says what caused it (button, NVM bit, disc type, drive status). [X] S
+71. **Console family chronoscope** — scrub 1994 → 2004 across the user's own dumps; scenes cross-fade between builds; what changed is listed under the scrubber. [A][C] M
+72. **Invariant core lens** — highlight what never changed (the PS2 skyline, the 1995 PS1 kernel) and what did (ribbon rates, wordmark, patches). [A][X] S
+73. **Hot-patch viewer** — 1.60 A (none) vs 39004 (3 words) vs 1.60 E (8 words): the patched instructions and the branches they bend. [A] S
+74. **Wordmark studio** — ® vs ™, SCEA/SCEE/SCEI, with the licence policy that selects each, per shell. [A][C] S
+75. **Gaiji glyph relay** — the KROMG/block-A glyphs drawn as the licence text needs them. [X][A] S
+76. **Watch the eviction** — a scan cursor walks the 21 records as `HistoryUpdate` picks its victim, including the date-floor quirk; toggle an "ideal sort" to see the difference. [X] S
+77. **Last date, same height** — a maxed record's date changes, its tower does not; an all-maxed history refuses a new title at the skyline edge. [X] S
+78. **The line that silenced BOOT** — caret walks the PS1 parser over `SYSTEM.CNF`; a `BOOT2` line lights "prefix found", "assigned" stays dark; reorder the lines to recover. [X][C] S
+79. **Stereo lantern** — two orbs brighten with left/right energy of the BIOS's own sound. [X] S
+80. **Boot narration** — POST bytes as beads along the scrubber plus the dummy-TTY log the kernel would have printed. [A][X] S
+81. **Forty seats, one sector** — the PS1 root directory as 40 seats; files past seat 40 or the first 2 KB stand outside. [X][A] M
+82. **Kernel island** — a fixed visual centre for the 1995 kernel while shells change around it across versions. [X] S
+83. **Same settings, different acceptance** — the PCSX2 NVM's stored values vs what the IOP accepts after the checksum. [X][A] M
+84. **Who supplied the picture?** — every element tagged by source: BIOS, disc, card, or the tool. [X] S
+85. **Settle on the release** — homage motion (Dreamcast/Mac/PS3): the camera eases to rest on the final frame rather than stopping. [X] S
+86. **Hold the anticipation** — homage motion (GameCube): a held chord changes the boot's voicing using the BIOS's own VAB programs. [A][X] S
+87. **Ghost monitors** — the dead PS-X ROM monitor 2.3 and TBIN command tables shown as an interactive, inert terminal. [A] M
+88. **PS1DRV compatibility matrix** — the per-title tables decoded for the loaded disc. [A] M
+
+### Round-three top picks
+
+- Codex: watch the eviction (76), stereo lantern (79), the line that silenced BOOT (78).
+- AGY: boot narration (80), the 40-seat directory (81), chord-revoiced boot audio (86).
+- Claude: the virtual pad (65) first, because it turns three separate findings (undelete, SoundScope, the hidden page) into one honest interaction; then the chronoscope (71) as the PSX range's flagship view; the line that silenced BOOT (78) as the smallest delight.
+
+## Top picks (round one)
 
 - GLM: save-data tab + orbital background; kprintf pane; icon tagging; ROM diff lab; director mode + homages.
 - Kimi: provenance inspector; icon tagging; what-if panel; path editor + seeded shuffle; ROM explorer + diff.
