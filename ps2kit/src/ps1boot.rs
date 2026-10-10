@@ -38,13 +38,21 @@ pub enum FieldDerivation {
         line_index: usize,
         /// The raw line text verbatim.
         raw_line: String,
-        /// The key prefix that matched at the line start (e.g. `"TCB"`, `"BOOT"`, `"BOOT2"`).
-        matched_prefix: String,
         /// The raw token extracted after `=` before conversion.
         raw_token: String,
     },
     /// Key was missing: the kernel sets the field to 0 rather than the ROM default (`rom:BFC008A0`, §4.1).
     DefaultZero,
+    /// The first line that starts with the key's letters continues with something other than
+    /// a space or `=` (e.g. `BOOT2 = …` for `BOOT`, `TCBX = 5` for `TCB`). The kernel stops at
+    /// that line and leaves the field unset, so any later proper line is never read
+    /// (`rom:BFC00A64` / `rom:BFC00C38`: `bne v0, '='` → return).
+    Shadowed {
+        /// 0-indexed line index of the shadowing line.
+        line_index: usize,
+        /// The shadowing line verbatim.
+        raw_line: String,
+    },
     /// Key was missing or empty: no boot executable was specified.
     NotPresent,
 }
@@ -91,7 +99,9 @@ impl Ps1SystemCnf {
     /// Parses a `SYSTEM.CNF` file following the kernel's exact rules (`rom:BFC008A0`, `ps1_kernel_boot.md` §4.1):
     /// - At most 2048 (0x800) bytes are read into RAM (`0xA000B070`).
     /// - The three numeric config words are zeroed first; missing keys remain 0.
-    /// - Keys are searched line by line as prefixes (`strncmp(line, key, strlen(key))`).
+    /// - Keys are found with a case-sensitive `strncmp(line, key, strlen(key))` at each line
+    ///   start; the **first** such line decides: it must continue with spaces and `=`, otherwise
+    ///   the field stays unset ([`FieldDerivation::Shadowed`]). A NUL byte ends the text.
     /// - Numbers are parsed as hex without prefix (`TCB = 10` is 16; `0x` stops at 0).
     /// - `STACK = 0` means "inherit the BIOS stack" (0x801FFF00) at `DoExecute`.
     /// - For `BOOT`, the first whitespace-delimited token is the boot path.
@@ -157,13 +167,8 @@ impl Ps1SystemCnf {
 
         // BOOT checks
         match &self.boot_derivation {
-            FieldDerivation::Parsed { matched_prefix, raw_line, .. } => {
-                if matched_prefix.eq_ignore_ascii_case("BOOT2") {
-                    lints.push(CnfLint::Boot2TakenAsBoot {
-                        line: raw_line.clone(),
-                    });
-                }
-            }
+            FieldDerivation::Parsed { .. } => {}
+            FieldDerivation::Shadowed { raw_line, .. } => lints.push(CnfLint::KeyShadowed { key: "BOOT", line: raw_line.clone() }),
             FieldDerivation::NotPresent | FieldDerivation::DefaultZero => {
                 lints.push(CnfLint::MissingBoot);
             }
@@ -215,170 +220,88 @@ fn hex_digit_val(b: u8) -> Option<u32> {
     }
 }
 
+/// Where the kernel's line scanner (`rom:BFC00944`, `rom:BFC00B7C`) lands for `key`.
+enum KeyMatch<'a> {
+    /// No line starts with the key.
+    Absent,
+    /// The first line starting with the key continues with something other than space or `=`.
+    Shadowed { line_index: usize, raw_line: String },
+    /// `line[value..]` follows `key`, spaces, `=` and spaces.
+    Value { line_index: usize, line: &'a [u8], value: usize },
+}
+
+/// The kernel's scan: a case-sensitive `strncmp` at each line start (NUL ends the text); the
+/// first matching line must continue with space-class bytes and `=` or the search ends there.
+fn find_key<'a>(slice: &'a [u8], key: &[u8]) -> KeyMatch<'a> {
+    let text = &slice[..slice.iter().position(|&b| b == 0).unwrap_or(slice.len())];
+    for (line_index, line) in text.split(|&b| b == b'\n').enumerate() {
+        if !line.starts_with(key) { continue }
+        let mut p = key.len();
+        while p < line.len() && is_ps1_space(line[p]) { p += 1 }
+        if line.get(p) != Some(&b'=') {
+            return KeyMatch::Shadowed { line_index, raw_line: String::from_utf8_lossy(line).trim_end_matches('\r').to_string() };
+        }
+        p += 1;
+        while p < line.len() && is_ps1_space(line[p]) { p += 1 }
+        return KeyMatch::Value { line_index, line, value: p };
+    }
+    KeyMatch::Absent
+}
+
 /// Parses a numeric key (`TCB`, `EVENT`, `STACK`) line by line (`rom:BFC00944`, `ps1_kernel_boot.md` §4.1).
 fn parse_numeric_key(slice: &[u8], key: &[u8]) -> (u32, FieldDerivation) {
-    let mut line_start = 0;
-    let mut line_index = 0;
-
-    while line_start < slice.len() {
-        let line_end = slice[line_start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map(|pos| line_start + pos)
-            .unwrap_or(slice.len());
-        let line = &slice[line_start..line_end];
-
-        // Line prefix matching: strncmp(line, key, strlen(key))
-        if line.len() >= key.len() && line[..key.len()].eq_ignore_ascii_case(key) {
-            let mut p = key.len();
-
-            // Detect extended prefix like TCBX
-            while p < line.len() && !is_ps1_space(line[p]) && line[p] != b'=' {
-                p += 1;
-            }
-            let matched_prefix = String::from_utf8_lossy(&line[..p]).into_owned();
-
-            // Skip space-class bytes after the key
-            while p < line.len() && is_ps1_space(line[p]) {
-                p += 1;
-            }
-
-            // Expect '='
-            if p < line.len() && line[p] == b'=' {
-                p += 1; // skip '='
-
-                // Skip space-class bytes after '='
-                while p < line.len() && is_ps1_space(line[p]) {
-                    p += 1;
-                }
-
-                let value_start = p;
-                let raw_token = String::from_utf8_lossy(&line[value_start..])
-                    .trim_end_matches(['\r', ' '])
-                    .to_string();
-
-                // Check for "0x" prefix pitfall: '0' parses, 'x' is not a hex digit -> returns 0
-                let mut val = 0u32;
-                if p + 1 < line.len() && line[p] == b'0' && (line[p + 1] == b'x' || line[p + 1] == b'X') {
-                    val = 0;
-                } else {
-                    while p < line.len() {
-                        if let Some(digit) = hex_digit_val(line[p]) {
-                            val = (val << 4) | digit;
-                            p += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
-                let raw_line = String::from_utf8_lossy(line).trim_end_matches('\r').to_string();
-                return (
-                    val,
-                    FieldDerivation::Parsed {
-                        line_index,
-                        raw_line,
-                        matched_prefix,
-                        raw_token,
-                    },
-                );
-            }
-            // If prefix matched but line had no '=', kernel aborts numeric lookup and leaves 0
-            return (0, FieldDerivation::DefaultZero);
-        }
-
-        line_start = line_end + 1;
-        line_index += 1;
+    let (line_index, line, mut p) = match find_key(slice, key) {
+        KeyMatch::Absent => return (0, FieldDerivation::DefaultZero),
+        KeyMatch::Shadowed { line_index, raw_line } => return (0, FieldDerivation::Shadowed { line_index, raw_line }),
+        KeyMatch::Value { line_index, line, value } => (line_index, line, value),
+    };
+    let raw_token = String::from_utf8_lossy(&line[p..]).trim_end_matches(['\r', ' ']).to_string();
+    // Hex digits without prefix, stopping at the first other byte: `0x10` reads as 0.
+    let mut val = 0u32;
+    while let Some(digit) = line.get(p).and_then(|&b| hex_digit_val(b)) {
+        val = (val << 4) | digit;
+        p += 1;
     }
-
-    (0, FieldDerivation::DefaultZero)
+    let raw_line = String::from_utf8_lossy(line).trim_end_matches('\r').to_string();
+    (val, FieldDerivation::Parsed { line_index, raw_line, raw_token })
 }
 
 /// Parses the `BOOT` line (`rom:BFC00B7C`, `ps1_kernel_boot.md` §4.1).
 fn parse_boot_key(slice: &[u8]) -> (Option<String>, Vec<u8>, FieldDerivation) {
-    let mut line_start = 0;
-    let mut line_index = 0;
-    let key = b"BOOT";
-
-    while line_start < slice.len() {
-        let line_end = slice[line_start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map(|pos| line_start + pos)
-            .unwrap_or(slice.len());
-        let line = &slice[line_start..line_end];
-
-        // Line prefix matching: strncmp(line, "BOOT", 4)
-        if line.len() >= key.len() && line[..key.len()].eq_ignore_ascii_case(key) {
-            let mut p = key.len();
-
-            // Detect extended prefix like BOOT2
-            while p < line.len() && !is_ps1_space(line[p]) && line[p] != b'=' {
-                p += 1;
-            }
-            let matched_prefix = String::from_utf8_lossy(&line[..p]).into_owned();
-
-            // Skip spaces before '='
-            while p < line.len() && is_ps1_space(line[p]) {
-                p += 1;
-            }
-
-            if p < line.len() && line[p] == b'=' {
-                p += 1; // skip '='
-
-                // Skip spaces after '='
-                while p < line.len() && is_ps1_space(line[p]) {
-                    p += 1;
-                }
-
-                let boot_val_start = p;
-                // The boot file name runs until the first space-class byte (or CR/end of line)
-                while p < line.len() && !is_ps1_space(line[p]) {
-                    p += 1;
-                }
-
-                let boot_file = String::from_utf8_lossy(&line[boot_val_start..p]).into_owned();
-
-                // Trailing text copied to RAM 0x180: whatever follows the first space-class byte
-                let mut argument = Vec::new();
-                if p < line.len() {
-                    // In kernel rom:BFC00D20: strncpy(0x180, token_end + 1, 128)
-                    let arg_start = p + 1;
-                    if arg_start < line.len() {
-                        let arg_slice = &line[arg_start..];
-                        // Strip trailing CR
-                        let arg_end = if arg_slice.ends_with(b"\r") {
-                            arg_slice.len() - 1
-                        } else {
-                            arg_slice.len()
-                        };
-                        let len = arg_end.min(RAM_ARGUMENT_MAX_BYTES);
-                        argument.extend_from_slice(&arg_slice[..len]);
-                    }
-                }
-
-                let raw_token = boot_file.clone();
-                let raw_line = String::from_utf8_lossy(line).trim_end_matches('\r').to_string();
-
-                return (
-                    Some(boot_file),
-                    argument,
-                    FieldDerivation::Parsed {
-                        line_index,
-                        raw_line,
-                        matched_prefix,
-                        raw_token,
-                    },
-                );
-            }
-            return (None, Vec::new(), FieldDerivation::NotPresent);
+    let (line_index, line, mut p) = match find_key(slice, b"BOOT") {
+        KeyMatch::Absent => return (None, Vec::new(), FieldDerivation::NotPresent),
+        KeyMatch::Shadowed { line_index, raw_line } => return (None, Vec::new(), FieldDerivation::Shadowed { line_index, raw_line }),
+        KeyMatch::Value { line_index, line, value } => (line_index, line, value),
+    };
+        let boot_val_start = p;
+        // The boot file name runs until the first space-class byte (or CR/end of line)
+        while p < line.len() && !is_ps1_space(line[p]) {
+            p += 1;
         }
 
-        line_start = line_end + 1;
-        line_index += 1;
-    }
+        let boot_file = String::from_utf8_lossy(&line[boot_val_start..p]).into_owned();
 
-    (None, Vec::new(), FieldDerivation::NotPresent)
+        // Trailing text copied to RAM 0x180: whatever follows the first space-class byte
+        let mut argument = Vec::new();
+        if p < line.len() {
+            // In kernel rom:BFC00D20: strncpy(0x180, token_end + 1, 128)
+            let arg_start = p + 1;
+            if arg_start < line.len() {
+                let arg_slice = &line[arg_start..];
+                // Strip trailing CR
+                let arg_end = if arg_slice.ends_with(b"\r") {
+                    arg_slice.len() - 1
+                } else {
+                    arg_slice.len()
+                };
+                let len = arg_end.min(RAM_ARGUMENT_MAX_BYTES);
+                argument.extend_from_slice(&arg_slice[..len]);
+            }
+        }
+
+        let raw_token = boot_file.clone();
+    let raw_line = String::from_utf8_lossy(line).trim_end_matches('\r').to_string();
+    (Some(boot_file), argument, FieldDerivation::Parsed { line_index, raw_line, raw_token })
 }
 
 fn lint_numeric_field(
@@ -407,6 +330,10 @@ fn lint_numeric_field(
                     }
                 }
             }
+        }
+        FieldDerivation::Shadowed { raw_line, .. } => {
+            lints.push(CnfLint::KeyShadowed { key: name, line: raw_line.clone() });
+            lints.push(CnfLint::MissingKey { key: name, rom_default });
         }
         FieldDerivation::DefaultZero | FieldDerivation::NotPresent => {
             lints.push(CnfLint::MissingKey {
@@ -439,9 +366,12 @@ pub enum CnfLint {
         /// The raw string token.
         raw: String,
     },
-    /// A `BOOT2` line was taken as `BOOT` due to prefix matching (`rom:BFC00B7C`).
-    Boot2TakenAsBoot {
-        /// The verbatim line that was matched.
+    /// The first line starting with the key's letters is not `key =` (e.g. `BOOT2 = …`), so the
+    /// kernel stops there and the field stays unset (`rom:BFC00A64`, `rom:BFC00C38`).
+    KeyShadowed {
+        /// The key the line hides.
+        key: &'static str,
+        /// The shadowing line verbatim.
         line: String,
     },
     /// Missing numeric key defaulting to 0 rather than ROM default.
@@ -486,8 +416,8 @@ impl fmt::Display for CnfLint {
             Self::HexPrefix { key, raw } => {
                 write!(f, "'{key} = {raw}' uses a '0x' prefix; the kernel parses hex digits without prefix and stops at 'x', yielding 0 (rom:BFC00944, ps1_kernel_boot.md §4.1)")
             }
-            Self::Boot2TakenAsBoot { line } => {
-                write!(f, "'BOOT2' line \"{line}\" matched prefix 'BOOT'; taken as PS1 boot executable (ps1_kernel_boot.md §4.1)")
+            Self::KeyShadowed { key, line } => {
+                write!(f, "\"{line}\" is the first line starting with {key}, but it does not continue with '=': the kernel stops at it and never reads a later {key} line, so {key} stays unset (rom:BFC00A64 / rom:BFC00C38; corrects ps1_kernel_boot.md §4.1)")
             }
             Self::MissingKey { key: "STACK", rom_default } => {
                 write!(f, "missing 'STACK' key: kernel sets STACK to 0, inheriting the BIOS stack 0x{rom_default:08X} at DoExecute (rom:BFC03CF0, ps1_kernel_boot.md §4.1)")

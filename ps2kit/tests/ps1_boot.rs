@@ -63,26 +63,24 @@ fn make_exe_header(
 // --- 1. SYSTEM.CNF Grammar Tests --------------------------------------------------------
 
 #[test]
-fn system_cnf_grammar_line_prefix_matching() {
-    // BOOT2 satisfies BOOT
-    let text = b"BOOT2 = cdrom0:\\SLUS_001.23;1\r\nTCB = 4\r\n";
-    let cnf = Ps1SystemCnf::parse(text);
-    assert_eq!(cnf.boot.as_deref(), Some("cdrom0:\\SLUS_001.23;1"));
-    if let FieldDerivation::Parsed { matched_prefix, .. } = &cnf.boot_derivation {
-        assert_eq!(matched_prefix, "BOOT2");
-    } else {
-        panic!("expected parsed derivation");
-    }
-
-    // TCBX satisfies TCB
-    let text2 = b"TCBX = 10\r\n";
-    let cnf2 = Ps1SystemCnf::parse(text2);
-    assert_eq!(cnf2.tcb, 0x10);
-    if let FieldDerivation::Parsed { matched_prefix, .. } = &cnf2.tcb_derivation {
-        assert_eq!(matched_prefix, "TCBX");
-    } else {
-        panic!("expected parsed derivation");
-    }
+fn system_cnf_first_line_with_the_key_decides() {
+    // scph5501 rom:BFC00C38: after `BOOT` the kernel wants spaces and '='; `BOOT2` stops the
+    // search, so a later BOOT line is never read and BOOT stays unset.
+    let cnf = Ps1SystemCnf::parse(b"BOOT2 = cdrom0:\\SLUS_001.23;1\r\nBOOT = cdrom:\\SLUS_001.23;1\r\nTCB = 4\r\n");
+    assert_eq!(cnf.boot, None);
+    assert!(matches!(&cnf.boot_derivation, FieldDerivation::Shadowed { line_index: 0, raw_line } if raw_line.starts_with("BOOT2")));
+    assert!(cnf.lints().iter().any(|l| matches!(l, CnfLint::KeyShadowed { key: "BOOT", .. })));
+    // The same file with the PS1 line first boots it.
+    let cnf = Ps1SystemCnf::parse(b"BOOT = cdrom:\\SLUS_001.23;1\r\nBOOT2 = cdrom0:\\SLUS_001.23;1\r\n");
+    assert_eq!(cnf.boot.as_deref(), Some("cdrom:\\SLUS_001.23;1"));
+    // rom:BFC00A64: the numeric keys follow the same rule.
+    let cnf = Ps1SystemCnf::parse(b"TCBX = 5\r\nTCB = 10\r\n");
+    assert_eq!(cnf.tcb, 0);
+    assert!(matches!(cnf.tcb_derivation, FieldDerivation::Shadowed { .. }));
+    // Spaces before '=' are fine; the match is case-sensitive (strncmp); NUL ends the text.
+    assert_eq!(Ps1SystemCnf::parse(b"TCB\t  =  10\n").tcb, 0x10);
+    assert_eq!(Ps1SystemCnf::parse(b"tcb = 10\n").tcb_derivation, FieldDerivation::DefaultZero);
+    assert_eq!(Ps1SystemCnf::parse(b"EVENT = 4\n\0TCB = 10\n").tcb_derivation, FieldDerivation::DefaultZero);
 }
 
 #[test]
@@ -197,11 +195,11 @@ fn linter_flags_hex_prefix_pitfall() {
 }
 
 #[test]
-fn linter_flags_boot2_taken_as_boot() {
+fn linter_flags_a_shadowing_boot2_line() {
     let text = b"BOOT2 = cdrom0:\\SLUS_123.45;1\r\n";
     let cnf = Ps1SystemCnf::parse(text);
     let lints = cnf.lints();
-    assert!(lints.iter().any(|l| matches!(l, CnfLint::Boot2TakenAsBoot { .. })));
+    assert!(lints.iter().any(|l| matches!(l, CnfLint::KeyShadowed { key: "BOOT", .. })));
 }
 
 #[test]
