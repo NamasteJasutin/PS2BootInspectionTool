@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Load SCPH-10000 (1.00 J) openings through the module and address in `rom0:OSOPEN`: raw LZ programs, content-located 0xE0 descriptors and inline textures mapped to the later texture names. Japanese/English warning masks become grey/alpha atlases in the common shape; other warning languages remain absent.
+- Read 1.00's embedded boot sound bank/sequences and its two-segment, NTSC-only PS2LOGO. Plain ELF program images now retain every PT_LOAD segment, gaps and zero-filled memory.
+
 ## 0.3.0 — 2026-10-09
 
 The boot can now lead somewhere other than the logo, the history table can be launched into,

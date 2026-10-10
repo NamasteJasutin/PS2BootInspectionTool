@@ -2,6 +2,7 @@
 //! sequences, rendered the way the IOP driver and the SPU2 play them (`notes/sound.md`).
 
 use crate::bytes::Bytes;
+use crate::locate::ProgramImage;
 use crate::rom::{unpack, RomDir};
 use crate::{Error, Format, Result};
 use std::collections::HashMap;
@@ -529,8 +530,9 @@ impl<'a> Synth<'a> {
     }
 }
 
-/// The boot sounds as OSDSYS schedules them, synthesised from `rom0:SNDIMAGE` with the
-/// driver tables from `rom0:OSDSND`. All three are [`SAMPLE_RATE`] interleaved stereo.
+/// The boot sounds as OSDSYS schedules them, synthesised from its inline data or
+/// `rom0:SNDIMAGE`, with the driver tables from `rom0:OSDSND`.
+/// All three are [`SAMPLE_RATE`] interleaved stereo.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct BootSound {
@@ -553,19 +555,62 @@ impl BootSound {
     /// Renders the three sequences from a BIOS dump. Falls back to
     /// [`DriverTables::computed`] when `rom0:OSDSND` is missing or not recognised.
     pub fn load(bios: &RomDir) -> Result<Self> {
-        let archive = RomDir::new(bios.module("SNDIMAGE")?.to_vec())?;
-        let asset = |n: &str| -> Result<Vec<u8>> { unpack(archive.module(n)?, 0) };
-        let bank = SoundBank::new(&asset("SNDBOOTH")?, asset("SNDBOOTB")?)?;
+        let (bank, sequences) = match bios.module("SNDIMAGE") {
+            Ok(module) => {
+                let archive = RomDir::new(module.to_vec())?;
+                let asset = |n: &str| -> Result<Vec<u8>> { unpack(archive.module(n)?, 0) };
+                (SoundBank::new(&asset("SNDBOOTH")?, asset("SNDBOOTB")?)?, [
+                    SoundSequence::new(&asset("SNDBOOTS")?)?,
+                    SoundSequence::new(&asset("SNDTNNLS")?)?,
+                    SoundSequence::new(&asset("SNDWARNS")?)?,
+                ])
+            }
+            Err(Error::NotFound(..)) if bios.module("OSOPEN").is_ok() => embedded_boot_sounds(bios)?,
+            Err(e) => return Err(e),
+        };
         let tables = bios.module("OSDSND").ok().and_then(DriverTables::from_driver).unwrap_or_else(DriverTables::computed);
         let synth = Synth { bank: &bank, tables: &tables };
         let (mut a, mut b, mut w) = (Vec::new(), Vec::new(), Vec::new());
         // The chime and the cue are a few seconds; the cap keeps a damaged sequence from
         // asking for an unbounded buffer.
-        synth.render(&SoundSequence::new(&asset("SNDBOOTS")?)?, 0x42, 0.0, 3.0, 120.0, &mut a);
-        synth.render(&SoundSequence::new(&asset("SNDTNNLS")?)?, 0x2A, 0.0, 3.0, 120.0, &mut b);
-        synth.render(&SoundSequence::new(&asset("SNDWARNS")?)?, 0x36, 0.0, 0.0, 60.0, &mut w);
+        synth.render(&sequences[0], 0x42, 0.0, 3.0, 120.0, &mut a);
+        synth.render(&sequences[1], 0x2A, 0.0, 3.0, 120.0, &mut b);
+        synth.render(&sequences[2], 0x36, 0.0, 0.0, 60.0, &mut w);
         Ok(Self { chime: a, cue: b, warning: w })
     }
+}
+
+/// Inline counterpart of `sound.md` §1.3/§3.1/§3.3. Verified in 0100JC20000117's OSDSYS:
+/// the bank at 0x221580, body at 0x221A80 (header padded to 64 bytes), and eight SSsq blocks
+/// in address order correspond to the later bank/sequence registration order. Bank, body,
+/// sequences 0 (0x2789C0), 1 (0x278BC0), 6 (0x287000) are byte-identical to 1.60's SNDBOOTH,
+/// SNDBOOTB, SNDBOOTS, SNDTNNLS, SNDWARNS. Locate signatures, lengths and valid programs;
+/// no addresses or bank/sequence bytes are used as search patterns.
+fn embedded_boot_sounds(bios: &RomDir) -> Result<(SoundBank, [SoundSequence; 3])> {
+    let img = ProgramImage::from_module(bios.module("OSDSYS")?, 0x200000)?;
+    let d = img.data();
+    let missing = || Error::Corrupt(Format::SoundBank, "could not locate the inline OSD boot bank and eight sequences".into());
+    let bank = img.find_all(b"SShd", 4).into_iter().find_map(|signature| {
+        let p = signature.checked_sub(0xC)?;
+        let (header_size, body_size) = (d.u32(p) as usize, d.u32(p + 4) as usize);
+        if !(0x30..=0x10000).contains(&header_size) || body_size == 0 || body_size > 64 << 20 { return None }
+        let header = d.get(p..p.checked_add(header_size)?)?;
+        let body = p.checked_add((header_size + 63) & !63)?;
+        let bank = SoundBank::new(header, d.get(body..body.checked_add(body_size)?)?.to_vec()).ok()?;
+        (!bank.programs.is_empty()).then_some(bank)
+    }).ok_or_else(missing)?;
+    let starts: Vec<usize> = img.find_all(b"SSsq", 4).into_iter().filter_map(|q| q.checked_sub(0xC)).collect();
+    if starts.len() != 8 { return Err(missing()) }
+    let sequence = |i: usize| -> Result<SoundSequence> {
+        let end = starts.get(i + 1).copied().unwrap_or(d.len());
+        let seq = SoundSequence::new(&d[starts[i]..end])?;
+        if seq.events.last().is_none_or(|e| e.kind != EventKind::End) || seq.channels.iter().any(|c| c.program != 0xFF && !bank.programs.contains_key(&c.program)) {
+            return Err(Error::Corrupt(Format::Sequence, "invalid inline OSD sequence".into()));
+        }
+        Ok(seq)
+    };
+    let sequences = [sequence(0)?, sequence(1)?, sequence(6)?];
+    Ok((bank, sequences))
 }
 
 /// Writes interleaved stereo float PCM as a 16-bit WAV file.
