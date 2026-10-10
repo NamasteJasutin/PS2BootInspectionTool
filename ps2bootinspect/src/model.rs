@@ -360,6 +360,9 @@ pub struct Model {
     /// A PS3 system update found next to the BIOS files: what its plaintext container says
     /// (read once; the contents are encrypted and never read).
     pub pup_summary: Vec<String>,
+    /// The loaded PS2 BIOS's companions (NVM, MEC, ROM1/ROM2/EROM) and what they predict,
+    /// each line with its research citation (`ps2kit::nvm`).
+    pub bios_set_lines: Vec<(String, &'static str)>,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -390,7 +393,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -504,6 +507,11 @@ impl Model {
                 self.assets_version += 1;
                 self.bios_path = Some(path.to_path_buf());
                 if let Some(l) = &logo { self.ps2_logo_chime = l.chime(0x12) }
+                self.bios_set_lines = ps2kit::nvm::BiosSet::inspect(path).map(|set| {
+                    let mut lines: Vec<(String, &'static str)> = set.findings.iter().map(|f| (f.message.clone(), f.citation)).collect();
+                    if let Some(n) = &set.nvm { lines.extend(n.predictions_with_mec(set.mec.as_ref()).into_iter().map(|p| (p.message, p.citation))) }
+                    lines
+                }).unwrap_or_default();
                 self.ps2_ps1_shell = Ps1Shell::load(&rom).map_err(|e| eprintln!("rom0:LOGO: {e}")).ok();
                 if self.console == Console::Ps2 || !quiet { self.console = Console::Ps2; self.ps1_shell = self.ps2_ps1_shell.clone() }
                 self.logo_assets = logo;

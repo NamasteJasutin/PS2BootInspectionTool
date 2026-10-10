@@ -756,6 +756,12 @@ fn ps2_bios_card(ui: &mut egui::Ui, m: &mut Model) {
             date.get(0..4).unwrap_or(""), date.get(4..6).unwrap_or(""), date.get(6..8).unwrap_or("")));
         ui.small(format!("Default video mode: {}.  Opening assets located by content: {} textures, tower grid, growth table, orb colours.", video_mode_name(if region == "E" { VideoMode::Pal } else { VideoMode::Ntsc }), a.textures().count()));
     });
+    if !m.bios_set_lines.is_empty() {
+        section(ui, "Companion files (NVM · MEC · ROM1/2 · EROM)", |ui| {
+            ui.small("What the files next to this BIOS say, and what the console would do with them.");
+            for (text, cite) in &m.bios_set_lines { ui.small(format!("• {text}")).on_hover_text(*cite); }
+        });
+    }
     section(ui, "Modules (ROMDIR)", |ui| {
         let Some(rom) = &m.rom else { return };
         let entries = rom.entries();
