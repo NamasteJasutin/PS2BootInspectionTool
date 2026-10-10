@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `nvm::{Nvm, BiosSet}` decode MechaCon EEPROM settings, validate the IOP's full-byte checksums, mask console IDs, predict cited OSD behaviour, and inspect PCSX2-named BIOS companions, DVD region sets, ROM2 mirrors, EROM gzip headers and MEC version gates. `nvminfo <bios.bin>` prints the inspection report; EROM payload CRCs remain unverified without an inflater.
 - `ps1bios::Ps1Bios` detects standalone PS1/PSone/POPS dumps, reads their identity and kernel code features, and opens raw, standard packed and POPS shells. `audit` reports size/text-mode damage and missing/displaced versions; `audit_set` finds byte-identical files and named-region disagreements without a shipped hash list.
 - `ps1::Ps1Shell::{load_ps1, locate}` reuse the PS2 licence loader with rotation derived from angles (or early-shell initialization stores), both wordmarks and all stored licence strings. `LicencePolicy` follows the shell's compare gate and flag stores. Existing `logo`/`logo_bytes` stay compatible and are empty without a reference; `reference_logo` and `comparison_logo_bytes` expose its optional presence and conditional use.
 - Load SCPH-10000 (1.00 J) openings through the module and address in `rom0:OSOPEN`: raw LZ programs, content-located 0xE0 descriptors and inline textures mapped to the later texture names. Japanese/English warning masks become grey/alpha atlases in the common shape; other warning languages remain absent.
