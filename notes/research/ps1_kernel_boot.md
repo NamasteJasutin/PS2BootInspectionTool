@@ -349,8 +349,12 @@ nor the flag nor the user-RAM wipe** (`rom:BFC06798` goes `EnterCriticalSection 
   byte count; 0 bytes read = treated as absent (defaults + `PSX.EXE`).
 * The three config words `0xA000B940/44/48` are **zeroed first**, then each of `TCB`, `EVENT`,
   `STACK` (`rom:BFC0DD10/14/1C`) is searched **line by line as a prefix** — `strncmp(line, key,
-  strlen(key))` at each line start, first match wins — so a line `TCBX = 5` sets TCB and `BOOT2 =
-  …` (a PS2 disc) satisfies `BOOT`. After the key: skip ctype-space (table `rom:BFC0DDB1`, bit 3:
+  strlen(key))` at each line start (case-sensitive; a NUL ends the text), and the **first** line
+  that starts with the key decides. **Correction (2026-10-10, re-read at `rom:BFC00A64` /
+  `rom:BFC00C38` [V]):** the character after the key must be a space or `=`; otherwise the routine
+  returns with the field unset and never looks further — so `TCBX = 5` does *not* set TCB, `BOOT2
+  = …` (a PS2 disc) does *not* satisfy `BOOT`, and either line placed first hides a proper later
+  line. After the key: skip ctype-space (table `rom:BFC0DDB1`, bit 3:
   TAB, LF, VT, FF, CR, space), require `=`, skip spaces, then **hex digits with no prefix** (ctype
   bits 0x44) — `TCB = 10` means 16; missing key ⇒ **0** (not the ROM default). Printed
   `"%s\t%08x"`.
@@ -549,7 +553,7 @@ everything after it computed.
    reconstructed from the format strings with the user's values — a boot narration that is
    entirely derivable and visibly "what the console would have printed had it a port".
 5. **SYSTEM.CNF linter** with the kernel's quirks: `TCB = 10` is 16, a missing `STACK` is "inherit
-   the BIOS stack", `BOOT2` lines match `BOOT`, trailing words become the 0x180 argument, CR is fine.
+   the BIOS stack", a `BOOT2` line before `BOOT` hides the PS1 boot file, trailing words become the 0x180 argument, CR is fine.
 6. **Expansion-ROM probe**: given a cartridge dump, test `0x1F000004`/`0x1F000084` against the
    ROM string and name the hook that fires and when (pre-kernel vs post-shell).
 7. **1.0J monitor leftovers viewer** (§6.4): show the dead command table from the user's own

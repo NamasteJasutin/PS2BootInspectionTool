@@ -129,8 +129,9 @@ Same [V]/[I] discipline. They feed the PSX range in `docs/campaign.md`.
   the PS2's `rom0:LOGO`. A tool must read the flag store from the shell's code. On 3.0 A the only
   gate before `SYSTEM.CNF` is bit 7 of the drive's `GetID` byte; the SCEx letters are drawn
   off-screen and never compared.
-- **`SYSTEM.CNF` has quirks a linter can teach**: keys match as line prefixes (`BOOT2` satisfies
-  `BOOT`), values are hex without prefix (`TCB = 10` is 16), missing keys are 0 not the ROM
+- **`SYSTEM.CNF` has quirks a linter can teach**: the first line starting with a key decides and
+  must continue with `=` (`BOOT2 = …` before `BOOT` hides the PS1 boot file — corrected against
+  `rom:BFC00C38` after the R4 build; the kernel note first said the opposite), values are hex without prefix (`TCB = 10` is 16), missing keys are 0 not the ROM
   defaults, `STACK = 0` inherits the BIOS stack, and trailing text after the boot file is copied
   to RAM `0x180`. The PS-X EXE header is never validated; `t_size % 0x800 ≠ 0` loads nothing. The
   root directory is read as one sector, 40 entries: the boot file must be in its first 2 KB.
