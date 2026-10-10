@@ -47,6 +47,7 @@ pub mod nvm;
 pub mod ps1;
 pub mod ps1bios;
 pub mod ps1boot;
+pub mod ps1card;
 pub mod pup;
 pub mod rom;
 pub mod sectors;
