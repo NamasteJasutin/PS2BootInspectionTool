@@ -1,5 +1,5 @@
 //! Everything the opening needs from the user's BIOS dump: data tables and textures of
-//! `rom0:OSDSYS`, located per ROM version.
+//! `rom0:OSDSYS` or its opening plug-in, located per ROM version.
 
 use crate::bytes::Bytes;
 use crate::history::RECORD_COUNT;
@@ -28,6 +28,40 @@ pub struct Texture {
 /// Where the stub of a compressed OSDSYS places the program.
 const COMPRESSED_BASE: usize = 0x200000;
 
+/// Compatibility roles for MOPEN's unnamed descriptors. `research/README.md`, Round two,
+/// "PS2 1.00 J" describes the inline layout; `opening.md` §2 gives the later names/order.
+/// Verified in 0100JC20000117: slots 0..=12 have the same order, dimensions, source format
+/// and decoded RGBA bytes as 0160AC20020207's named assets (including the wall's two mips).
+/// Slots 13/14 are Japanese/English "insert disc" masks, identified by decoded lettering;
+/// they use 256x256 format 3 instead of the later 512x128 indexed atlas. MOPEN draws the
+/// lower 256x128 strip to the right of the upper one (0x502EA8..0x502EDC); we repack those
+/// strips into the later atlas shape. Their GS alpha mask becomes grey + alpha, so the later
+/// additive text draw uses the mask as brightness (`opening_scene1.md` §8.2), rather than
+/// adding an all-white rectangle. No inline texture is indexed, so there is no CLUT.
+/// +0x24 skips the 20-byte TIM header on RGB16 sources;
+/// four alignment bytes after those sources explain the 0x18-byte inter-pixel gaps.
+/// Descriptor +0xC is the load group: 0 both scenes, 1 opening, 2 warning, 3 current language
+/// in the warning (MOPEN 0x5007C8..0x5008CC; compare `opening.md` §2).
+const INLINE_TEXTURE_NAMES: [&str; 15] = [
+    "TEXOSCE", "TEXOFOG0", "TEXOFOG1", "TEXOFOG2", "TEXOFOG3", "TEXOFOG4", "TEXOWAL0",
+    "TEXOCRLE", "TEXOCRBL", "TEXOFLAR", "TEXOREF", "TEXOBLP", "TEXOBLPR", "TEXOPNGJ", "TEXOPNGE",
+];
+
+/// Resolves the raw-LZ opening plug-in from its ROM descriptor (`osdsys_hooks.md` §0).
+fn opening_plugin(bios: &RomDir, descriptor: &[u8]) -> Result<ProgramImage> {
+    let invalid = || Error::Corrupt(Format::Bios, "invalid OSOPEN module descriptor".into());
+    let text = std::str::from_utf8(descriptor).map_err(|_| invalid())?;
+    let mut lines = text.trim_end_matches('\0').lines();
+    let version = lines.next().ok_or_else(invalid)?;
+    let name = lines.next().ok_or_else(invalid)?;
+    let address = lines.next().ok_or_else(invalid)?;
+    if version.parse::<u32>().is_err() || name.is_empty() || name.len() > 10 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(invalid());
+    }
+    let base = u32::from_str_radix(address, 16).map_err(|_| invalid())? as usize;
+    ProgramImage::from_module(bios.module(name)?, base)
+}
+
 /// Columns of the tower grid.
 pub const COLUMNS: usize = 14;
 /// Rows of the tower grid.
@@ -46,7 +80,7 @@ pub struct Slot {
     pub row: usize,
 }
 
-/// The opening's data tables and textures, read from `rom0:OSDSYS` and `rom0:TEXIMAGE`.
+/// The opening's data tables and textures, read from the monolithic OSD or its ROM plug-in.
 /// The tables have the sizes the OSD program assumes, so the accessors never fail for an
 /// index in range.
 #[derive(Clone)]
@@ -104,7 +138,14 @@ impl OpeningAssets {
     /// [`Error::UnsupportedVersion`] when a table cannot be found in this ROM.
     pub fn load(bios: &RomDir) -> Result<Self> {
         let version = bios.module("ROMVER")?.cstr(0, 14);
-        let img = ProgramImage::from_module(bios.module("OSDSYS")?, COMPRESSED_BASE)?;
+        let mut img = ProgramImage::from_module(bios.module("OSDSYS")?, COMPRESSED_BASE)?;
+        if !OsdLayout::has_asset_table(&img) {
+            match bios.module("OSOPEN") {
+                Ok(descriptor) => img = opening_plugin(bios, descriptor)?,
+                Err(Error::NotFound(..)) => {},
+                Err(e) => return Err(e),
+            }
+        }
         let lay = OsdLayout::discover(&img).map_err(|e| Error::UnsupportedVersion(format!("{version}: {e}")))?;
         let names = &lay.asset_names;
         let osd = img.data();
@@ -130,14 +171,37 @@ impl OpeningAssets {
         let cube_positions = std::array::from_fn(|i| v3(lay.cube_positions + i * 16));
         let prism_positions = std::array::from_fn(|i| v3(lay.prism_positions + i * 16));
 
-        let archive = RomDir::new(bios.module("TEXIMAGE")?.to_vec())?;
+        let archive = if lay.inline_pixels { None } else { Some(RomDir::new(bios.module("TEXIMAGE")?.to_vec())?) };
         let mut textures = HashMap::new();
         for i in 0..lay.texture_count {
-            let d = lay.texture_table + i * 0xF0;
-            let Some(Some(name)) = names.get(osd.i32(d + 4) as usize) else { continue };
-            let clut = osd.u32(d + 8) as usize;
+            let d = lay.texture_table + i * lay.texture_stride;
             let (w, h) = (osd.i32(d + 24) as usize, osd.i32(d + 28) as usize);
             let (mips, skip, format) = (osd.i32(d + 32) as usize, osd.i32(d + 36) as usize, osd.i32(d + 40));
+            if lay.inline_pixels {
+                let Some(&name) = INLINE_TEXTURE_NAMES.get(i) else { continue };
+                let start = img.at(osd.u32(d + 8) as usize).and_then(|p| p.checked_add(skip)).ok_or_else(|| Error::Corrupt(Format::Bios, format!("pixels of {name} lie outside the image")))?;
+                let raw = osd.get(start..).ok_or_else(|| Error::Corrupt(Format::Bios, format!("pixels of {name} are truncated")))?;
+                let mut rgba = decode_texture(raw, w, h, format, None)?;
+                let (w, h) = if i >= 13 {
+                    if !h.is_multiple_of(2) { return Err(Error::Corrupt(Format::Bios, format!("odd-height language atlas {name}"))) }
+                    for pixel in rgba.chunks_exact_mut(4) {
+                        let mask = (pixel[3] as u16 * 2).min(255) as u8;
+                        pixel.fill(mask);
+                    }
+                    let mut atlas = Vec::with_capacity(rgba.len());
+                    for y in 0..h / 2 {
+                        atlas.extend_from_slice(&rgba[y * w * 4..(y + 1) * w * 4]);
+                        atlas.extend_from_slice(&rgba[(y + h / 2) * w * 4..(y + h / 2 + 1) * w * 4]);
+                    }
+                    rgba = atlas;
+                    (w * 2, h / 2)
+                } else { (w, h) };
+                textures.insert(name.into(), Texture { name: name.into(), width: w, height: h, rgba, mip_levels: mips });
+                continue;
+            }
+            let Some(Some(name)) = names.get(osd.i32(d + 4) as usize) else { continue };
+            let clut = osd.u32(d + 8) as usize;
+            let Some(archive) = &archive else { continue };
             let Ok(packed) = archive.module(name) else { continue };
             let raw = unpack(packed, 0)?;
             let palette = match img.at(clut).filter(|_| clut != 0) {
@@ -209,4 +273,31 @@ pub fn decode_texture(src: &[u8], w: usize, h: usize, format: i32, palette: Opti
         f => return Err(Error::Corrupt(Format::Bios, format!("unknown texture format {f}"))),
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::opening_plugin;
+    use crate::rom::RomDir;
+
+    #[test]
+    fn opening_descriptor_selects_module_and_base_and_rejects_bad_text() {
+        let mut d = vec![0; 16];
+        for (name, size) in [("RESET", 16u32), ("ROMDIR", 64), ("CUSTOM", 11)] {
+            let p = d.len();
+            d.resize(p + 16, 0);
+            d[p..p + name.len()].copy_from_slice(name.as_bytes());
+            d[p + 12..p + 16].copy_from_slice(&size.to_le_bytes());
+        }
+        d.extend_from_slice(&[0; 16]);
+        d.extend_from_slice(&3u32.to_le_bytes());
+        d.extend_from_slice(&[0; 4]);
+        d.extend_from_slice(b"abc");
+        let rom = RomDir::new(d).expect("synthetic ROMDIR");
+        let img = opening_plugin(&rom, b"123\nCUSTOM\n00731000\n").expect("descriptor");
+        assert_eq!((img.base(), img.data()), (0x731000, &b"abc"[..]));
+        for descriptor in [&b""[..], b"123\nCUSTOM", b"123\n../CUSTOM\n00731000", b"bad\nCUSTOM\n00731000", b"123\nCUSTOM\nxyz", b"123\nCUSTOM\n100000000", b"\xFF"] {
+            assert!(opening_plugin(&rom, descriptor).is_err());
+        }
+    }
 }

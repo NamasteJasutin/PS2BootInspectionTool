@@ -101,7 +101,7 @@ pub struct SoundEffect {
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct LogoAssets {
-    /// The four objects of each video mode.
+    /// The four objects of each supported video mode (1.00 J supplies NTSC only).
     pub objects: HashMap<VideoMode, Vec<Object>>,
     /// Brightness multipliers of the five ribbon copies.
     pub ribbon_multipliers: [f32; 5],
@@ -181,6 +181,7 @@ impl LogoAssets {
         };
         let mut objects = HashMap::new();
         for (mode, shape_table, colour_table) in [(VideoMode::Ntsc, lay.shape_tables.0, lay.colour_tables.0), (VideoMode::Pal, lay.shape_tables.1, lay.colour_tables.1)] {
+            if lay.ntsc_only && mode == VideoMode::Pal { continue }
             let objs = (0..4)
                 .map(|o| {
                     let (kp, kn) = (u32(shape_table + o * 8), u32(shape_table + o * 8 + 4).min(16));
@@ -189,7 +190,7 @@ impl LogoAssets {
                     let colours = (0..cn)
                         .map(|k| ColourKey { t: i32(cp + k * 20), rgba: [i32(cp + k * 20 + 4) as f32, i32(cp + k * 20 + 8) as f32, i32(cp + k * 20 + 12) as f32, i32(cp + k * 20 + 16) as f32] })
                         .collect();
-                    Object { kind: if i32(lay.type_table + 4 * (3 - o)) == 0 { ObjectKind::LineStrips } else { ObjectKind::Ribbon }, layer_a: u32(lay.type_table + 0x20 + 4 * (3 - o)) != 0, layer_b: u32(lay.type_table + 0x40 + 4 * (3 - o)) != 0, keys, colours }
+                    Object { kind: if i32(lay.type_table + 4 * (3 - o)) == 0 { ObjectKind::LineStrips } else { ObjectKind::Ribbon }, layer_a: u32(lay.type_table + lay.type_flags_stride + 4 * (3 - o)) != 0, layer_b: u32(lay.type_table + 2 * lay.type_flags_stride + 4 * (3 - o)) != 0, keys, colours }
                 })
                 .collect();
             objects.insert(mode, objs);
@@ -211,8 +212,8 @@ impl LogoAssets {
             objects,
             ribbon_multipliers: [f32(m), f32(m + 4), f32(m + 8), f32(m + 12), f32(m + 16)],
             ribbon_delta: [f32(r + 4), f32(r), f32(r), 0.0],
-            ribbon_rate: HashMap::from([(VideoMode::Ntsc, f32(r + 0x10)), (VideoMode::Pal, f32(r + 0x14))]),
-            pal_y_scale: f32(r + 8) / f32(r + 12),
+            ribbon_rate: if lay.ntsc_only { HashMap::from([(VideoMode::Ntsc, f32(r + 12))]) } else { HashMap::from([(VideoMode::Ntsc, f32(r + 0x10)), (VideoMode::Pal, f32(r + 0x14))]) },
+            pal_y_scale: if lay.ntsc_only { 1.0 } else { f32(r + 8) / f32(r + 12) },
             effects,
             effect_master_volume: u32(se) as i64,
             sample_body: d[body_start..(body_start + body_size).min(d.len())].to_vec(),

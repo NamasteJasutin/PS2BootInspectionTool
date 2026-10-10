@@ -73,7 +73,7 @@ impl RomDir {
 /// offset/length split of a 16-bit big-endian match word.
 pub fn unpack(src: &[u8], start: usize) -> Result<Vec<u8>> {
     let trunc = || Error::Corrupt(Format::Bios, "truncated LZ stream".into());
-    if start + 4 > src.len() {
+    if start.checked_add(4).is_none_or(|end| end > src.len()) {
         return Err(trunc());
     }
     let size = src.u32(start) as usize;
