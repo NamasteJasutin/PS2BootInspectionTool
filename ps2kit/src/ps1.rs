@@ -1,4 +1,5 @@
-//! The PlayStation 1 licence screen as a PS2 shows it for a PS1 disc: `rom0:LOGO` is the
+//! The PlayStation 1 licence screen from standalone BIOS dumps or a PS2's `rom0:LOGO`.
+//! On a PS2 `rom0:LOGO` is the
 //! PS1 shell (packed, R3000), and on a PS2 it shows only the licence screen — the "Sony
 //! Computer Entertainment" diamond is not in this build (`notes/ps1_boot.md`). Everything is
 //! read from the user's BIOS (the shell's model, bitmaps, font, matrices, note table and sound
@@ -7,6 +8,7 @@
 
 use crate::bytes::Bytes;
 use crate::rom::{unpack, RomDir};
+use crate::ps1bios::{region_letter, Ps1Bios};
 use crate::sound::{decode_adpcm, envelope, SAMPLE_RATE};
 use crate::{Error, Format, Result, VideoMode};
 use std::path::Path;
@@ -69,6 +71,7 @@ impl Tmd {
                     p += 16;
                 }
                 0x30 => {
+                    if p + 20 > d.len() { return Err(bad("primitive table past the end")) }
                     // Three normals: the shell averages them and rewrites the record as 0x20.
                     // The first is used here; the logo does not contain any.
                     prims.push(Prim { colour, normal: d.u16(p + 8), verts: [d.u16(p + 10), d.u16(p + 14), d.u16(p + 18)] });
@@ -109,7 +112,8 @@ impl Tim {
         }
         let clut_len = d.u32(8) as usize;
         let (cw, ch) = (d.u16(0x10) as usize, d.u16(0x12) as usize);
-        if cw * ch > 256 || clut_len > 8 + 512 {
+        if cw * ch == 0 || cw * ch > 256 || clut_len < 12 + cw * ch * 2 || clut_len > 12 + 512
+            || 8 + clut_len + 12 > d.len() {
             return Err(Error::Corrupt(Format::Bios, "TIM CLUT is implausible".into()));
         }
         let clut: Vec<u16> = (0..cw * ch).map(|i| d.u16(0x14 + i * 2)).collect();
@@ -120,6 +124,9 @@ impl Tim {
             return Err(Error::Corrupt(Format::Bios, "TIM image size is implausible".into()));
         }
         let data = ib + 12;
+        if d.u32(ib) as usize != 12 + iw * ih * 2 || data + iw * ih * 2 > d.len() {
+            return Err(Error::Corrupt(Format::Bios, "TIM pixels are truncated".into()));
+        }
         let mut rgba = vec![0u8; width * height * 4];
         for y in 0..height {
             for x in 0..width {
@@ -279,16 +286,42 @@ impl Vab {
     }
 }
 
-/// Everything the licence screen needs from `rom0:LOGO` and `rom0:KROM`, located by content.
+/// Licence comparison policy read from shell code (`ps1_version_matrix.md` §3.4,
+/// `ps1_kernel_boot.md` §3.3). It is independent of the reported version number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LicencePolicy {
+    /// The compare is executed without a check flag (early Japanese shells).
+    Unconditional,
+    /// The compare's flag is stored as a constant one.
+    Always,
+    /// The flag is stored as zero, or the shell has no licence comparisons.
+    Never,
+    /// The region routine sets the flag, then clears it for letter A.
+    ByLetter,
+}
+
+impl LicencePolicy {
+    /// Evaluates the code's policy for a tail/ROMVER letter; ByLetter skips only A.
+    pub fn checks(self, letter: Option<char>) -> bool {
+        match self { Self::Unconditional | Self::Always => true, Self::Never => false, Self::ByLetter => letter != Some('A') }
+    }
+}
+
+/// Everything the licence screen needs from a standalone shell or `rom0:LOGO`, by content.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Ps1Shell {
-    /// The shell's own copy of the logo, compared byte for byte with the disc's.
+    /// The shell's reference logo; empty when absent, preserving the original PS2 API.
+    /// Use [`reference_logo`](Self::reference_logo) to distinguish absent reference data.
     pub logo: Tmd,
-    /// The [`LOGO_TMD_BYTES`] bytes of that copy, as the comparison sees them.
+    /// The [`LOGO_TMD_BYTES`] bytes of that copy; empty in shells without a reference.
     pub logo_bytes: Vec<u8>,
-    /// The 200x40 "PlayStation" wordmark.
+    /// The selected 200x40 "PlayStation" wordmark for this dump's policy and letter.
     pub wordmark: Tim,
+    /// All 200x40 wordmark TIMs in image order: registered first, trademark second if present.
+    /// `ps1_shell_scenes.md` §5 item 4; `wordmark` is the one selected for this dump.
+    pub wordmarks: Vec<Tim>,
     /// The 20x8 TM mark.
     pub tm: Tim,
     /// The kernel font with the shell's proportional widths.
@@ -305,8 +338,12 @@ pub struct Ps1Shell {
     pub events: Vec<NoteEvent>,
     /// The shell's sound bank.
     pub bank: Vab,
-    /// The 14-character `ROMVER` string of the BIOS the shell came from.
+    /// The PS2 ROMVER or complete standalone tail version string; empty if absent.
     pub rom_version: String,
+    /// Licence policy established from the shell's compare gate and flag stores.
+    pub licence_policy: LicencePolicy,
+    /// Every stored licence line (zero, one or three); matrix §3.4 includes 2.0 E and POPS.
+    pub licence_strings: Vec<String>,
 }
 
 fn find(d: &[u8], pat: &[u8], from: usize) -> Option<usize> {
@@ -318,6 +355,150 @@ fn mat3(d: &[u8], o: usize) -> [[i16; 3]; 3] {
     [m(0), m(1), m(2)]
 }
 
+// RotMatrix uses 1/4096-turn angles, Rx·Ry·Rz, stored in 4.12. Scenes §5 item 1.
+fn rotation_from_angles(angles: [i16; 3]) -> [[i16; 3]; 3] {
+    let [(sx, cx), (sy, cy), (sz, cz)] = angles.map(|a| (f64::from(a) * std::f64::consts::TAU / 4096.0).sin_cos());
+    let m = [[cy * cz, -cy * sz, sy],
+        [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+        [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy]];
+    m.map(|row| row.map(|v| (v * 4096.0).round() as i16))
+}
+
+// Resolve only nearby constant construction (LUI/ADDIU/ORI), never execute user code.
+fn code_constant(d: &[u8], before: usize, reg: u32, depth: usize) -> Option<u32> {
+    if reg == 0 { return Some(0) }
+    if depth > 3 { return None }
+    for o in (before.saturating_sub(32)..before).step_by(4).rev() {
+        let w = d.u32(o);
+        let (op, rs, rt) = (w >> 26, w >> 21 & 31, w >> 16 & 31);
+        if op == 0 && w >> 11 & 31 == reg && w & 63 != 8 { return None }
+        if rt != reg { continue }
+        match op {
+            15 => return Some((w & 0xFFFF) << 16),
+            8 | 9 => return code_constant(d, o, rs, depth + 1).map(|v| v.wrapping_add(w as i16 as i32 as u32)),
+            13 => return code_constant(d, o, rs, depth + 1).map(|v| v | (w & 0xFFFF)),
+            10..=14 | 32..=38 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn memory_address(d: &[u8], o: usize) -> Option<u32> {
+    code_constant(d, o, d.u32(o) >> 21 & 31, 0).map(|base| base.wrapping_add(d.i16(o) as i32 as u32))
+}
+
+// Dump correction to scenes §5 item 1: 1.0/1.1 leave these vectors zero in data and
+// initialise them with SH/SW in the drawing code (1.0 +0x11A3C, 1.1 +0x10920).
+// Locate a complete SVECTOR/VECTOR initialization, with code references to both.
+fn runtime_transform(d: &[u8]) -> Option<([i16; 3], [i32; 3])> {
+    for o in (0..d.len().saturating_sub(3)).step_by(4) {
+        let w = d.u32(o);
+        if w >> 26 != 41 { continue }
+        let Some(base) = memory_address(d, o).filter(|&a| a <= u32::MAX - 16) else { continue };
+        let Some(first) = code_constant(d, o, w >> 16 & 31, 0) else { continue };
+        if first == 0 || i32::from(first as i16).abs() > 4096 { continue }
+        let mut values = [None; 6];
+        for p in (o.saturating_sub(16)..(o + 68).min(d.len().saturating_sub(3))).step_by(4) {
+            let instruction = d.u32(p);
+            let op = instruction >> 26;
+            if !matches!(op, 41 | 43) { continue }
+            let Some(address) = memory_address(d, p) else { continue };
+            let offsets = [0, 2, 4, 8, 12, 16];
+            let Some(i) = offsets.iter().position(|&delta| address == base + delta) else { continue };
+            if (i < 3 && op == 41) || (i >= 3 && op == 43) {
+                values[i] = code_constant(d, p, instruction >> 16 & 31, 0);
+            }
+        }
+        let [Some(x), Some(y), Some(z), Some(tx), Some(ty), Some(tz)] = values else { continue };
+        let angles = [x as i16, y as i16, z as i16];
+        if angles.iter().any(|&v| i32::from(v).abs() > 4096) || tz as i32 <= 0 { continue }
+        if address_refs(d, base).next().is_some() && address_refs(d, base + 8).next().is_some() {
+            return Some((angles, [tx as i32, ty as i32, tz as i32]));
+        }
+    }
+    None
+}
+
+fn address_refs(d: &[u8], address: u32) -> impl Iterator<Item = usize> + '_ {
+    (0..d.len().saturating_sub(3)).step_by(4).filter(move |&o| {
+        let w = d.u32(o);
+        matches!(w >> 26, 8 | 9 | 13) && code_constant(d, o + 4, w >> 16 & 31, 0) == Some(address)
+    })
+}
+
+fn tim_offset(d: &[u8], index: usize) -> Option<usize> {
+    let (mut p, mut n) = (0, 0);
+    while let Some(i) = find(d, &[0x10, 0, 0, 0, 8, 0, 0, 0], p) {
+        if let Ok(t) = Tim::parse_4bit(&d[i..]) {
+            if (t.width, t.height) == (200, 40) {
+                if n == index { return Some(i) }
+                n += 1;
+            }
+        }
+        p = i + 8;
+    }
+    None
+}
+
+// Bind a compare gate to a referenced licence string, then inspect stores to that same
+// word. Matrix §3.4 and kernel §3.3 give the evidence; no version-to-policy mapping.
+fn locate_policy(d: &[u8], strings: &[usize]) -> Result<LicencePolicy> {
+    if strings.is_empty() { return Ok(LicencePolicy::Never) }
+    let bad = || Error::Corrupt(Format::Bios, "PS1 shell: unrecognised licence flag code".into());
+    let mut references: Vec<_> = strings.iter().flat_map(|&s| address_refs(d, 0x80030000 + s as u32)).filter(|&o| d.u32(o) >> 16 & 31 == 5).collect();
+    references.sort_unstable();
+    let reference = *references.first().ok_or_else(bad)?;
+    let mut flag = None;
+    for o in (reference.saturating_sub(192)..reference).step_by(4).rev() {
+        let w = d.u32(o);
+        let (rs, rt) = (w >> 21 & 31, w >> 16 & 31);
+        if w >> 26 != 4 || rs == rt || (rs != 0 && rt != 0) { continue }
+        let target = o as i64 + 4 + i64::from(w as i16) * 4;
+        if target <= reference as i64 || target > reference as i64 + 256 { continue }
+        let reg = rs.max(rt);
+        for p in (o.saturating_sub(16)..o).step_by(4).rev() {
+            if d.u32(p) >> 26 == 35 && d.u32(p) >> 16 & 31 == reg {
+                flag = memory_address(d, p);
+                break;
+            }
+        }
+        if flag.is_some() { break }
+    }
+    let Some(flag) = flag else { return Ok(LicencePolicy::Unconditional) };
+    let (mut zero, mut one, mut by_letter) = (false, false, false);
+    for o in (0..d.len().min(0x2000).saturating_sub(3)).step_by(4) {
+        let w = d.u32(o);
+        if w >> 26 != 43 || memory_address(d, o) != Some(flag) { continue }
+        match code_constant(d, o, w >> 16 & 31, 0) {
+            Some(0) => {
+                zero = true;
+                // A BNE against literal 'A' skips this exact zero store.
+                by_letter |= (o.saturating_sub(24)..o).step_by(4).any(|p| {
+                    let b = d.u32(p);
+                    b >> 26 == 5 && (code_constant(d, p, b >> 16 & 31, 0) == Some(u32::from(b'A'))
+                        || code_constant(d, p, b >> 21 & 31, 0) == Some(u32::from(b'A')))
+                        && p as i64 + 4 + i64::from(b as i16) * 4 > o as i64
+                });
+            }
+            Some(1) => one = true,
+            _ => return Err(bad()),
+        }
+    }
+    match (zero, one, by_letter) {
+        (true, true, true) => Ok(LicencePolicy::ByLetter),
+        (true, false, _) => Ok(LicencePolicy::Never),
+        (false, true, _) => Ok(LicencePolicy::Always),
+        (false, false, _) => {
+            // PS2 1.00 J has an initialized constant flag in its image, with no stores.
+            let offset = flag.checked_sub(0x80030000).map(|o| o as usize).ok_or_else(bad)?;
+            if offset.checked_add(4).is_none_or(|end| end > d.len()) { return Err(bad()) }
+            match d.u32(offset) { 0 => Ok(LicencePolicy::Never), 1 => Ok(LicencePolicy::Always), _ => Err(bad()) }
+        }
+        _ => Err(bad()),
+    }
+}
+
 impl Ps1Shell {
     /// Unpacks `rom0:LOGO` from a BIOS dump and locates its tables; also reads `rom0:KROM`
     /// and `rom0:ROMVER`. Fails with [`Error::Corrupt`] naming the first table not found.
@@ -325,12 +506,45 @@ impl Ps1Shell {
         let module = rom.module("LOGO")?;
         // {load address, size}, a 0x44-byte copy loader, then the LZ stream.
         let image = unpack(module, 0x54).map_err(|_| Error::Corrupt(Format::Bios, "rom0:LOGO: no LZ stream at the expected offset".into()))?;
-        let d = &image[..];
-        let miss = |what: &str| Error::Corrupt(Format::Bios, format!("rom0:LOGO: {what} not found"));
+        let version = String::from_utf8_lossy(rom.module("ROMVER").unwrap_or(b"")).trim_end_matches('\0').to_string();
+        Self::locate(&image, rom.module("KROM")?, &version)
+    }
 
-        let t = find(d, &[0x41, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], 0).ok_or_else(|| miss("logo TMD"))?;
-        let logo_bytes = d.get(t..t + LOGO_TMD_BYTES).ok_or_else(|| miss("logo TMD"))?.to_vec();
-        let logo = Tmd::parse(&logo_bytes)?;
+    /// Loads a standalone shell and its ROM font (`ps1_shell_scenes.md` §5 items 1–5).
+    pub fn load_ps1(bios: &Ps1Bios) -> Result<Self> {
+        Self::locate(&bios.shell_image()?, bios.krom(), &bios.identity().version)
+    }
+
+    /// Locates tables in a shell image linked at 0x80030000 with its KROM and version text.
+    /// Standalone matrix/asset layouts: `ps1_shell_scenes.md` §5 items 1–5.
+    /// Policy follows matrix §3.4, correcting the version-based rule in scenes §5 item 3.
+    pub fn locate(d: &[u8], krom: &[u8], version: &str) -> Result<Self> {
+        let miss = |what: &str| Error::Corrupt(Format::Bios, format!("PS1 shell: {what} not found or truncated"));
+        let mut logo_bytes = Vec::new();
+        let mut logo = Tmd { verts: Vec::new(), normals: Vec::new(), prims: Vec::new() };
+        let mut p = 0;
+        while let Some(t) = find(d, &[0x41, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], p) {
+            if let Some(bytes) = d.get(t..t + LOGO_TMD_BYTES) {
+                if let Ok(model) = Tmd::parse(bytes) {
+                    if !model.verts.is_empty() && !model.normals.is_empty() && !model.prims.is_empty() {
+                        logo = model; logo_bytes = bytes.to_vec(); break;
+                    }
+                }
+            }
+            p = t + 4;
+        }
+
+        let mut licence_strings = Vec::new();
+        let mut string_offsets = Vec::new();
+        let mut p = 0;
+        while let Some(i) = find(d, b"          Licensed  by", p) {
+            let text = d.cstr(i, 73);
+            if !matches!(text.len(), 64 | 67 | 70) || d.get(i + text.len()) != Some(&0) { return Err(miss("licence string")) }
+            string_offsets.push(i);
+            licence_strings.push(text);
+            p = i + 1;
+        }
+        let licence_policy = locate_policy(d, &string_offsets)?;
 
         let mut tims = Vec::new();
         let mut p = 0;
@@ -338,25 +552,36 @@ impl Ps1Shell {
             if let Ok(t) = Tim::parse_4bit(&d[i..]) { tims.push(t) }
             p = i + 8;
         }
-        let wordmark = tims.iter().find(|t| t.width == 200 && t.height == 40).cloned().ok_or_else(|| miss("wordmark TIM"))?;
+        let wordmarks: Vec<Tim> = tims.iter().filter(|t| t.width == 200 && t.height == 40).cloned().collect();
+        let wordmark = wordmarks.first().cloned().ok_or_else(|| miss("wordmark TIM"))?;
         let tm = tims.iter().find(|t| t.width == 20 && t.height == 8).cloned().ok_or_else(|| miss("TM TIM"))?;
 
         // Proportional table: '0' = {0,16}, '1' = {2,8}, '2' = {0,16}.
         let pp = find(d, &[0, 0, 16, 0, 2, 0, 8, 0, 0, 0, 16, 0], 0).ok_or_else(|| miss("font width table"))?;
-        let prop = (0..=0xD1 - 0x93).map(|i| (d.u16(pp + i * 4), d.u16(pp + i * 4 + 2))).collect();
-        let krom = rom.module("KROM")?;
+        if pp + (0xD2 - 0x93) * 4 > d.len() { return Err(miss("font width table")) }
+        let prop: Vec<_> = (0..=0xD1 - 0x93).map(|i| (d.u16(pp + i * 4), d.u16(pp + i * 4 + 2))).collect();
+        if prop.iter().any(|&(shift, advance)| shift > 15 || advance > 16) { return Err(miss("font width table")) }
         if krom.len() < 0xD2 * 30 { return Err(Error::Corrupt(Format::Bios, "rom0:KROM is too short".into())) }
         let font = Font { glyphs: krom.to_vec(), prop };
 
         let mut ld = Vec::new();
         for v in [0i16, 0, 4000, 0, -4000, 0, -4000, 0, 0] { ld.extend_from_slice(&v.to_le_bytes()) }
         let lo = find(d, &ld, 0).ok_or_else(|| miss("light matrix"))?;
+        if lo + 0x68 > d.len() { return Err(miss("matrix block")) }
         let light_dirs = mat3(d, lo);
         // Colour matrix 0x20 bytes later, rotation 0x40 bytes later, translation after it.
         let light_colours = mat3(d, lo + 0x20);
-        let rotation = mat3(d, lo + 0x40);
-        let translation = [d.i32(lo + 0x40 + 20), d.i32(lo + 0x40 + 24), d.i32(lo + 0x40 + 28)];
-        if rotation[0][0].abs() > 4096 || translation[2] <= 0 {
+        let mut rotation = mat3(d, lo + 0x40);
+        let mut translation = [d.i32(lo + 0x54), d.i32(lo + 0x58), d.i32(lo + 0x5C)];
+        if rotation.iter().flatten().any(|&v| i32::from(v).abs() > 4096) {
+            let mut angles = [d.i16(lo + 0x54), d.i16(lo + 0x56), d.i16(lo + 0x58)];
+            translation = [d.i32(lo + 0x5C), d.i32(lo + 0x60), d.i32(lo + 0x64)];
+            if angles == [0; 3] {
+                (angles, translation) = runtime_transform(d).ok_or_else(|| miss("runtime transform stores"))?;
+            }
+            rotation = rotation_from_angles(angles);
+        }
+        if translation[2] <= 0 {
             return Err(miss("rotation matrix"));
         }
 
@@ -366,24 +591,39 @@ impl Ps1Shell {
         let mut events = Vec::new();
         let mut q = eo;
         loop {
+            if q + 8 > d.len() || events.len() > 64 { return Err(miss("note table terminator")) }
             let time = d.u32(q);
-            if time == 9999 || events.len() > 64 { break }
+            if time == 9999 { break }
             events.push(NoteEvent { time, prog: d.u8(q + 4), note: d.u8(q + 5), vel: d.u8(q + 6), pan: d.u8(q + 7) });
             q += 8;
         }
         let vo = find(d, b"pBAV", 0).ok_or_else(|| miss("VAB"))?;
         let bank = Vab::parse(&d[vo..])?;
-        let rom_version = String::from_utf8_lossy(rom.module("ROMVER").unwrap_or(b"")).trim_end_matches('\0').to_string();
-        Ok(Self { logo, logo_bytes, wordmark, tm, font, light_dirs, light_colours, rotation, translation, events, bank, rom_version })
+        // Older shells choose the second TIM when their flag is clear. This includes 4.1
+        // (+0x1D218 flag load, +0x1D228 branch), correcting scenes §5's "4.x always ®".
+        // 4.5's second TIM is unused: require a code reference, independent of the version.
+        let trademark_used = !licence_policy.checks(region_letter(version)) && wordmarks.len() > 1
+            && tim_offset(d, 1).is_some_and(|o| address_refs(d, 0x80030000 + o as u32).next().is_some());
+        let wordmark = if trademark_used { wordmarks[1].clone() } else { wordmark };
+        Ok(Self { logo, logo_bytes, wordmark, wordmarks, tm, font, light_dirs, light_colours, rotation, translation, events, bank,
+            rom_version: version.into(), licence_policy, licence_strings })
     }
 
-    /// Whether the licence check is on for this console: only `A` consoles skip it.
-    pub fn checks_licence(&self) -> bool { self.rom_version.chars().nth(4) != Some('A') }
+    /// The optional ROM reference model; absent shells display the disc's own model.
+    pub fn reference_logo(&self) -> Option<&Tmd> { (!self.logo_bytes.is_empty()).then_some(&self.logo) }
+
+    /// ROM logo bytes to compare, only when this shell's code enables comparison.
+    pub fn comparison_logo_bytes(&self) -> Option<&[u8]> {
+        (self.checks_licence() && !self.logo_bytes.is_empty()).then_some(self.logo_bytes.as_slice())
+    }
+
+    /// Whether this shell's policy enables licence comparison for this dump's letter.
+    pub fn checks_licence(&self) -> bool { self.licence_policy.checks(region_letter(&self.rom_version)) }
 
     /// The four letters the licence screen shows under the text: "SCE" + the drive's region
     /// letter (E/A/I). The letters a PS2 drive reports were not verified; this follows the ROM.
     pub fn sce_id(&self) -> String {
-        let r = match self.rom_version.chars().nth(4) { Some('E') => 'E', Some('A') => 'A', _ => 'I' };
+        let r = match region_letter(&self.rom_version) { Some('E') => 'E', Some('A') => 'A', _ => 'I' };
         format!("SCE{r}")
     }
 }
