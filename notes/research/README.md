@@ -236,7 +236,8 @@ the repo, each in its own room. Same [V]/[I] discipline. Their ideas feed `docs/
   prisms are byte-identical in all six PS2 builds (1.00 J 2000 → 2.00 E 2004); the coordinator's
   1.00 J render is pixel-identical to 1.60 A's. `SNDIMAGE` is identical 1.50 → 2.00; 1.00 kept
   its samples inline in a larger `OSDSND`. What did change: the PS2 logo's ribbon rates
-  (1.00: π/2, π/2; 1.50+: 0.84, 0.70 with PAL/NTSC aspect factors).
+  (1.00 is NTSC-only at 0.84; 1.50 added the PAL rate 0.70 and the PAL/NTSC aspect factors — corrected by
+  the ROM explorer: the π/2 floats first reported as 1.00's rates are other constants).
 - **The six-week pair**: SCPH-39001 (02-07) and SCPH-39004 (03-19) unpack to the same OSDSYS, but
   the 39004's loader stub differs in 40 bytes (a **3-word** hot-patch: `0x2024E4` nop,
   `0x2022F4`, `0x20230C` branches) where 1.60 E's differs in 98 (8 words) and 39001 patches

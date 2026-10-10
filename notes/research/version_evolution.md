@@ -15,7 +15,7 @@
    - 1.60 A (39001) ships **zero patches** (strict retail syscall stub).
    - SCPH-39004 (39004, mastered 6 weeks after 39001) re-introduces the hot patch, but **pruned down to exactly three words**: patching only `0x2024e4` (NOP disc-ID mismatch), `0x2022f4` (branch over not-ready), and `0x20230c` (branch over read-key failure). Sony eliminated the unpredictable fallbacks to DVD and PS1, keeping only the MechaCon read-tolerance fixes for European dual-layer/worn media.
 3. **Sound Bank Invariance (2000–2004) [V]**: `rom0:SNDIMAGE` is byte-identical across 1.50 A devkit, 1.60 E, 1.60 A, 1.60 A (39004), and 2.00 E (SHA-1 `79baca7658d02297259b0dd15fca7de3cf2df319`). The 1.00 J opening sounds were embedded inside `rom0:OSDSND` (0x477c2 bytes vs 0x2a79d in 1.50+).
-4. **PS2LOGO Ribbon Dynamics Shift [V]**: In 1.00 J, the ribbon angular rate constants were `(pi/2, pi/2)` (1.5707964) with symmetric 0.84 y-scaling. In 1.50+, Sony introduced PAL/NTSC aspect scaling (`1.092593`, `0.909090`) and split the animation rates to `(0.84, 0.70)`.
+4. **PS2LOGO Ribbon Dynamics Shift**: ~~In 1.00 J, the ribbon angular rate constants were `(pi/2, pi/2)`~~ — see the correction in the PS2LOGO section below: 1.00 J's NTSC rate is already 0.84; 1.50+ added the PAL rate (0.70) and PAL/NTSC aspect scaling (`1.092593`, `0.909090`).
 5. **PS1 Identity & Wordmark Split [V]**: PS1 shells compute logo rotation at runtime (`RotMatrix({260, -30, 0})`). Standalone shells 2.2..4.1 U/E carry both `PlayStation®` and `PlayStation™` TIMs; because the check flag is forced to 0 on U/E, they draw `PlayStation™`! J consoles (flag=1) draw `PlayStation®`.
 6. **Block A / Gaiji Resolved [V]**: The mystery block at `0x64000` (0x1CB7 bytes in PS1, `rom0:KROMG` in PS2) is **Gaiji (外字)**: 16×16 1-bit bitmap glyphs (32 bytes per character) for European accented and half-width graphical characters.
 
@@ -143,7 +143,7 @@ Exact verified coordinates and parameters [V]:
 
 The `rom0:PS2LOGO` binary renders the "PlayStation 2" logo and ribbon swirl [V]:
 - **Ribbon Delta Floats**:
-  - 1.00 J (`0x2AF80`): `(2.8, 3.8, 0.84, 0.84, 1.5707964, 1.5707964)`. Both angles advance at `pi/2` rad/frame.
+  - 1.00 J (`0x2AF80`): `(2.8, 3.8, 0.84, 0.84, 1.5707964, 1.5707964)`. **Correction (2026-10-10, ROM explorer + `ps2kit::logo` on the user's dumps [V]):** 1.00 J's ribbon rate is **0.84**, read at `+12` of its NTSC-only constant block (`LogoAssets::load`, `lay.ntsc_only`) — the same value every later build uses for NTSC. The two `1.5707964` floats that follow are not the rates. What 1.50 added is the PAL side: a PAL rate of 0.70 and the PAL/NTSC y-scale pair.
   - 1.50 / 1.60 (`0x310A4`): `(2.8, 3.8, 1.092593, 0.909090, 0.84, 0.70)`. Vertical scale compensates for PAL (1.092593 = 576/527) and NTSC (0.909090 = 480/528); animation rates decouple to 0.84 (NTSC) and 0.70 (PAL).
   - 2.00 E: PS2LOGO executable size drops from `0x34cc4` to `0x19ea0` (-110 KB).
 
@@ -292,7 +292,7 @@ The 0x1CB7 (7,351) byte block at `0x64000` in PS1 U/E images (mirrored as `rom0:
 - **Stance check**: 100% compliant. Diamond geometry is procedural; sound and logotypes are decoded from user's PS1 BIOS.
 
 ### 4. "Invariant Core" Comparative Lens
-- **What the user sees**: An inspection mode overlaying any two PS2 BIOS dumps (e.g. 1.00 J vs 2.00 E). The 3D viewport renders the 14×9 tower grid, the 4 light orbs, and glass prisms with green "Certified Invariant" halos, displaying side-by-side hex citations showing that every float and integer across both dumps is identical. Discrepancies (such as PS2LOGO ribbon angular velocity `pi/2` in 1.00 J vs `0.84/0.70` in 1.60+) are highlighted with an interactive A/B motion toggle.
+- **What the user sees**: An inspection mode overlaying any two PS2 BIOS dumps (e.g. 1.00 J vs 2.00 E). The 3D viewport renders the 14×9 tower grid, the 4 light orbs, and glass prisms with green "Certified Invariant" halos, displaying side-by-side hex citations showing that every float and integer across both dumps is identical. Discrepancies (such as 1.00 J's NTSC-only ribbon block vs the NTSC + PAL block of 1.50+) are highlighted with an interactive A/B motion toggle.
 - **Reuses**: Free camera, tower grid renderer, provenance inspector, BIOS tab.
 - **New code/data**: Multi-dump binary table diffing engine; 3D viewport badge overlay.
 - **Effort**: Small.
