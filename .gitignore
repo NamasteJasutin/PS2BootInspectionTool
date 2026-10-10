@@ -29,3 +29,4 @@ __pycache__/
 # Local inputs and parallel builders: the BIOS folder is a relative symlink, worktrees live here.
 /bios
 /.worktrees/
+/discs
