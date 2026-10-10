@@ -59,7 +59,7 @@ and four discs (Tekken Tag Tournament USA/EU, Tekken PS1 EU/JP). Every claim is 
   block checksum, PCSX2's two layouts against real dumps, the region-parameter string
   `EEengEE` whose byte 6 selects every `?` suffix, and who reads what (OSDSYS: area 1, model
   name, region params; EECONF: areas 0/1; DVD player: area 2; the console IDs: nobody on
-  retail). **PCSX2's default OSD block has a wrong 7-bit checksum**, the IOP rejects it, and
+  retail). **PCSX2's default OSD block stores its checksum with bit 7 dropped**; the IOP compares the full 8-bit sum, rejects it, and
   the OSD runs on zeros — the "defaults" are never honoured.
 - **All three MEC files are PCSX2's default**, parsed by XCDVDMAN as 6.02.00, which opens all
   ten version gates; a real 5.xx MechaCon would lose `sceCdReadRegionParams`.
@@ -244,6 +244,11 @@ the repo, each in its own room. Same [V]/[I] discipline. Their ideas feed `docs/
   fallbacks [V structure confirmed by the coordinator; intent I].
 - **Block A is the gaiji font**: `0x64000` (PS1) = `rom0:KROMG` (PS2): 16×16 1-bit glyphs for
   accented and half-width characters (closes `ps1_version_matrix.md` §9's first open item).
+- **NVM inspector findings** (Codex, batch 2): the user's 70004 NVM is a real console's — every
+  config block valid, area 2 holds DVD-player settings — while the 39001/30004R NVMs carry a
+  PCSX2 footprint repaired by the setup wizard and `scph10000.NVM` is blank. The 70004's ROM1
+  stamp (`20040729-164054`) is six weeks newer than its ROM0 (`20040614`); different dates alone
+  do not make a mismatched set.
 - **Corrections confirmed by a second reader** (Codex T3b): `BOOT2` shadows a later `BOOT`
   (PS1 3.0 A `0xBFC00B7C`, as fixed in R4); the 70004 EROM's 40 gzip members inflate to
   11 009 004 bytes; the PUP's `update_files.tar` holds 50 regular files (48 packages + 2 RVK).
