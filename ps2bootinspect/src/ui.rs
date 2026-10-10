@@ -924,6 +924,39 @@ fn lab_tab(ui: &mut egui::Ui, m: &mut Model) {
         for d in card.deleted() { ui.small(format!("↺ deleted: {} — {}", d.save.title, if d.recoverable { "L1+L2+R1+R2 in the card manager would restore it, if it was the last deletion".to_string() } else { d.failure_reason.clone().unwrap_or_default() })); }
         for p in card.soundscope_performances() { ui.small(format!("♪ SoundScope performance: {} events, {} fields, checksum {}", p.recorded_count, p.duration_fields(), if p.checksum_valid { "valid" } else { "invalid" })); }
     });
+    section(ui, "PS3 disc or save (plaintext metadata)", |ui| {
+        ui.small("A disc folder (PS3_DISC.SFB, PS3_GAME/PARAM.SFO…) or image, or a save folder. Encrypted regions are reported, never read.");
+        // The console's firmware is the PS3 update next to the BIOS files, when there is one.
+        let firmware = m.ps3_firmware.clone();
+        ui.horizontal(|ui| {
+            if ui.button("Open a disc folder…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() { m.ps3_lines = ps3_disc_lines(&p, firmware.as_deref()) }
+            }
+            if ui.button("Disc image…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("disc image", &["iso", "ISO"]).pick_file() { m.ps3_lines = ps3_disc_lines(&p, firmware.as_deref()) }
+            }
+            if ui.button("Save folder…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    m.ps3_lines = match ps2kit::ps3::Ps3Save::open(&p) {
+                        Ok(s) => {
+                            let mut v: Vec<(String, String)> = s.sfo.entries.iter().map(|e| (e.key.clone(), format!("{:?}", e.value))).collect();
+                            v.push(("ICON0.PNG".into(), s.icon_size.map_or("absent".into(), |n| format!("{n} bytes"))));
+                            v.push(("data files".into(), s.data_files.iter().map(|f| format!("{} ({} bytes)", f.name, f.size)).collect::<Vec<_>>().join(", ")));
+                            v
+                        }
+                        Err(e) => vec![("error".into(), e.to_string())],
+                    };
+                }
+            }
+        });
+        ui.small(format!("Console firmware: {}", firmware.as_deref().unwrap_or("unknown (no PS3UPDAT.PUP next to the BIOS files)")));
+        for (who, what) in &m.ps3_lines {
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(egui::RichText::new(who).color(Color32::from_rgb(115, 153, 255)).size(11.0));
+                ui.small(what);
+            });
+        }
+    });
     section(ui, "PS3 update snapshots", |ui| {
         ui.small("A few KB of plaintext structure per update: snapshot one, delete the 200 MB file, compare later.");
         ui.horizontal(|ui| {
@@ -987,4 +1020,12 @@ fn director_controls(ui: &mut egui::Ui, m: &mut Model) {
             if let (Some(s), Some(p)) = (&m.director, rfd::FileDialog::new().set_file_name("camera-script.json").save_file()) { let _ = std::fs::write(p, s.to_json()); }
         }
     });
+}
+
+/// The PS3 hand-off for a disc folder or image, against the console firmware (`ps2kit::ps3`).
+fn ps3_disc_lines(path: &std::path::Path, firmware: Option<&str>) -> Vec<(String, String)> {
+    match ps2kit::ps3::Ps3Disc::open(path) {
+        Ok(d) => d.handoff(firmware).iter().map(|s| (s.source().to_string(), s.to_string())).collect(),
+        Err(e) => vec![("error".into(), e.to_string())],
+    }
 }
