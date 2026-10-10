@@ -47,5 +47,9 @@ path = "src/bin/hookmap.rs"
 name = "romdiff"
 path = "src/bin/romdiff.rs"
 
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
 [dev-dependencies]
 png = "0.17"

@@ -9,7 +9,7 @@
 use crate::bytes::Bytes;
 use crate::rom::{unpack, RomDir};
 use crate::ps1bios::{region_letter, Ps1Bios};
-use crate::sound::{decode_adpcm, envelope, SAMPLE_RATE};
+use crate::sound::{decode_adpcm, envelope, mix_voice, SAMPLE_RATE};
 use crate::{Error, Format, Result, VideoMode};
 use std::path::Path;
 
@@ -225,34 +225,35 @@ pub struct NoteEvent {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Tone {
-    vol: u8,
-    pan: u8,
-    centre: u8,
-    shift: u8,
-    adsr1: u16,
-    adsr2: u16,
-    vag: u8,
+pub(crate) struct Tone {
+    pub(crate) vol: u8,
+    pub(crate) pan: u8,
+    pub(crate) centre: u8,
+    pub(crate) shift: u8,
+    pub(crate) adsr1: u16,
+    pub(crate) adsr2: u16,
+    pub(crate) vag: u8,
 }
 
 #[derive(Debug, Clone)]
-struct Program {
-    vol: u8,
-    tones: Vec<Tone>,
+pub(crate) struct Program {
+    pub(crate) vol: u8,
+    pub(crate) tones: Vec<Tone>,
 }
 
 /// The shell's VAB: programs of two stereo tones over three ADPCM samples. Read by
-/// [`Ps1Shell::load`] and played by [`Ps1Shell::render_sound`]; it has no public fields.
+/// [`Ps1Shell::load`] and played by [`Ps1Shell::render_sound`].
 #[derive(Debug, Clone)]
 pub struct Vab {
-    programs: Vec<Program>,
-    master: u8,
+    pub(crate) programs: Vec<Program>,
+    pub(crate) master: u8,
     /// Decoded samples (SPU scale, 44.1 kHz) and their loop starts, index = VAG number.
-    samples: Vec<(Vec<f32>, Option<usize>)>,
+    pub(crate) samples: Vec<(Vec<f32>, Option<usize>)>,
 }
 
 impl Vab {
-    fn parse(d: &[u8]) -> Result<Self> {
+    /// Parses a VAB sound bank (`pBAV` header and ADPCM body).
+    pub fn parse(d: &[u8]) -> Result<Self> {
         if d.len() < 32 || &d[..4] != b"pBAV" {
             return Err(Error::Corrupt(Format::SoundBank, "no pBAV header".into()));
         }
@@ -803,24 +804,7 @@ impl Vab {
             let (gain_l, gain_r) = (gain * (1.0 - pan).sqrt(), gain * pan.sqrt());
             let semis = v.note as f32 - v.tone.centre as f32 + v.tone.shift as f32 / 128.0;
             let step = 2f64.powf(semis as f64 / 12.0) * 44100.0 / SAMPLE_RATE as f64;
-            let length = pcm.len();
-            let mut pos = 0.0f64;
-            for (k, &e) in env.iter().enumerate() {
-                let mut i0 = pos as usize;
-                let frac = (pos - i0 as f64) as f32;
-                let mut i1 = i0 + 1;
-                if let Some(l) = *lp {
-                    let span = length - l;
-                    if i0 >= length { i0 = l + (i0 - l) % span }
-                    if i1 >= length { i1 = l + (i1 - l) % span }
-                } else if i1 >= length {
-                    break;
-                }
-                let s = (pcm[i0] * (1.0 - frac) + pcm[i1] * frac) * e / 32768.0 / 32768.0;
-                mix[(v.start + k) * 2] += s * gain_l;
-                mix[(v.start + k) * 2 + 1] += s * gain_r;
-                pos += step;
-            }
+            mix_voice(&mut mix, v.start, pcm, *lp, &env, step, gain_l, gain_r);
         }
         mix
     }

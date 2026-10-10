@@ -429,7 +429,7 @@ struct Voice {
 }
 
 impl<'a> Synth<'a> {
-    fn pitch_register(&self, root: i32, note: i32, fine: i32, bend: i32, bend_range: i32) -> i64 {
+    pub(crate) fn pitch_register(&self, root: i32, note: i32, fine: i32, bend: i32, bend_range: i32) -> i64 {
         let b = ((bend - 0x40) * bend_range) >> 2;
         // The tables are public data: a short one must not panic.
         let tab = |i: i32| self.tables.pitch.get(i.clamp(0, 607) as usize).copied().unwrap_or(0x1000);
@@ -443,7 +443,7 @@ impl<'a> Synth<'a> {
         (value / 48000) & 0xFFFF
     }
 
-    fn volume_register(seq: i64, channel: i64, program: i64, velocity: i64, tone: i64, pan: i64) -> i64 {
+    pub(crate) fn volume_register(seq: i64, channel: i64, program: i64, velocity: i64, tone: i64, pan: i64) -> i64 {
         ((((seq * channel * program * velocity) >> 14) * tone * pan) >> 14) & 0x7FFF
     }
 
@@ -508,25 +508,43 @@ impl<'a> Synth<'a> {
             let env = envelope(v.tone.adsr1, v.tone.adsr2, v.off.map(|o| o - v.start).unwrap_or(n), n);
             let (gain_l, gain_r) = (v.vol_l as f32 / 16384.0 * master, v.vol_r as f32 / 16384.0 * master);
             let step = v.pitch as f64 / 4096.0;
-            let length = pcm.len();
-            let mut pos = 0.0f64;
-            for (k, &e) in env.iter().enumerate() {
-                let mut i0 = pos as usize;
-                let frac = (pos - i0 as f64) as f32;
-                let mut i1 = i0 + 1;
-                if let Some(l) = *lp {
-                    let span = length - l;
-                    if i0 >= length { i0 = l + (i0 - l) % span }
-                    if i1 >= length { i1 = l + (i1 - l) % span }
-                } else if i1 >= length {
-                    break;
-                }
-                let s = (pcm[i0] * (1.0 - frac) + pcm[i1] * frac) * e / 32768.0 / 32768.0;
-                mix[(v.start + k) * 2] += s * gain_l;
-                mix[(v.start + k) * 2 + 1] += s * gain_r;
-                pos += step;
-            }
+            mix_voice(mix, v.start, pcm, *lp, &env, step, gain_l, gain_r);
         }
+    }
+}
+
+/// Mixes one voice resampled from `pcm` into interleaved stereo `mix` buffer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mix_voice(
+    mix: &mut [f32],
+    start: usize,
+    pcm: &[f32],
+    loop_start: Option<usize>,
+    env: &[f32],
+    step: f64,
+    gain_l: f32,
+    gain_r: f32,
+) {
+    let length = pcm.len();
+    let mut pos = 0.0f64;
+    for (k, &e) in env.iter().enumerate() {
+        let mut i0 = pos as usize;
+        let frac = (pos - i0 as f64) as f32;
+        let mut i1 = i0 + 1;
+        if let Some(l) = loop_start {
+            let span = length - l;
+            if i0 >= length { i0 = l + (i0 - l) % span }
+            if i1 >= length { i1 = l + (i1 - l) % span }
+        } else if i1 >= length {
+            break;
+        }
+        let s = (pcm[i0] * (1.0 - frac) + pcm[i1] * frac) * e / 32768.0 / 32768.0;
+        let out_idx = (start + k) * 2;
+        if out_idx + 1 < mix.len() {
+            mix[out_idx] += s * gain_l;
+            mix[out_idx + 1] += s * gain_r;
+        }
+        pos += step;
     }
 }
 
@@ -586,7 +604,7 @@ impl BootSound {
 /// sequences 0 (0x2789C0), 1 (0x278BC0), 6 (0x287000) are byte-identical to 1.60's SNDBOOTH,
 /// SNDBOOTB, SNDBOOTS, SNDTNNLS, SNDWARNS. Locate signatures, lengths and valid programs;
 /// no addresses or bank/sequence bytes are used as search patterns.
-fn embedded_boot_sounds(bios: &RomDir) -> Result<(SoundBank, [SoundSequence; 3])> {
+pub(crate) fn embedded_boot_sounds(bios: &RomDir) -> Result<(SoundBank, [SoundSequence; 3])> {
     let img = ProgramImage::from_module(bios.module("OSDSYS")?, 0x200000)?;
     let d = img.data();
     let missing = || Error::Corrupt(Format::SoundBank, "could not locate the inline OSD boot bank and eight sequences".into());
