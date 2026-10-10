@@ -66,6 +66,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             for s in m.handoff_steps() { println!("  {:<44} {s}", s.who()) }
         }
         println!("outcome: {:?} — {}", m.outcome(), crate::model::outcome_name(m.outcome()));
+        m.refresh_lab();
+        if let Some(h) = &m.hook_map { println!("lab: {} hooks ({} fire, {} unknown)", h.findings.len(), h.findings.iter().filter(|f| f.verdict == ps2kit::hooks::Verdict::Fires).count(), h.findings.iter().filter(|f| f.verdict == ps2kit::hooks::Verdict::Unknown).count()) }
+        if let Some(p) = &m.disc_probe { println!("lab: disc probe — {} files, ELF {}, PS-X EXE {}", p.files.len(), p.elf_probe.is_some(), p.ps1_probe.is_some()) }
+        if !m.ps1_narration.0.is_empty() { println!("lab: PS1 POST {}", m.ps1_narration.0.iter().map(|p| format!("{:X}", p.value)).collect::<Vec<_>>().join(" ")); for l in m.ps1_narration.1.iter().take(4) { println!("lab: tty {l}") } }
         for sp in m.sequence.spans() { println!("segment {:?}: frames {}..{}", sp.segment, sp.start, sp.start + sp.length) }
     }
     let free = named.get("free").and_then(|f| {

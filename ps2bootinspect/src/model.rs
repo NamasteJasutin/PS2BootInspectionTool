@@ -40,7 +40,7 @@ pub fn video_mode_name(video: VideoMode) -> &'static str { if video == VideoMode
 
 /// The sidebar's tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tab { Boot, SaveData, Disc, Bios }
+pub enum Tab { Boot, SaveData, Disc, Bios, Lab }
 
 /// Which console's boot the picture plays.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,9 +60,9 @@ pub struct ShelfEntry {
 }
 
 impl Tab {
-    pub const ALL: [Self; 4] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios];
+    pub const ALL: [Self; 5] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios, Self::Lab];
     pub fn name(self) -> &'static str {
-        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS" }
+        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS", Self::Lab => "Lab" }
     }
 }
 
@@ -365,6 +365,18 @@ pub struct Model {
     /// The loaded PS2 BIOS's companions (NVM, MEC, ROM1/ROM2/EROM) and what they predict,
     /// each line with its research citation (`ps2kit::nvm`).
     pub bios_set_lines: Vec<(String, &'static str)>,
+    /// Lab: which hidden hand-overs the PS2 BIOS would take with these files (`ps2kit::hooks`).
+    pub hook_map: Option<ps2kit::hooks::HookMap>,
+    /// Lab: what the loaded disc's executable asks of the console (`ps2kit::probe`).
+    pub disc_probe: Option<ps2kit::probe::DiscProbe>,
+    /// Lab: the PS1 kernel's POST stages and TTY log for this dump and disc (`ps2kit::ps1narrate`).
+    pub ps1_narration: (Vec<ps2kit::ps1narrate::PostStage>, Vec<String>),
+    /// Lab: a PS1 memory card opened for inspection (never written).
+    pub ps1_card: Option<(PathBuf, ps2kit::ps1card::Ps1Card)>,
+    /// The PS3 update next to the BIOS files, for snapshots.
+    pub pup_path: Option<PathBuf>,
+    /// Lab: the last snapshot comparison, as lines.
+    pub pup_diff: Vec<String>,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -395,7 +407,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -426,7 +438,7 @@ impl Model {
         for p in ps1.iter().filter(|p| !p.to_string_lossy().to_ascii_uppercase().contains("PSXONPSP")).chain(ps1.iter()) {
             if self.ps1_bios.is_none() { self.load_bios(p, true) }
         }
-        if let Some(p) = files.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pup"))) { self.pup_summary = Pup::open(p).map(|pup| Self::pup_summary(&pup, p)).unwrap_or_default() }
+        if let Some(p) = files.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pup"))) { self.pup_summary = Pup::open(p).map(|pup| Self::pup_summary(&pup, p)).unwrap_or_default(); self.pup_path = Some(p.clone()) }
         for p in pcsx2.as_ref().map(|p| Self::files(&p.join("memcards"))).unwrap_or_default() {
             if self.card.is_none() { self.load_card(&p, true) }
         }
@@ -443,6 +455,7 @@ impl Model {
             for p in images { if self.disc.is_none() { self.load_disc(&p, true) } }
         }
         self.frame = self.start_frame();
+        self.refresh_lab();
     }
 
     /// Reads every file in the BIOS folder once: PS2 dumps (a ROMDIR) and PS1 dumps go on the
@@ -522,6 +535,7 @@ impl Model {
                 self.logo_version += 1;
                 self.rebuild_scene();
                 self.rebuild_timeline();
+                if !quiet { self.refresh_lab() }
                 self.sound_status = "Synthesising the chime from the BIOS…".into();
                 let (tx, rx) = mpsc::channel();
                 self.sound_rx = Some(rx);
@@ -545,10 +559,31 @@ impl Model {
                 self.standalone_ps1_shell = Some(shell);
                 self.ps1_bios = Some(bios);
                 self.ps1_bios_path = Some(path.to_path_buf());
-                if !quiet || self.assets.is_none() { self.set_console(Console::Ps1) } else if self.console == Console::Ps1 { self.set_console(Console::Ps1) }
+                if !quiet { self.refresh_lab() }
+                if !quiet || self.assets.is_none() || self.console == Console::Ps1 { self.set_console(Console::Ps1) }
             }
             Err(e) => if !quiet { self.ps1_bios_status = format!("{name}: {e}") },
         }
+    }
+
+    /// Recomputes the Lab's file-derived findings: the PS2 hook map for BIOS + card + disc, and
+    /// the PS1 narration for the standalone dump and the disc's `SYSTEM.CNF`.
+    pub fn refresh_lab(&mut self) {
+        let disc = self.disc.as_ref().filter(|_| self.disc_override == DiscOverride::AsLoaded);
+        self.hook_map = match (&self.rom, &self.bios_path) {
+            (Some(rom), Some(path)) => Some(match ps2kit::nvm::BiosSet::inspect(path) {
+                Ok(set) => ps2kit::hooks::HookMap::inspect_with_bios_set(rom, self.card.as_ref(), None, disc, &set),
+                Err(_) => ps2kit::hooks::HookMap::inspect(rom, self.card.as_ref(), None, disc),
+            }),
+            _ => None,
+        };
+        self.ps1_narration = match &self.ps1_bios {
+            Some(b) => {
+                let facts = self.ps1_system_cnf().map(|c| ps2kit::ps1narrate::BootFacts::from_system_cnf(&c)).unwrap_or_default();
+                (ps2kit::ps1narrate::post_sequence(b), ps2kit::ps1narrate::tty_log(b, &facts))
+            }
+            None => (Vec::new(), Vec::new()),
+        };
     }
 
     /// Switches the console the picture boots; the PS1 console uses the standalone dump's shell
@@ -585,6 +620,7 @@ impl Model {
                 self.card = Some(c);
                 self.card_path = Some(path.to_path_buf());
                 self.rebuild_history();
+                self.refresh_lab();
             }
             Err(e) => if !quiet { self.card_status = format!("{}: {e}", path.file_name().unwrap_or_default().to_string_lossy()) },
         }
@@ -602,6 +638,8 @@ impl Model {
                 };
                 self.disc = Some(d);
                 self.disc_path = Some(path.to_path_buf());
+                self.disc_probe = ps2kit::probe::DiscProbe::open(path).map_err(|e| eprintln!("probe {}: {e}", path.display())).ok();
+                self.refresh_lab();
                 self.update_logo_sound();
                 self.rebuild_timeline();
             }

@@ -314,6 +314,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         Tab::SaveData => save_data_tab(ui, m),
         Tab::Disc => disc_tab(ui, m),
         Tab::Bios => bios_tab(ui, m),
+        Tab::Lab => lab_tab(ui, m),
     }
     ui.add_space(12.0);
 }
@@ -848,4 +849,96 @@ mod tests {
         assert_eq!(svg.matches("<polyline").count(), 1);
         if let Ok(p) = std::env::var("PS2_SVG_OUT") { std::fs::write(p, svg).unwrap() }
     }
+}
+
+/// The research instruments, each derived from the user's files: the hook map, the disc probe,
+/// the PS1 boot narration, PS1 memory cards and PS3 update snapshots.
+fn lab_tab(ui: &mut egui::Ui, m: &mut Model) {
+    use ps2kit::hooks::Verdict;
+    section(ui, "Hidden hand-overs (PS2)", |ui| {
+        let Some(map) = &m.hook_map else { ui.small("Load a PS2 BIOS to see which hidden hand-overs it looks for."); return };
+        ui.small("Everything this ROM looks for besides the disc, checked against your card, NVM and disc. Hover a line for its source address.");
+        for verdict in [Verdict::Fires, Verdict::Unknown, Verdict::DoesNotFire] {
+            let found: Vec<_> = map.findings.iter().filter(|f| f.verdict == verdict).collect();
+            if found.is_empty() { continue }
+            ui.label(egui::RichText::new(format!("{verdict} ({})", found.len())).strong());
+            for f in found {
+                ui.small(format!("• {}: {}", f.hook, f.because)).on_hover_text(f.source);
+            }
+        }
+    });
+    section(ui, "What the game asks of the console", |ui| {
+        let Some(p) = &m.disc_probe else { ui.small("Load a game disc image."); return };
+        ui.small(format!("{} files on the disc.", p.files.len()));
+        for a in &p.cnf_audit {
+            let readers: Vec<String> = a.readers.iter().map(|r| r.to_string()).collect();
+            ui.small(format!("SYSTEM.CNF {} = {} — read by {}", a.key, a.value, readers.join(", "))).on_hover_text(a.explanation);
+        }
+        if let Some(e) = &p.elf_probe {
+            let mut libs: Vec<&str> = e.sdk_stamps.iter().map(|s| s.stamp.as_str()).collect();
+            libs.dedup();
+            ui.small(format!("SDK libraries: {}", libs.join(", ")));
+            ui.small(format!("IOP modules it brings: {}", e.referenced_modules.iter().map(|r| r.path.as_str()).collect::<Vec<_>>().join(", ")));
+            for g in &e.version_gates { ui.small(format!("Refuses {} older than 0x{:04X}", g.module, g.min_version)); }
+            if let Some((mode, off)) = &e.video_mode { ui.small(format!("Video mode hard-coded: {mode:?} (offset 0x{off:X})")); }
+            let asks = ["GetOsdConfigParam", "GetMemorySize", "MachineType", "GetOsdConfigParam2"];
+            let called: Vec<&str> = e.called_syscalls.iter().filter_map(|s| s.name).collect();
+            let asked: Vec<&str> = asks.iter().copied().filter(|a| called.contains(a)).collect();
+            ui.small(format!("{} EE syscalls called; asks the console about itself: {}", called.len(), if asked.is_empty() { "nothing (no OSD config, memory size or machine type)".to_string() } else { asked.join(", ") }));
+        }
+        if let Some(x) = &p.ps1_probe {
+            ui.small(format!("PS-X EXE: {}", x.check));
+            ui.small(format!("{} BIOS calls; PsyQ stamps: {}", x.bios_calls.len(), x.stamps.iter().map(|s| s.stamp.as_str()).collect::<Vec<_>>().join(", ")));
+        }
+    });
+    if m.ps1_bios.is_some() {
+        section(ui, "PS1 boot narration", |ui| {
+            ui.small("The POST byte the kernel writes to 0x1F802041 at each stage, and what it would have printed to its (silent) TTY — from this dump's own code and format strings.");
+            let post: Vec<String> = m.ps1_narration.0.iter().map(|p| format!("{:X}", p.value)).collect();
+            ui.monospace(post.join(" "));
+            for p in &m.ps1_narration.0 { ui.small(format!("{:X} @ 0x{:08X}: {}", p.value, p.rom_address, p.meaning)); }
+            ui.add_space(4.0);
+            for l in &m.ps1_narration.1 { ui.monospace(egui::RichText::new(l).size(10.0)); }
+        });
+    }
+    section(ui, "PS1 memory card", |ui| {
+        if ui.button("Open a PS1 card…").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("PS1 card", &["mcr", "mcd", "mc", "mem", "gme", "srm", "bin"]).pick_file() {
+                m.ps1_card = std::fs::read(&p).ok().and_then(|d| ps2kit::ps1card::Ps1Card::parse(&d).ok()).map(|c| (p, c));
+            }
+        }
+        let Some((path, card)) = &m.ps1_card else { ui.small("Read-only: saves with titles and icons, what the four-shoulder undelete could restore, SoundScope performances."); return };
+        ui.small(format!("{} — {} saves{}", path.file_name().unwrap_or_default().to_string_lossy(), card.saves.len(), if card.header_checksum_valid && card.directory_checksums_valid { "" } else { ", checksum problems" }));
+        for s in &card.saves { ui.small(format!("• {} — {} ({} block{})", s.title, s.product, s.blocks.len(), if s.blocks.len() == 1 { "" } else { "s" })); }
+        for d in card.deleted() { ui.small(format!("↺ deleted: {} — {}", d.save.title, if d.recoverable { "L1+L2+R1+R2 in the card manager would restore it, if it was the last deletion".to_string() } else { d.failure_reason.clone().unwrap_or_default() })); }
+        for p in card.soundscope_performances() { ui.small(format!("♪ SoundScope performance: {} events, {} fields, checksum {}", p.recorded_count, p.duration_fields(), if p.checksum_valid { "valid" } else { "invalid" })); }
+    });
+    section(ui, "PS3 update snapshots", |ui| {
+        ui.small("A few KB of plaintext structure per update: snapshot one, delete the 200 MB file, compare later.");
+        ui.horizontal(|ui| {
+            // Snapshots read the update's tables, so they are built on a click, never per frame.
+            let snapshot = |m: &Model| m.pup_path.as_ref().and_then(|p| ps2kit::pup::Pup::open(p).ok()).and_then(|pup| ps2kit::pup::PupSnapshot::from_pup(&pup).ok());
+            if ui.add_enabled(m.pup_path.is_some(), egui::Button::new("Save snapshot…")).clicked() {
+                if let (Some(s), Some(p)) = (snapshot(m), rfd::FileDialog::new().set_file_name("PS3UPDAT.pupsnap").save_file()) { let _ = std::fs::write(p, s.to_text()); }
+            }
+            if ui.add_enabled(m.pup_path.is_some(), egui::Button::new("Compare with…")).clicked() {
+                if let (Some(a), Some(p)) = (snapshot(m), rfd::FileDialog::new().add_filter("PS3 update or snapshot", &["pup", "PUP", "pupsnap"]).pick_file()) {
+                    let other = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pup")) {
+                        ps2kit::pup::Pup::open(&p).ok().and_then(|x| ps2kit::pup::PupSnapshot::from_pup(&x).ok())
+                    } else { std::fs::read_to_string(&p).ok().and_then(|t| ps2kit::pup::PupSnapshot::parse(&t).ok()) };
+                    if let Some(b) = other {
+                        let d = a.diff(&b);
+                        let mut lines = vec![format!("Compared with {}", p.file_name().unwrap_or_default().to_string_lossy())];
+                        if let Some((x, y)) = &d.version_change { lines.push(format!("Version {} → {}", x.as_deref().unwrap_or("?"), y.as_deref().unwrap_or("?"))) }
+                        lines.push(format!("Members: {} added, {} removed, {} changed", d.added_members.len(), d.removed_members.len(), d.changed_members.len()));
+                        lines.push(format!("Packages: +{:?} −{:?} changed {:?}", d.added_packages, d.removed_packages, d.changed_packages));
+                        lines.push(format!("Licence locales: +{:?} −{:?} changed {:?}", d.added_locales, d.removed_locales, d.changed_locales));
+                        m.pup_diff = lines;
+                    }
+                }
+            }
+        });
+        if m.pup_path.is_none() { ui.small("No PS3UPDAT.PUP next to the BIOS files."); }
+        for l in &m.pup_diff { ui.small(l); }
+    });
 }
