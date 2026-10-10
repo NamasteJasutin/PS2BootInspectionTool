@@ -19,5 +19,9 @@ thiserror = "2"
 name = "ps2history"
 path = "src/bin/ps2history.rs"
 
+[[bin]]
+name = "pupinfo"
+path = "src/bin/pupinfo.rs"
+
 [dev-dependencies]
 png = "0.17"
