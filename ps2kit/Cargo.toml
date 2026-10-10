@@ -35,5 +35,9 @@ path = "src/bin/discprobe.rs"
 name = "ps1card"
 path = "src/bin/ps1card.rs"
 
+[[bin]]
+name = "hookmap"
+path = "src/bin/hookmap.rs"
+
 [dev-dependencies]
 png = "0.17"

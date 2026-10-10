@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `hooks::HookMap` reports content-confirmed, version-specific PS2 boot probes, card update/DVD/browser paths, HDD/flash reachability, PS1 overrides and NVM/input gates with verdicts and cited addresses. `hookmap <bios> [--card f.ps2] [--nvm f.nvm] [--disc f]` discovers BIOS companions and groups the findings; live CDVD/card-authentication outcomes remain explicit unknowns.
 - `nvm::{Nvm, BiosSet}` decode MechaCon EEPROM settings, validate the IOP's full-byte checksums, mask console IDs, predict cited OSD behaviour, and inspect PCSX2-named BIOS companions, DVD region sets, ROM2 mirrors, EROM gzip headers and MEC version gates. `nvminfo <bios.bin>` prints the inspection report; EROM payload CRCs remain unverified without an inflater.
 - `ps1intro::SceIntro` locates a standalone shell's SCE logotypes, intro note table and code literals, with explicit fallback provenance; `SceTimeline`, `SceFrame` and the shared VAB mixer expose its fields, CLUT fades, sweep and chime. POPS and PS2 LOGO report no intro. Dump corrections to the scene notes include the four-field 1.1 lead-in, smaller 4.0 logotypes and 4.1 PAL variants.
 - `ps1bios::Ps1Bios` detects standalone PS1/PSone/POPS dumps, reads their identity and kernel code features, and opens raw, standard packed and POPS shells. `audit` reports size/text-mode damage and missing/displaced versions; `audit_set` finds byte-identical files and named-region disagreements without a shipped hash list.
