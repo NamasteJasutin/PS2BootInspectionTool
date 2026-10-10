@@ -116,6 +116,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if let Some(v) = named.get("distance").and_then(|v| v.parse().ok()) { p.distance = v }
     if let Some(v) = named.get("focus").and_then(|v| v.parse().ok()) { p.focus = v }
     m.options.solid_towers = m.camera_mode != crate::model::CameraMode::Scripted;
+    // `--director <built-in name | script.json>`: a director-mode camera script.
+    if let Some(d) = named.get("director") {
+        m.director = if d.ends_with(".json") { Some(crate::director::CameraScript::from_json(&std::fs::read_to_string(d).map_err(|e| e.to_string())?)?) }
+            else { crate::director::built_in_scripts().into_iter().find(|s| s.name.eq_ignore_ascii_case(d)) };
+        if m.director.is_none() { return Err(format!("no built-in script named {d:?}: {}", crate::director::built_in_scripts().iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", "))) }
+        m.options.solid_towers = true;
+    }
     m.frame = frame;
     let free = free.or_else(|| m.view_override());
 

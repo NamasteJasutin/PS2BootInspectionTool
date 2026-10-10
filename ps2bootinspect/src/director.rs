@@ -66,7 +66,8 @@ pub struct Key {
     pub elevation: f32,
     /// Distance from the vertical axis, as a fraction of `radius`.
     pub distance: f32,
-    /// Aim point along the vertical axis (0 = floor … 1 = top, like `PathParams::focus`).
+    /// Aim offset along the vertical axis from the path centre, as a fraction of `radius`
+    /// (0 = the centre itself, which the app already places at the Orbit dial's focus height).
     pub aim: f32,
     /// Camera lens zoom relative to default console focal length (like `PathParams::zoom`).
     pub lens: f32,

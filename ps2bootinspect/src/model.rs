@@ -381,6 +381,10 @@ pub struct Model {
     pub card_icons: Vec<ps2kit::icon::SaveIcon>,
     /// Bumped when the icons or the history they tag change.
     pub icons_version: u32,
+    /// Director mode: a keyframed camera script replacing the path, if one is chosen.
+    pub director: Option<crate::director::CameraScript>,
+    /// The montage seed the Shuffle button last used.
+    pub director_seed: u64,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -411,7 +415,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -966,7 +970,8 @@ impl Model {
     /// predetermined path.
     pub fn view_override(&self) -> Option<crate::renderer::ViewCamera> {
         if self.free_camera_enabled { let mut v = self.free_camera.view(self.video); v.zoom = self.free_zoom; return Some(v) }
-        let p = self.path_params[self.camera_mode.index()];
+        // Director scripts share the scene frame the Orbit dials define (centre, focus, radius).
+        let p = self.path_params[if self.director.is_some() { CameraMode::Orbit.index() } else { self.camera_mode.index() }];
         let frame = (self.frame - self.start_frame()).max(0.0);
         // The paths circle the city's base (the towers' far end, vertical = z; the console's
         // camera starts at z = 16) — or, in the second phase, the logo (vertical = y): the
@@ -991,6 +996,9 @@ impl Model {
             let aim_z = floor - (floor - top) * p.focus;
             (Vec3::new(cx, cy, aim_z), floor - 16.0, p.height, Vec3::Z, -Vec3::Y)
         };
+        // Script keys carry their own distance and elevation (fractions of the scene radius), so
+        // they get the radius before the distance dial scales it.
+        if let Some(script) = &self.director { return script.view(frame, centre, radius, vertical, front, self.video) }
         let radius = radius * p.distance;
         let v = self.camera_mode.view(frame, p.speed, centre, radius, height, vertical, front, self.video).map(|mut v| { v.zoom = p.zoom; v });
         if std::env::var_os("PS2_DEBUG_PLANE").is_some() {

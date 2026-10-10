@@ -442,6 +442,7 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
             ui.add(egui::Slider::new(&mut p.zoom, 0.2..=1.5).text("lens (× the console's)").logarithmic(true));
             if ui.small_button("Reset this path's dials").clicked() { *p = mode.default_params() }
         } else if m.free_camera_enabled { ui.add(egui::Slider::new(&mut m.free_zoom, 0.2..=1.5).text("lens (× the console's)").logarithmic(true)); }
+        director_controls(ui, m);
         if ui.checkbox(&mut m.free_camera_enabled, "Free camera").changed() && m.free_camera_enabled { m.reset_free_camera() }
         ui.small("Blender controls: middle-drag (or Alt+drag) orbits, Shift+drag pans, Ctrl+drag dollies; wheel zooms, Shift/Ctrl+wheel pan; 1/3/7 front/right/top (Ctrl for the opposite), Home frames the field, . re-centres.");
         if ui.add_enabled(m.free_camera_enabled, egui::Button::new("Back to the scripted position")).clicked() { m.reset_free_camera() }
@@ -950,5 +951,40 @@ fn lab_tab(ui: &mut egui::Ui, m: &mut Model) {
         });
         if m.pup_path.is_none() { ui.small("No PS3UPDAT.PUP next to the BIOS files."); }
         for l in &m.pup_diff { ui.small(l); }
+    });
+}
+
+/// Director mode: pick, shuffle, import or export a keyframed camera script (`director.rs`).
+/// Scripts play in the Orbit dials' scene frame and override the path while chosen.
+fn director_controls(ui: &mut egui::Ui, m: &mut Model) {
+    ui.horizontal(|ui| {
+        ui.label("Director");
+        let current = m.director.as_ref().map_or("off".to_string(), |s| s.name.clone());
+        egui::ComboBox::from_id_salt("director").selected_text(current).show_ui(ui, |ui| {
+            if ui.selectable_label(m.director.is_none(), "off").clicked() { m.director = None }
+            for s in crate::director::built_in_scripts() {
+                let on = m.director.as_ref().is_some_and(|d| d.name == s.name);
+                if ui.selectable_label(on, &s.name).clicked() { m.director = Some(s); m.free_camera_enabled = false; m.options.solid_towers = true }
+            }
+        });
+        if ui.small_button("Shuffle").on_hover_text("A seeded montage across the built-in scripts; each click a new seed").clicked() {
+            m.director_seed = m.director_seed.wrapping_add(1);
+            m.director = Some(crate::director::shuffle(m.director_seed, 150));
+            m.free_camera_enabled = false;
+            m.options.solid_towers = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.small_button("Import JSON…").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("camera script", &["json"]).pick_file() {
+                match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| crate::director::CameraScript::from_json(&t)) {
+                    Ok(s) => { m.director = Some(s); m.free_camera_enabled = false; m.options.solid_towers = true }
+                    Err(e) => eprintln!("camera script {}: {e}", p.display()),
+                }
+            }
+        }
+        if ui.add_enabled(m.director.is_some(), egui::Button::new("Export JSON…").small()).clicked() {
+            if let (Some(s), Some(p)) = (&m.director, rfd::FileDialog::new().set_file_name("camera-script.json").save_file()) { let _ = std::fs::write(p, s.to_json()); }
+        }
     });
 }
