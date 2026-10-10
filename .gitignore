@@ -25,3 +25,7 @@ __pycache__/
 
 # Rust build output
 /target/
+
+# Local inputs and parallel builders: the BIOS folder is a relative symlink, worktrees live here.
+/bios
+/.worktrees/
