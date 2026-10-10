@@ -31,5 +31,9 @@ path = "src/bin/nvminfo.rs"
 name = "discprobe"
 path = "src/bin/discprobe.rs"
 
+[[bin]]
+name = "ps1card"
+path = "src/bin/ps1card.rs"
+
 [dev-dependencies]
 png = "0.17"

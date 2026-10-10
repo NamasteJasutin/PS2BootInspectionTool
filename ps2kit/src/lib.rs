@@ -50,6 +50,7 @@ pub mod ps1bios;
 pub mod ps1intro;
 pub mod ps1boot;
 pub mod ps1narrate;
+pub mod ps1card;
 pub mod pup;
 pub mod rom;
 pub mod sectors;
