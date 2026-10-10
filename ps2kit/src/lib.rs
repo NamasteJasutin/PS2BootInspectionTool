@@ -43,6 +43,7 @@ pub mod history;
 pub mod locate;
 pub mod logo;
 pub mod memcard;
+pub mod probe;
 pub mod ps1;
 pub mod ps1bios;
 pub mod ps1boot;

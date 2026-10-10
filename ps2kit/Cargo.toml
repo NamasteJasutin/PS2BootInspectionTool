@@ -23,5 +23,9 @@ path = "src/bin/ps2history.rs"
 name = "pupinfo"
 path = "src/bin/pupinfo.rs"
 
+[[bin]]
+name = "discprobe"
+path = "src/bin/discprobe.rs"
+
 [dev-dependencies]
 png = "0.17"
