@@ -24,6 +24,10 @@ name = "pupinfo"
 path = "src/bin/pupinfo.rs"
 
 [[bin]]
+name = "ps3card"
+path = "src/bin/ps3card.rs"
+
+[[bin]]
 name = "nvminfo"
 path = "src/bin/nvminfo.rs"
 

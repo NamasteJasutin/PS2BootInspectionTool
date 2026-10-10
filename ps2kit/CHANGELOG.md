@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ps3::{Sfo, Sfb, Ps3Disc, Ps3Save}` inspect caller-supplied PS3 disc/save metadata and documented flag fields. `ps3card <disc folder|iso|save folder> [--firmware 4.82 | --pup PS3UPDAT.PUP]` prints a cited, ordered firmware/update hand-off and file readability. ISO 9660 extents crossing encrypted sector-zero regions are never read; absent region maps remain unknown and UDF-only images are unsupported. The shared plaintext SCE prefix reader reports EBOOT headers; PFD inspection stops at magic/version and save data is listed by name/size. No keys, decryption, authentication or game-code inspection.
+
 - `icon::{IconSys, IconModel, SaveIcon}` read the user's PS2 save descriptors, triangle/morph data and raw/RLE RGB5551 textures; preserve lighting, title bytes and animation keys, evaluate inferred shape weights, and map save folders to history title IDs. `SaveIcon::read_folder` reports malformed saves; `from_card` skips them.
 
 - `romdiff::RomSet` compares caller-supplied PS2 modules/EXTINFO, unpacked OSDSYS and loader stores, opening/logo/sound tables, or standalone PS1 regions, with byte-exact row-local clusters and evidence-bearing chronological captions. `romdiff <dump> <dump> [...]` prints a compact identity matrix and changelog; unsupported comparisons remain explicit diagnostics.

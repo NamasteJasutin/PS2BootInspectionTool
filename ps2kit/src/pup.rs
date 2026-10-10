@@ -759,31 +759,37 @@ pub struct SceHeader {
 impl SceHeader {
     /// Parses an SCE header from a 0x20-byte slice.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 0x20 {
-            return Err(Error::Corrupt(Format::Bios, "SCE header truncated".into()));
-        }
-        if &bytes[..4] != SCE_MAGIC {
-            return Err(Error::NotA(Format::Bios, "invalid SCE magic".into()));
-        }
-
-        let magic = [bytes[0], bytes[1], bytes[2], bytes[3]];
-        let version = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
-        let key_revision = u16::from_be_bytes(bytes[8..10].try_into().unwrap());
-        let header_type = u16::from_be_bytes(bytes[10..12].try_into().unwrap());
-        let metadata_offset = u32::from_be_bytes(bytes[12..16].try_into().unwrap());
-        let header_length = u64::from_be_bytes(bytes[16..24].try_into().unwrap());
-        let data_length = u64::from_be_bytes(bytes[24..32].try_into().unwrap());
-
-        Ok(Self {
-            magic,
-            version,
-            key_revision,
-            header_type,
-            metadata_offset,
-            header_length,
-            data_length,
-        })
+        parse_sce_header(bytes)
     }
+}
+
+/// Shared plaintext SCE prefix reader for PUP members and disc SELFs.
+/// See `notes/research/ps3_pup.md` §3.2; no encrypted metadata is inspected.
+pub(crate) fn parse_sce_header(bytes: &[u8]) -> Result<SceHeader> {
+    if bytes.len() < 0x20 {
+        return Err(Error::Corrupt(Format::Bios, "SCE header truncated".into()));
+    }
+    if &bytes[..4] != SCE_MAGIC {
+        return Err(Error::NotA(Format::Bios, "invalid SCE magic".into()));
+    }
+
+    let magic = [bytes[0], bytes[1], bytes[2], bytes[3]];
+    let version = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let key_revision = u16::from_be_bytes([bytes[8], bytes[9]]);
+    let header_type = u16::from_be_bytes([bytes[10], bytes[11]]);
+    let metadata_offset = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let header_length = u64::from_be_bytes(std::array::from_fn(|i| bytes[16 + i]));
+    let data_length = u64::from_be_bytes(std::array::from_fn(|i| bytes[24 + i]));
+
+    Ok(SceHeader {
+        magic,
+        version,
+        key_revision,
+        header_type,
+        metadata_offset,
+        header_length,
+        data_length,
+    })
 }
 
 /// Plaintext package descriptor (0x80 bytes) following the SCE header in type-3 packages.
