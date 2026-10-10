@@ -27,5 +27,9 @@ path = "src/bin/pupinfo.rs"
 name = "nvminfo"
 path = "src/bin/nvminfo.rs"
 
+[[bin]]
+name = "discprobe"
+path = "src/bin/discprobe.rs"
+
 [dev-dependencies]
 png = "0.17"

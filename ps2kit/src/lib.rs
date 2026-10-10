@@ -44,6 +44,7 @@ pub mod locate;
 pub mod logo;
 pub mod memcard;
 pub mod nvm;
+pub mod probe;
 pub mod ps1;
 pub mod ps1bios;
 pub mod ps1intro;
