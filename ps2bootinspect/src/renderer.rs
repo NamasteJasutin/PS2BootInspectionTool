@@ -105,6 +105,8 @@ pub struct RenderOptions {
     /// Light the towers along their whole length (the console lights only the near cap, so
     /// from any other viewpoint they fade to black).
     pub solid_towers: bool,
+    /// Show the user's save icon above each matching record's tallest tower.
+    pub icon_tags: bool,
     pub towers: bool,
     pub trails: bool,
     pub fog: bool,
@@ -121,7 +123,7 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { layout: TowerLayout::Console, revolve: 0.0, ring_radius: 34.0, tint: TowerTint::Console, solid_towers: false, towers: true, trails: true, fog: true, orbs: true, glass: true, defocus: true, fade: true, lettering: true, letterbox: true, colour_wrap: false, camera_path: false, orb_seed: 4000.0 }
+        Self { layout: TowerLayout::Console, revolve: 0.0, ring_radius: 34.0, tint: TowerTint::Console, solid_towers: false, icon_tags: false, towers: true, trails: true, fog: true, orbs: true, glass: true, defocus: true, fade: true, lettering: true, letterbox: true, colour_wrap: false, camera_path: false, orb_seed: 4000.0 }
     }
 }
 
@@ -169,7 +171,7 @@ pub struct Renderer {
     pipelines: HashMap<(bool, wgpu::TextureFormat, bool, Blend, DepthMode), wgpu::RenderPipeline>,
     layout: wgpu::PipelineLayout,
     glass_layout: wgpu::PipelineLayout,
-    bind_layout: wgpu::BindGroupLayout,
+    pub(crate) bind_layout: wgpu::BindGroupLayout,
     glass_bind_layout: wgpu::BindGroupLayout,
     sampler_clamp: wgpu::Sampler,
     sampler_repeat: wgpu::Sampler,
@@ -190,6 +192,10 @@ pub struct Renderer {
     pub highlight: Option<usize>,
     /// The last frame replaced the scene with a picture plane, so a cached 2D field is stale.
     pub plane_drawn: bool,
+    /// Persistent card geometry and textures, replaced only when a card is loaded.
+    pub(crate) card_icons: Option<crate::scenes::icons::CardIcons>,
+    /// History-slot title IDs used to associate icons with the opening's tower records.
+    pub(crate) icon_history: Vec<String>,
 }
 
 /// Depth of the picture plane the second phase's 2D screens are hung on under a free camera.
@@ -223,7 +229,7 @@ impl Renderer {
             sampler_repeat: sampler(wgpu::AddressMode::Repeat),
             device, queue, shader, pipelines: HashMap::new(), layout, glass_layout, bind_layout, glass_bind_layout,
             textures: HashMap::new(), targets: HashMap::new(), bind_cache: HashMap::new(), size: (0, 0),
-            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(), highlight: None, plane_drawn: false,
+            vertex_buffer, vertex_offset: 0, staging: Vec::new(), assets_loaded: false, video: VideoMode::Ntsc, logo_cached_field: None, tower_tints: Vec::new(), highlight: None, plane_drawn: false, card_icons: None, icon_history: Vec::new(),
         };
         r.upload_texture("white", 1, 1, &[255, 255, 255, 255], false);
         r.resize(1280, 960);
@@ -292,11 +298,17 @@ impl Renderer {
         self.assets_loaded = true;
     }
 
+    /// Releases a replaced card texture and its cached sampler bindings.
+    pub(crate) fn remove_texture(&mut self, name: &str) {
+        self.textures.remove(name);
+        self.bind_cache.retain(|key, _| key.0 != name);
+    }
+
     fn view(&self, name: &str) -> Option<&wgpu::TextureView> {
         if let Some(n) = name.strip_prefix('@') { self.targets.get(n).map(|t| &t.1) } else { self.textures.get(name).or_else(|| self.textures.get("white")).map(|t| &t.1) }
     }
 
-    fn bind_group(&mut self, name: &str, repeat: bool) -> Option<wgpu::BindGroup> {
+    pub(crate) fn bind_group(&mut self, name: &str, repeat: bool) -> Option<wgpu::BindGroup> {
         let key = (name.to_string(), repeat);
         if let Some(b) = self.bind_cache.get(&key) { return Some(b.clone()) }
         let view = self.view(name)?;
@@ -351,6 +363,7 @@ impl Renderer {
     pub fn begin_frame(&mut self) {
         self.vertex_offset = 0;
         self.staging.clear();
+        if let Some(icons) = &mut self.card_icons { icons.begin_frame() }
     }
 
     /// Copies vertex bytes into the frame buffer and returns the byte offset.

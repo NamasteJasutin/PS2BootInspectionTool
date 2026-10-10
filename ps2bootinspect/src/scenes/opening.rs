@@ -72,7 +72,10 @@ impl Renderer {
             let mut verts = Vec::new();
             if options.towers && f >= 0.0 { self.towers(&mut verts, scene, f, &camera_at(f), options) }
             let n = verts.len();
-            self.pass(enc, "sub", true, DepthAction::Clear, |r, rp| r.draw(rp, &verts, &[Batch::new("TEXOWAL0", Blend::Opaque, 0..n).depth(DepthMode::Write).repeat()], rgba8, true));
+            self.pass(enc, "sub", true, DepthAction::Clear, |r, rp| {
+                r.draw(rp, &verts, &[Batch::new("TEXOWAL0", Blend::Opaque, 0..n).depth(DepthMode::Write).repeat()], rgba8, true);
+                if options.towers && options.icon_tags && f >= 0.0 { r.draw_icon_tags(rp, scene, f, &camera_at(f), options) }
+            });
             let weight = if history == 1 { 1.0 } else if k == history - 1 { 0.625f32.powi(k as i32) } else { 0.375 * 0.625f32.powi(k as i32) };
             let mut quad = Vec::new();
             Self::full_quad(&mut quad, Vec4::splat(weight));
@@ -176,6 +179,19 @@ impl Renderer {
             self.camera_path(&mut lines, timeline, frame, &camera, free.is_some());
             let n = lines.len();
             self.pass(enc, "scene", false, DepthAction::Load, |r, rp| r.draw(rp, &lines, &[Batch::new("white", Blend::Alpha, 0..n).depth(DepthMode::Test)], rgba8, true));
+        }
+    }
+
+    /// One tag per history record, using the tallest of that record's occupied slots.
+    /// Towers grow along Z (`notes/opening.md` §5), so their top is the near cap.
+    fn draw_icon_tags(&mut self, rp: &mut wgpu::RenderPass, scene: &OpeningScene, frame: f32, camera: &ViewCamera, options: &RenderOptions) {
+        for record in 0..self.icon_history.len() {
+            let Some(icon) = self.icon_for_title(&self.icon_history[record]) else { continue };
+            let Some((i, tower)) = scene.towers.iter().enumerate().filter(|(_, t)| t.record == record).max_by(|(_, a), (_, b)| a.half_length.total_cmp(&b.half_length)) else { continue };
+            let mut top = tower_place(options, i, scene.towers.len(), tower, frame, camera.video.fps());
+            top.z -= tower.half_length + 4.0;
+            let turn = frame / camera.video.fps() * std::f32::consts::TAU / 20.0;
+            self.draw_icon(rp, icon, top, 6.0, frame * 60.0 / camera.video.fps(), turn, true, camera);
         }
     }
 

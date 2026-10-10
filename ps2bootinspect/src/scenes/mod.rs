@@ -1,4 +1,5 @@
 pub mod logo;
+pub mod icons;
 pub mod opening;
 pub mod ps1;
 pub mod sce_intro;

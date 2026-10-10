@@ -1,11 +1,16 @@
 //! `ps2bootinspect --render <frame> <out.png> [--bios f] [--card f | --titles N --launches N]
 //!  [--scene boot|warning|logo|full] [--pal] [--iso f] [--disc s] [--exit s] [--free x,y,z,yaw,pitch]`
 //! renders one frame without a window (headless wgpu).
+//! `--icons <card.ps2>` tags matching history towers; `--scene icon --icon-index N`
+//! renders a close-up of the Nth save folder's icon (zero based).
+//! Cards without a BIOS history can opt into `--save-history <launches>`: a clearly
+//! synthetic history using only that card's save title IDs, for tower-tag inspection.
 
 use crate::model::{FreeCamera, Model, Scene};
 use crate::renderer::Renderer;
 use glam::Vec3;
 use ps2kit::history::PlayHistory;
+use ps2kit::icon::SaveIcon;
 use ps2kit::memcard::MemoryCard;
 use ps2kit::sim::Segment;
 use ps2kit::VideoMode;
@@ -32,7 +37,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if m.assets.is_none() && m.ps1_bios.is_none() { return Err(format!("{} / {}", m.bios_status, m.ps1_bios_status)) }
     if let Some(card) = named.get("card") {
         let c = MemoryCard::open(card).map_err(|e| e.to_string())?;
-        m.history = PlayHistory::from_card(&c).map_err(|e| e.to_string())?;
+        m.history = if let Some(launches) = named.get("save-history") {
+            let launches: u32 = launches.parse().map_err(|_| "bad --save-history")?;
+            let titles = PlayHistory::titles_with_saves(&c);
+            println!("synthetic history from {} save title IDs, {launches} launches each", titles.len());
+            PlayHistory::synthetic(&vec![launches; titles.len()], &titles, 1)
+        } else { PlayHistory::from_card(&c).map_err(|e| e.to_string())? };
     } else if let Some(t) = named.get("titles") {
         let n: usize = t.parse().map_err(|_| "bad --titles")?;
         let l: u32 = named.get("launches").and_then(|v| v.parse().ok()).unwrap_or(30);
@@ -54,6 +64,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     m.options.layout = match named.get("layout").map(String::as_str) { Some("ring") => crate::renderer::TowerLayout::Ring, Some("spiral") => crate::renderer::TowerLayout::Spiral, _ => crate::renderer::TowerLayout::Console };
     m.options.tint = match named.get("tint").map(String::as_str) { Some("count") => crate::renderer::TowerTint::Count, Some("age") => crate::renderer::TowerTint::Age, Some("region") => crate::renderer::TowerTint::Region, Some("publisher") => crate::renderer::TowerTint::Publisher, _ => crate::renderer::TowerTint::Console };
     m.options.revolve = named.get("revolve").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let icons = if let Some(path) = named.get("icons") {
+        let card = MemoryCard::open(path).map_err(|e| e.to_string())?;
+        m.options.icon_tags = true;
+        let saves = SaveIcon::from_card(&card);
+        for (i, s) in saves.iter().enumerate() { println!("icon {i}: {} — {} — {} ({} vertices, {} shapes, texture flags {})", s.folder, s.title_id, s.title.replace('\n', " / "), s.list_icon.vertices.len(), s.list_icon.shapes.len(), s.list_icon.texture_type) }
+        saves
+    } else { Vec::new() };
+    let icon_preview = if named.get("scene").map(String::as_str) == Some("icon") {
+        let index: usize = named.get("icon-index").map_or(Ok(0), |v| v.parse().map_err(|_| "bad --icon-index"))?;
+        if index >= icons.len() { return Err("--scene icon requires --icons and an existing --icon-index".into()) }
+        Some(index)
+    } else { None };
     m.rebuild_timeline();
     if named.contains_key("handoff") {
         // `--handoff 1`: print what the sidebar's hand-off card would show.
@@ -101,6 +123,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let (device, queue) = (Arc::new(device), Arc::new(queue));
     let mut r = Renderer::new(device.clone(), queue.clone());
     if let Some(a) = &m.assets { r.set_assets(a) }
+    if !icons.is_empty() { r.set_card_icons(&icons) }
+    r.set_icon_history(&m.history);
     r.set_logo_bitmap(m.logo_bitmap().as_ref());
     let sce_tex = m.sce_intro.as_ref().filter(|_| m.console == crate::model::Console::Ps1).map(|i| r.set_sce_assets(i));
     let ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| r.set_ps1_assets(s, &m.ps1_licence_text()));
@@ -114,7 +138,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if m.options.tint != crate::renderer::TowerTint::Console { r.tower_tints = m.tower_tints() }
     let assets = m.assets.as_ref();
     let warning_tex = format!("TEXOPNG{}", m.language);
-    match m.scene_kind {
+    if let Some(index) = icon_preview {
+        r.render_icon_preview(&mut enc, index, frame, m.video);
+    } else { match m.scene_kind {
         Scene::Boot => r.render_opening(&mut enc, frame, &m.scene, assets.ok_or("no PS2 BIOS")?, &m.timeline, free, &m.options),
         Scene::Warning => r.render_warning(&mut enc, frame, assets.ok_or("no PS2 BIOS")?, &m.timeline, free, &m.options, &warning_tex),
         Scene::Logo => if !ps1(&mut r, &mut enc, frame) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, frame, &anim, &m.options); if let Some(v) = &free { r.picture_plane(&mut enc, "copy", v) } },
@@ -128,7 +154,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }
         }
-    }
+    } }
     // Read back.
     let (w, h) = r.size;
     let bytes_per_row = (w * 4 + 255) & !255;
