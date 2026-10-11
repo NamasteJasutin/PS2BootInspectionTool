@@ -22,6 +22,9 @@ struct Shared {
     rate: f64,
     playing: bool,
     gain: f32,
+    /// A one-shot sound (an auditioned instrument note) mixed over the timeline, playing or not.
+    preview: Option<Arc<Vec<f32>>>,
+    preview_pos: f64,
 }
 
 pub struct AudioPlayer {
@@ -69,15 +72,24 @@ impl AudioPlayer {
                     move |out: &mut [f32], _| {
                         let mut sh = s.lock().unwrap();
                         for frame in out.chunks_mut(channels) {
-                            if !sh.playing { frame.fill(0.0); continue }
-                            let p = sh.position.floor() as i64;
-                            let f = (sh.position - p as f64) as f32;
-                            let l = sample_clips(&sh.clips, p, false, sh.gain) * (1.0 - f) + sample_clips(&sh.clips, p + 1, false, sh.gain) * f;
-                            let r = sample_clips(&sh.clips, p, true, sh.gain) * (1.0 - f) + sample_clips(&sh.clips, p + 1, true, sh.gain) * f;
+                            let (mut l, mut r) = (0.0, 0.0);
+                            if sh.playing {
+                                let p = sh.position.floor() as i64;
+                                let f = (sh.position - p as f64) as f32;
+                                l = sample_clips(&sh.clips, p, false, sh.gain) * (1.0 - f) + sample_clips(&sh.clips, p + 1, false, sh.gain) * f;
+                                r = sample_clips(&sh.clips, p, true, sh.gain) * (1.0 - f) + sample_clips(&sh.clips, p + 1, true, sh.gain) * f;
+                                sh.position += sh.rate * resample;
+                            }
+                            let k = sh.preview_pos as usize;
+                            let done = match &sh.preview {
+                                Some(pcm) if k * 2 + 1 < pcm.len() => { l += pcm[k * 2] * sh.gain; r += pcm[k * 2 + 1] * sh.gain; false }
+                                Some(_) => true,
+                                None => false,
+                            };
+                            if done { sh.preview = None } else if sh.preview.is_some() { sh.preview_pos += resample }
                             frame[0] = l;
                             if channels > 1 { frame[1] = r }
                             for extra in frame.iter_mut().skip(2) { *extra = 0.0 }
-                            sh.position += sh.rate * resample;
                         }
                     },
                     |e| eprintln!("audio: {e}"),
@@ -95,6 +107,13 @@ impl AudioPlayer {
     pub fn load(&mut self, sound: BootSound) { self.sounds = Some(Arc::new(sound)); self.ready = true }
     pub fn load_logo_chime(&mut self, pcm: Vec<f32>) { self.logo_chime = Arc::new(pcm) }
     pub fn load_intro_chime(&mut self, pcm: Vec<f32>) { self.intro_chime = Arc::new(pcm) }
+
+    /// Plays `pcm` (stereo, 48 kHz) once, now, over whatever the timeline is doing.
+    pub fn preview(&self, pcm: Vec<f32>) {
+        let mut sh = self.shared.lock().unwrap();
+        sh.preview = Some(Arc::new(pcm));
+        sh.preview_pos = 0.0;
+    }
 
     /// A standalone PS1 console's sound: the SCE intro's music, then the licence chime. None of
     /// the PS2's sounds play, whatever PS2 BIOS is also loaded.

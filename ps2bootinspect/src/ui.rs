@@ -313,7 +313,7 @@ fn file_row(ui: &mut egui::Ui, label: &str, status: &str, directories: bool, fil
 
 fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for t in Tab::ALL { ui.selectable_value(&mut m.tab, t, t.name()); }
     });
     ui.separator();
@@ -323,6 +323,8 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         Tab::Disc => disc_tab(ui, m),
         Tab::Bios => bios_tab(ui, m),
         Tab::Lab => lab_tab(ui, m),
+        Tab::Sound => sound_tab(ui, m),
+        Tab::Fonts => fonts_tab(ui, m),
     }
     ui.add_space(12.0);
 }
@@ -844,6 +846,18 @@ mod tests {
     use ps2kit::history::PlayHistory;
 
     #[test]
+    fn wav_header_and_clipping() {
+        let w = super::wav_bytes(&[0.0, 1.0, -2.0, 0.5]);
+        assert_eq!(&w[..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(w[4..8].try_into().unwrap()), 36 + 8);
+        assert_eq!(&w[36..40], b"data");
+        let samples: Vec<i16> = w[44..].chunks(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(samples, [0, 32767, -32767, 16383]);
+        assert_eq!(super::note_name(60), "C4");
+        assert_eq!(super::note_name(69), "A4");
+    }
+
+    #[test]
     fn pareto_ranks_and_accumulates() {
         assert_eq!(pareto([1u8].into_iter()), None);
         assert_eq!(pareto([0u8, 0].into_iter()), None);
@@ -1027,5 +1041,193 @@ fn ps3_disc_lines(path: &std::path::Path, firmware: Option<&str>) -> Vec<(String
     match ps2kit::ps3::Ps3Disc::open(path) {
         Ok(d) => d.handoff(firmware).iter().map(|s| (s.source().to_string(), s.to_string())).collect(),
         Err(e) => vec![("error".into(), e.to_string())],
+    }
+}
+
+const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+fn note_name(n: i32) -> String { format!("{}{}", NOTE_NAMES[n.rem_euclid(12) as usize], n.div_euclid(12) - 1) }
+
+/// Stereo 48 kHz float PCM as a 16-bit WAV file.
+fn wav_bytes(pcm: &[f32]) -> Vec<u8> {
+    let data_len = (pcm.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    for v in [16u32] { out.extend_from_slice(&v.to_le_bytes()) }
+    for v in [1u16, 2] { out.extend_from_slice(&v.to_le_bytes()) }
+    for v in [48_000u32, 48_000 * 4] { out.extend_from_slice(&v.to_le_bytes()) }
+    for v in [4u16, 16] { out.extend_from_slice(&v.to_le_bytes()) }
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for x in pcm { out.extend_from_slice(&((x.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()) }
+    out
+}
+
+/// Every instrument, sample and sound effect in the chosen console's BIOS (`ps2kit::bench`),
+/// auditioned through the app's audio. Nothing is bundled: the bench is read from the dump.
+fn sound_tab(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "Instrument bank", |ui| {
+        let a = &mut m.asset_inspection;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut a.sound_console, Console::Ps2, "PS2 BIOS banks");
+            ui.selectable_value(&mut a.sound_console, Console::Ps1, "PS1 shell VAB");
+        });
+        if a.sound.as_ref().map(|(c, _)| *c) != Some(a.sound_console) {
+            let bench = match a.sound_console {
+                Console::Ps2 => m.rom.as_ref().map(ps2kit::bench::SoundBench::ps2).transpose().map_err(|e| e.to_string()),
+                Console::Ps1 => Ok(m.ps1_shell.as_ref().map(|s| ps2kit::bench::SoundBench::ps1(&s.bank))),
+            };
+            match bench {
+                Ok(Some(b)) => { a.program = b.programs.first().map_or(0, |p| p.id); a.sound = Some((a.sound_console, b)); a.status.clear() }
+                Ok(None) => { a.sound = None; a.status = "Load a BIOS for this console first.".into() }
+                Err(e) => { a.sound = None; a.status = e }
+            }
+        }
+        if !a.status.is_empty() { ui.small(&a.status); }
+        let Some((_, bench)) = &a.sound else { return };
+        ui.small(format!("{} programs, {} samples, {} sound effects — read from your dump.", bench.programs.len(), bench.samples.len(), bench.effects.len()));
+    });
+    let Some((_, bench)) = &m.asset_inspection.sound else { return };
+    let bench_programs: Vec<ps2kit::bench::BenchProgram> = bench.programs.clone();
+    section(ui, "Audition", |ui| {
+        let a = &mut m.asset_inspection;
+        ui.horizontal(|ui| {
+            ui.label("Program");
+            egui::ComboBox::from_id_salt("program").selected_text(format!("{}", a.program)).show_ui(ui, |ui| {
+                for p in &bench_programs { ui.selectable_value(&mut a.program, p.id, format!("{} — {:?}, {} tone(s)", p.id, p.kind, p.tones.len())); }
+            });
+        });
+        ui.add(egui::Slider::new(&mut a.note, 0..=127).text("note").custom_formatter(|v, _| format!("{} ({})", note_name(v as i32), v as i32)));
+        ui.add(egui::Slider::new(&mut a.velocity, 1..=127).text("velocity"));
+        ui.add(egui::Slider::new(&mut a.seconds, 0.1..=6.0).text("seconds"));
+        // Two octaves of keys around the chosen note: click to play.
+        let base = (a.note.div_euclid(12) * 12).clamp(0, 104);
+        let mut play = None;
+        ui.horizontal_wrapped(|ui| {
+            for k in base..base + 24 {
+                let black = matches!(k.rem_euclid(12), 1 | 3 | 6 | 8 | 10);
+                let b = egui::Button::new(egui::RichText::new(note_name(k)).size(9.0).color(if black { Color32::WHITE } else { Color32::BLACK }))
+                    .fill(if black { Color32::from_gray(30) } else { Color32::from_gray(225) }).min_size(Vec2::new(26.0, 30.0));
+                if ui.add(b).clicked() { play = Some(k) }
+            }
+        });
+        if ui.button("▶ Play").clicked() { play = Some(a.note) }
+        if let (Some(k), Some((_, bench))) = (play, &a.sound) {
+            a.note = k;
+            let pcm = bench.render(a.program, k, a.velocity, a.seconds as f64);
+            a.last_label = format!("program {} {} vel {}", a.program, note_name(k), a.velocity);
+            m.audio.preview(pcm.clone());
+            a.last = pcm;
+        }
+        if let Some(p) = bench_programs.iter().find(|p| p.id == a.program) {
+            for t in &p.tones { ui.small(format!("tone: keys {}–{}, root {}{:+}, sample #{}, volume {}, pan {}", note_name(t.low), note_name(t.high), note_name(t.root), t.fine, t.sample_index, t.volume, t.pan)); }
+        }
+    });
+    section(ui, "Sound effects", |ui| {
+        let a = &mut m.asset_inspection;
+        let Some((_, bench)) = &a.sound else { return };
+        if bench.effects.is_empty() { ui.small("This bank has no one-shot effects."); return }
+        let mut play = None;
+        ui.horizontal_wrapped(|ui| { for e in &bench.effects { if ui.small_button(format!("▶ {}", e.id)).on_hover_text(format!("sample #{}, pitch 0x{:04X}, volume {:?}", e.sample_index, e.pitch, e.volume)).clicked() { play = Some(e.id) } } });
+        if let Some(id) = play {
+            let pcm = bench.render_effect(id, 2.0);
+            a.last_label = format!("effect {id}");
+            m.audio.preview(pcm.clone());
+            a.last = pcm;
+        }
+    });
+    section(ui, "Samples", |ui| {
+        let Some((_, bench)) = &m.asset_inspection.sound else { return };
+        egui::ScrollArea::vertical().id_salt("samples").max_height(140.0).show(ui, |ui| {
+            for s in &bench.samples { ui.monospace(format!("#{:<3} {:>7} frames ({:.2} s){}", s.index, s.length, s.length as f32 / 48_000.0, s.loop_start.map(|l| format!(", loops from {l}")).unwrap_or_default())); }
+        });
+    });
+    section(ui, "Last sound", |ui| {
+        let a = &m.asset_inspection;
+        if a.last.is_empty() { ui.small("Play a note or an effect."); return }
+        ui.small(&a.last_label);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 60.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let frames = a.last.len() / 2;
+        let cols = rect.width().max(1.0) as usize;
+        let step = (frames / cols).max(1);
+        for c in 0..cols.min(frames) {
+            let chunk = &a.last[c * step * 2..((c + 1) * step * 2).min(a.last.len())];
+            let peak = chunk.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let x = rect.min.x + c as f32;
+            painter.line_segment([Pos2::new(x, rect.center().y - peak * 28.0), Pos2::new(x, rect.center().y + peak * 28.0)], Stroke::new(1.0, Color32::from_rgb(115, 153, 255)));
+        }
+        if ui.button("Export WAV…").clicked() {
+            if let Some(p) = rfd::FileDialog::new().set_file_name("bios-instrument.wav").save_file() { let _ = std::fs::write(p, wav_bytes(&a.last)); }
+        }
+    });
+}
+
+/// Every font in the chosen console's BIOS (`ps2kit::bench::FontBench`): pages of 128 glyphs,
+/// hover to inspect a glyph, export a page as PNG.
+fn fonts_tab(ui: &mut egui::Ui, m: &mut Model) {
+    let ctx = ui.ctx().clone();
+    let a = &mut m.asset_inspection;
+    section(ui, "Fonts", |ui| {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut a.font_console, Console::Ps2, "PS2 BIOS");
+            ui.selectable_value(&mut a.font_console, Console::Ps1, "PS1 BIOS");
+        });
+        if a.fonts.as_ref().map(|(c, _)| *c) != Some(a.font_console) {
+            let bench = match a.font_console {
+                Console::Ps2 => m.rom.as_ref().map(ps2kit::bench::FontBench::ps2),
+                Console::Ps1 => m.ps1_bios.as_ref().map(|b| ps2kit::bench::FontBench::ps1(b.data())),
+            };
+            a.fonts = match bench { Some(Ok(b)) => Some((a.font_console, b)), _ => None };
+            a.font = 0;
+            a.page = 0;
+            a.texture = None;
+        }
+    });
+    let Some((console, bench)) = &a.fonts else { ui.small("Load a BIOS for this console first."); return };
+    let fonts = bench.fonts();
+    if fonts.is_empty() { ui.small("No fonts found."); return }
+    let font_name = fonts[a.font.min(fonts.len() - 1)].name().to_string();
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("font").selected_text(&font_name).show_ui(ui, |ui| {
+            for (i, f) in fonts.iter().enumerate() { if ui.selectable_value(&mut a.font, i, format!("{} — {} glyphs {}×{}", f.name(), f.glyph_count(), f.dimensions().0, f.dimensions().1)).changed() { a.page = 0 } }
+        });
+    });
+    let font = &fonts[a.font.min(fonts.len() - 1)];
+    ui.small(font.summary());
+    const PAGE: usize = 128;
+    let pages = font.glyph_count().div_ceil(PAGE).max(1);
+    if pages > 1 { ui.add(egui::Slider::new(&mut a.page, 0..=pages - 1).text(format!("page (of {pages})"))); }
+    let start = a.page.min(pages - 1) * PAGE;
+    let end = (start + PAGE).min(font.glyph_count());
+    let key = format!("{console:?}/{}/{start}", font.name());
+    if a.texture.as_ref().map(|(k, _)| k) != Some(&key) {
+        let (w, h, rgba) = font.atlas(start..end);
+        a.texture = (w > 0).then(|| (key.clone(), ctx.load_texture(&key, egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba), egui::TextureOptions::NEAREST)));
+    }
+    let Some((_, tex)) = &a.texture else { return };
+    let (gw, gh) = font.dimensions();
+    let cols = 16usize.min(end - start).max(1);
+    let scale = ((ui.available_width() - 8.0) / tex.size()[0] as f32).clamp(0.5, 4.0);
+    let size = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32) * scale;
+    let resp = ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::hover()));
+    if let Some(pos) = resp.hover_pos() {
+        let local = (pos - resp.rect.min) / scale;
+        let (col, row) = ((local.x / gw as f32) as usize, (local.y / gh as f32) as usize);
+        let index = start + row * cols + col.min(cols - 1);
+        if index < end {
+            if let Some(g) = font.glyph(index) {
+                let big = ctx.load_texture("glyph", egui::ColorImage::from_rgba_unmultiplied([g.width, g.height], &g.rgba), egui::TextureOptions::NEAREST);
+                resp.on_hover_ui_at_pointer(|ui| {
+                    ui.label(format!("glyph {index} (0x{index:X}) — {}×{}", g.width, g.height));
+                    ui.add(egui::Image::new((big.id(), Vec2::new(g.width as f32, g.height as f32) * 6.0)));
+                });
+            }
+        }
+    }
+    if ui.button("Export this page as PNG…").clicked() {
+        let (w, h, rgba) = font.atlas(start..end);
+        if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}-page{}.png", font.name(), a.page)).save_file() { let _ = image::save_buffer(p, &rgba, w as u32, h as u32, image::ColorType::Rgba8); }
     }
 }
