@@ -304,29 +304,36 @@ impl SoundSequence {
             }
             tick += delta;
         }
-        // The driver keeps a 20.12 fixed-point countdown and fires events while it is <= 0,
-        // subtracting (resolution * bpm << 12) / 60 / 60 per 60 Hz update.
-        let (mut bpm_now, mut acc, mut update, mut last) = (bpm, 0i64, 0i64, 0i64);
-        for e in events.iter_mut() {
-            acc += (e.tick - last) << 12;
-            last = e.tick;
-            let step = ((resolution * bpm_now) << 12) / 60 / 60;
-            if step <= 0 {
-                return Err(Error::Corrupt(Format::Sequence, "tempo or resolution is zero".into()));
-            }
-            // Closed form of `while acc >= 1 { acc -= step; update += 1 }`.
-            if acc >= 1 {
-                let n = (acc - 1) / step + 1;
-                acc -= n * step;
-                update += n;
-            }
-            e.update = update;
-            if let EventKind::Tempo(t) = e.kind {
-                bpm_now = t as i64;
-            }
-        }
+        schedule_events(&mut events, resolution, bpm)?;
         Ok(Self { volume: d.u8(0) as i32, resolution, bpm, channels, events })
     }
+}
+
+// Shared 60 Hz sequencer clock (notes/sound.md §2.2). Checked arithmetic also bounds
+// editor-created events; parsed BIOS sequences retain exactly the previous countdown.
+pub(crate) fn schedule_events(events: &mut [SequenceEvent], resolution: i64, bpm: i64) -> Result<()> {
+    let bad = || Error::Corrupt(Format::Sequence, "invalid or overflowing sequence clock".into());
+    // The driver keeps a 20.12 fixed-point countdown and fires events while it is <= 0,
+    // subtracting (resolution * bpm << 12) / 60 / 60 per 60 Hz update.
+    let (mut bpm_now, mut acc, mut update, mut last) = (bpm, 0i64, 0i64, 0i64);
+    for e in events.iter_mut() {
+        let delta = e.tick.checked_sub(last).filter(|&n| n >= 0).ok_or_else(bad)?;
+        acc = acc.checked_add(delta.checked_mul(4096).ok_or_else(bad)?).ok_or_else(bad)?;
+        last = e.tick;
+        let step = resolution.checked_mul(bpm_now).and_then(|n| n.checked_mul(4096)).ok_or_else(bad)? / 60 / 60;
+        if step <= 0 {
+            return Err(Error::Corrupt(Format::Sequence, "tempo or resolution is zero".into()));
+        }
+        // Closed form of `while acc >= 1 { acc -= step; update += 1 }`.
+        if acc >= 1 {
+            let n = (acc - 1) / step + 1;
+            acc = acc.checked_sub(n.checked_mul(step).ok_or_else(bad)?).ok_or_else(bad)?;
+            update = update.checked_add(n).ok_or_else(bad)?;
+        }
+        e.update = update;
+        if let EventKind::Tempo(t) = e.kind { bpm_now = t as i64 }
+    }
+    Ok(())
 }
 
 /// The driver's lookup tables, read from the IOP module when a layout is known.
@@ -449,9 +456,15 @@ impl<'a> Synth<'a> {
 
     /// Mixes `sequence` into `mix` starting `start_seconds` in, growing the buffer as needed.
     pub fn render(&self, seq: &SoundSequence, sequence_volume: i64, start_seconds: f64, tail: f64, max_seconds: f64, mix: &mut Vec<f32>) {
+        self.render_channels(&seq.channels, seq, sequence_volume, start_seconds, tail, max_seconds, mix);
+    }
+
+    // The same voice path, with an editor-sized channel set (sound.md §2.2).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_channels(&self, initial: &[Channel], seq: &SoundSequence, sequence_volume: i64, start_seconds: f64, tail: f64, max_seconds: f64, mix: &mut Vec<f32>) {
         let rate = SAMPLE_RATE;
         let base = (start_seconds * rate as f64) as usize;
-        let mut channels = seq.channels;
+        let mut channels = initial.to_vec();
         let mut voices: Vec<Voice> = Vec::new();
         let mut active: HashMap<i32, Vec<usize>> = HashMap::new();
         for e in seq.events.iter().filter(|e| e.update as f64 / UPDATES_PER_SECOND <= max_seconds) {

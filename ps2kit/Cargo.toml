@@ -53,3 +53,7 @@ path = "src/bin/bench.rs"
 
 [dev-dependencies]
 png = "0.17"
+
+[[bin]]
+name = "song"
+path = "src/bin/song.rs"

@@ -756,6 +756,13 @@ impl Ps1Shell {
     /// from the first text frame, as 48 kHz interleaved stereo starting at field 0.
     #[must_use]
     pub fn render_sound(&self, video: VideoMode) -> Vec<f32> {
+        let keys = self.scheduled_sound_events(video);
+        let tail = (4.0 * SAMPLE_RATE as f64) as usize;
+        self.bank.render_events(&keys, None, tail)
+    }
+
+    // Shared licence clock/setup for rendering and music import (ps1_boot.md §6).
+    pub(crate) fn scheduled_sound_events(&self, video: VideoMode) -> Vec<(usize, NoteEvent)> {
         let fps = video.fps() as f64;
         let fields_to_samples = |f: f64| (f / fps * SAMPLE_RATE as f64) as usize;
         let mut keys = Vec::new();
@@ -771,22 +778,28 @@ impl Ps1Shell {
         for e in &self.events {
             key(LicenceTimeline::FADE_FIELDS as f64 + e.time as f64 * scale, e.prog, e.note, e.vel, e.pan);
         }
-        let tail = fields_to_samples(fps * 4.0);
-        self.bank.render_events(&keys, None, tail)
+        keys
     }
 }
 
 impl Vab {
     // Shared libsnd-style mixer for licence and intro clocks; scenes §2, ps1_boot §6.
     pub(crate) fn render_events(&self, keys: &[(usize, NoteEvent)], samples: Option<usize>, tail: usize) -> Vec<f32> {
-        struct Voice { start: usize, off: Option<usize>, tone: Tone, prog_vol: u8, vel: u8, pan: u8, prog: u8, note: u8 }
+        let keys: Vec<_> = keys.iter().map(|&(at, e)| (at, e, 0, 127)).collect();
+        self.render_channel_events(&keys, samples, tail)
+    }
+
+    // Editor channels own their note-offs and gains; the original shell uses channel 0,
+    // full volume. Voice arithmetic/order are unchanged (ps1_shell_scenes.md §2).
+    pub(crate) fn render_channel_events(&self, keys: &[(usize, NoteEvent, usize, u8)], samples: Option<usize>, tail: usize) -> Vec<f32> {
+        struct Voice { start: usize, off: Option<usize>, tone: Tone, prog_vol: u8, vel: u8, pan: u8, prog: u8, note: u8, channel: usize, volume: u8 }
         let mut voices: Vec<Voice> = Vec::new();
-        for &(at, e) in keys {
+        for &(at, e, channel, volume) in keys {
             if e.vel == 0 {
-                for v in voices.iter_mut().filter(|v| v.prog == e.prog && v.note == e.note && v.off.is_none()) { v.off = Some(at) }
+                for v in voices.iter_mut().filter(|v| v.channel == channel && v.prog == e.prog && v.note == e.note && v.off.is_none()) { v.off = Some(at) }
             } else if let Some(p) = self.programs.get(e.prog as usize) {
                 for t in &p.tones {
-                    voices.push(Voice { start: at, off: None, tone: *t, prog_vol: p.vol, vel: e.vel, pan: e.pan, prog: e.prog, note: e.note });
+                    voices.push(Voice { start: at, off: None, tone: *t, prog_vol: p.vol, vel: e.vel, pan: e.pan, prog: e.prog, note: e.note, channel, volume });
                 }
             }
         }
@@ -799,7 +812,7 @@ impl Vab {
             let env = envelope(v.tone.adsr1, v.tone.adsr2, v.off.map(|o| o - v.start).unwrap_or(n), n);
             // libsnd: velocity × tone volume × program volume × bank master, then the tone's
             // pan combined with the note's pan (a stereo pair: one tone hard left, one hard right).
-            let gain = v.vel as f32 / 127.0 * v.tone.vol as f32 / 127.0 * v.prog_vol as f32 / 127.0 * self.master as f32 / 127.0 * (0x3FFF as f32 / 16384.0);
+            let gain = v.vel as f32 / 127.0 * v.tone.vol as f32 / 127.0 * v.prog_vol as f32 / 127.0 * self.master as f32 / 127.0 * (0x3FFF as f32 / 16384.0) * (v.volume as f32 / 127.0);
             let pan = ((v.tone.pan as f32 + v.pan as f32 - 64.0) / 127.0).clamp(0.0, 1.0);
             let (gain_l, gain_r) = (gain * (1.0 - pan).sqrt(), gain * pan.sqrt());
             let semis = v.note as f32 - v.tone.centre as f32 + v.tone.shift as f32 / 128.0;

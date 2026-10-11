@@ -61,6 +61,7 @@ pub mod romdiff;
 pub mod sectors;
 pub mod sim;
 pub mod sound;
+pub mod song;
 
 /// The vector types used in the public API, re-exported from `glam` so that callers need not
 /// match its version by hand.
