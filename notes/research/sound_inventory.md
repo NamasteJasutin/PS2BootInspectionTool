@@ -477,3 +477,16 @@ B05 entries 0..11 exactly alias B04 entries 0..11; B04 entries 12/13 are later a
 | 38 | 0x2b1768 | 317180 | 3776964 | passed; zero sound-signature candidates |
 | 39 | 0x2ffc4c | 536 | 3832 | passed; zero sound-signature candidates |
 
+
+## Addendum (2026-10-11): headerless sweep
+
+[V] A second sweep looked for sound that carries no header — runs of ≥ 48 frames matching the
+PS-ADPCM frame grammar (shift ≤ 12, filter ≤ 4, known flags, mostly non-zero, ending in an end flag)
+— across every file in the corpus, every ROMDIR module (packed modules unpacked, SNDIMAGE members
+included), ROM1/ROM2 and all 40 EROM gzip members. It found 23 distinct streams; 22 lie inside the
+bank bodies this note already parses (SNDBOOTB, SNDOSDDB, 1.00's inline banks in OSDSYS, PS2LOGO,
+TESTSPU, the PS1 VAB in every shell). The 23rd, 2 048 bytes at `PSXONPSP660.BIN` `0x2E120` (POPS's
+post-stream build slack), is **not audio**: every frame uses filter 0 with shift 1–2, it decodes to
+jagged values on a 2 048-step grid, and it carries loop-body flags (2) without any loop-start flag
+(6) — a 16-byte-record table that happens to fit the frame grammar. Conclusion: no audio exists in
+the corpus outside the banks above.
