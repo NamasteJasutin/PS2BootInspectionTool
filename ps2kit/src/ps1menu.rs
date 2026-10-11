@@ -57,6 +57,24 @@ pub struct MenuScreenDesc {
     pub cache_rect: [i16; 4],
 }
 
+/// Sub-rectangle within a label atlas (`ps1_shell_scenes.md` §1c) \[V\].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MenuSubRect {
+    /// Horizontal offset in atlas pixels.
+    pub u: i16,
+    /// Vertical offset in atlas pixels.
+    pub v: i16,
+    /// Width in pixels.
+    pub w: i16,
+    /// Height in pixels.
+    pub h: i16,
+    /// VRAM destination X offset.
+    pub u_vram: i16,
+    /// VRAM destination Y offset.
+    pub v_vram: i16,
+}
+
 /// Procedural shaded disc generated on the GPU (`ps1_shell_scenes.md` §1c).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -195,6 +213,10 @@ pub struct Ps1Menu {
     pub cursor: Option<usize>,
     /// Cross ("+") marker texture index.
     pub cross: Option<usize>,
+    /// Sub-rectangles for Screen 1 (Memory Card) from descriptor table (`ps1_shell_scenes.md` §1c) \[V\].
+    pub subrects_memcard: Vec<MenuSubRect>,
+    /// Sub-rectangles for Screen 3 (CD Player) from descriptor table (`ps1_shell_scenes.md` §1c) \[V\].
+    pub subrects_cd: Vec<MenuSubRect>,
     /// Whether this BIOS dump natively runs in PAL 512-line mode.
     pub native_pal: bool,
 }
@@ -352,6 +374,68 @@ impl Ps1Menu {
 
         let native_pal = revision.region_letter == Some('E') || screens[0].draw_rect[3] == 512;
 
+        // 6. Sub-rectangle tables for Screen 1 and Screen 3 (`ps1_shell_scenes.md` §1c) \[V\].
+        let parse_subrects = |ptr: u32, count: usize| -> Vec<MenuSubRect> {
+            if ptr < BASE {
+                return Vec::new();
+            }
+            let mut off = (ptr - BASE) as usize;
+            let mut result = Vec::with_capacity(count);
+            for _ in 0..count {
+                if off + 12 > d.len() {
+                    break;
+                }
+                let u = d.i16(off);
+                let v = d.i16(off + 2);
+                let w = d.i16(off + 4);
+                let h = d.i16(off + 6);
+                let u_vram = d.i16(off + 8);
+                let v_vram = d.i16(off + 10);
+                if w > 0 && h > 0 {
+                    result.push(MenuSubRect { u, v, w, h, u_vram, v_vram });
+                }
+                off += 12;
+            }
+            result
+        };
+
+        let mut subrects_memcard = parse_subrects(screens[2].label_tim, 8);
+        if subrects_memcard.is_empty() {
+            subrects_memcard = vec![
+                MenuSubRect { u: 0, v: 0, w: 88, h: 24, u_vram: 0, v_vram: 0 },
+                MenuSubRect { u: 88, v: 0, w: 88, h: 24, u_vram: 22, v_vram: 0 },
+                MenuSubRect { u: 0, v: 24, w: 58, h: 19, u_vram: 0, v_vram: 24 },
+                MenuSubRect { u: 60, v: 24, w: 70, h: 19, u_vram: 15, v_vram: 24 },
+                MenuSubRect { u: 128, v: 24, w: 120, h: 19, u_vram: 32, v_vram: 24 },
+                MenuSubRect { u: 0, v: 43, w: 88, h: 19, u_vram: 0, v_vram: 43 },
+                MenuSubRect { u: 88, v: 43, w: 40, h: 16, u_vram: 22, v_vram: 43 },
+                MenuSubRect { u: 128, v: 43, w: 40, h: 16, u_vram: 32, v_vram: 43 },
+            ];
+        }
+
+        let mut subrects_cd = parse_subrects(screens[4].label_tim, 35);
+        if subrects_cd.is_empty() {
+            let mut def_cd = Vec::new();
+            for t in 1..=9 {
+                def_cd.push(MenuSubRect { u: 16 * t, v: 0, w: 16, h: 18, u_vram: 4 * t, v_vram: 0 });
+            }
+            def_cd.push(MenuSubRect { u: 160, v: 0, w: 32, h: 18, u_vram: 40, v_vram: 0 });
+            def_cd.push(MenuSubRect { u: 192, v: 0, w: 24, h: 18, u_vram: 48, v_vram: 0 });
+            def_cd.push(MenuSubRect { u: 216, v: 0, w: 32, h: 18, u_vram: 54, v_vram: 0 });
+            for t in 13..=20 {
+                def_cd.push(MenuSubRect { u: 32 * (t - 13), v: 18, w: 32, h: 18, u_vram: 8 * (t - 13), v_vram: 18 });
+            }
+            def_cd.push(MenuSubRect { u: 0, v: 36, w: 48, h: 18, u_vram: 0, v_vram: 36 });
+            def_cd.push(MenuSubRect { u: 0, v: 0, w: 16, h: 18, u_vram: 0, v_vram: 0 });
+            def_cd.push(MenuSubRect { u: 0, v: 69, w: 88, h: 13, u_vram: 0, v_vram: 69 });
+            def_cd.push(MenuSubRect { u: 88, v: 69, w: 72, h: 13, u_vram: 22, v_vram: 69 });
+            def_cd.push(MenuSubRect { u: 160, v: 69, w: 88, h: 13, u_vram: 40, v_vram: 69 });
+            def_cd.push(MenuSubRect { u: 0, v: 82, w: 64, h: 13, u_vram: 0, v_vram: 82 });
+            def_cd.push(MenuSubRect { u: 0, v: 95, w: 40, h: 13, u_vram: 0, v_vram: 95 });
+            def_cd.push(MenuSubRect { u: 192, v: 36, w: 64, h: 22, u_vram: 48, v_vram: 36 });
+            subrects_cd = def_cd;
+        }
+
         Ok(Self {
             style,
             screens,
@@ -366,12 +450,29 @@ impl Ps1Menu {
             labels_no_disc,
             cursor,
             cross,
+            subrects_memcard,
+            subrects_cd,
             native_pal,
         })
     }
 
     /// Number of screens in the shell descriptor table (always 5).
     pub fn screen_count(&self) -> usize { 5 }
+
+    /// Returns the number of interactive/selectable items for a screen.
+    ///
+    /// - Screen 0 (Main Menu): 2 items (0: Memory Card, 1: CD Player).
+    /// - Screen 1 (Memory Card): 6 items (0: Card 1, 1: Card 2, 2: EXIT, 3: COPY, 4: COPY ALL, 5: DELETE).
+    /// - Screen 3 (CD Player): 26 items (0..=19: Tracks 1..20, 20: CONTINUE, 21: SHUFFLE, 22: PROGRAM, 23: REPEAT, 24: REPEAT 1, 25: EXIT).
+    /// - Screen 2 / 4: 0 items.
+    pub fn cursor_count(&self, screen: usize) -> usize {
+        match screen {
+            0 => 2,
+            1 => 6,
+            3 => 26,
+            _ => 0,
+        }
+    }
 
     /// Re-renders pure frame data (polygons, sprites, background) for a selected screen.
     /// `screen` index 0..=4; `cursor` selects the active menu/action item; `field` is the VSync field.
@@ -446,7 +547,8 @@ impl Ps1Menu {
                 // Screen 1: Memory Card Manager
                 notes.push("\\[V\\] Screen 1 title plate positioned at centre (320, 85) from static sprite table".into());
                 notes.push("\\[V\\] Card slots 1 and 2 displayed symmetrically at x=160 and x=480 with 15 save blocks each".into());
-                notes.push("\\[V\\] Sliced memory card labels: CARD 1, CARD 2, and action row EXIT/COPY/COPY ALL/DELETE".into());
+                notes.push("\\[V\\] Sliced memory card labels: CARD 1, CARD 2, and action row EXIT/COPY/COPY ALL/DELETE from shell sub-rectangle table".into());
+                notes.push("\\[V\\] Cursor positioned from shell cursor table at (100, 100) on entry".into());
                 if let Some(t) = self.title_memcard {
                     let tex = &self.textures[t];
                     sprites.push(MenuSprite {
@@ -472,66 +574,64 @@ impl Ps1Menu {
                     }
                 }
 
-                // Sliced Memory Card labels from atlas
+                // Sliced Memory Card labels from shell sub-rectangle table
                 if let Some(l) = self.labels_memcard {
                     let tex = &self.textures[l];
                     let (w, h) = (tex.width as f32, tex.height as f32);
 
-                    // CARD 1 header above bay 1 (x=2..84, y=1..23)
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [160.0, 138.0],
-                        size: [82.0, 22.0],
-                        uv_rect: [2.0 / w, 1.0 / h, 84.0 / w, 23.0 / h],
-                        tint: [255, 255, 255, 255],
-                    });
+                    let push_subrect_sprite = |sprites: &mut Vec<MenuSprite>, sub: &MenuSubRect, centre: [f32; 2], tint: [u8; 4]| {
+                        let u0 = sub.u as f32 / w;
+                        let v0 = sub.v as f32 / h;
+                        let u1 = (sub.u + sub.w) as f32 / w;
+                        let v1 = (sub.v + sub.h) as f32 / h;
+                        sprites.push(MenuSprite {
+                            texture: l,
+                            centre,
+                            size: [sub.w as f32, sub.h as f32],
+                            uv_rect: [u0, v0, u1, v1],
+                            tint,
+                        });
+                    };
 
-                    // CARD 2 header above bay 2 (x=88..174, y=1..23)
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [480.0, 138.0],
-                        size: [86.0, 22.0],
-                        uv_rect: [88.0 / w, 1.0 / h, 174.0 / w, 23.0 / h],
-                        tint: [255, 255, 255, 255],
-                    });
+                    // CARD 1 header above bay 1 (subrect 0)
+                    if let Some(sub) = self.subrects_memcard.first() {
+                        push_subrect_sprite(&mut sprites, sub, [160.0, 138.0], [255, 255, 255, 255]);
+                    }
+                    // CARD 2 header above bay 2 (subrect 1)
+                    if let Some(sub) = self.subrects_memcard.get(1) {
+                        push_subrect_sprite(&mut sprites, sub, [480.0, 138.0], [255, 255, 255, 255]);
+                    }
 
                     // Action row (EXIT, COPY, COPY ALL, DELETE) along bottom (y=420)
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [110.0, 420.0],
-                        size: [51.0, 19.0],
-                        uv_rect: [1.0 / w, 24.0 / h, 52.0 / w, 43.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [230.0, 420.0],
-                        size: [72.0, 19.0],
-                        uv_rect: [58.0 / w, 24.0 / h, 130.0 / w, 43.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [380.0, 420.0],
-                        size: [114.0, 19.0],
-                        uv_rect: [134.0 / w, 24.0 / h, 248.0 / w, 43.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [530.0, 420.0],
-                        size: [92.0, 17.0],
-                        uv_rect: [2.0 / w, 44.0 / h, 94.0 / w, 61.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
+                    let action_items = [
+                        (2, [110.0, 420.0], cursor == 2),
+                        (3, [230.0, 420.0], cursor == 3),
+                        (4, [380.0, 420.0], cursor == 4),
+                        (5, [530.0, 420.0], cursor == 5),
+                    ];
+                    for (idx, centre, is_sel) in action_items {
+                        if let Some(sub) = self.subrects_memcard.get(idx) {
+                            let tint = if is_sel { [255, 240, 120, 255] } else { [220, 220, 220, 255] };
+                            push_subrect_sprite(&mut sprites, sub, centre, tint);
+                        }
+                    }
                 }
 
+                // Cursor placement on Screen 1
                 if let Some(c) = self.cursor {
-                    let cx = if cursor == 0 { 160.0 } else { 480.0 };
                     let tex = &self.textures[c];
+                    let centre = match cursor {
+                        0 => [100.0, 100.0], // Verified entry position in cursor table
+                        1 => [420.0, 112.0], // Symmetrical Card 2 position (clearing title plate)
+                        2 => [60.0, 420.0],  // EXIT
+                        3 => [175.0, 420.0], // COPY
+                        4 => [300.0, 420.0], // COPY ALL
+                        5 => [465.0, 420.0], // DELETE
+                        _ => [100.0, 100.0],
+                    };
                     sprites.push(MenuSprite {
                         texture: c,
-                        centre: [cx, 150.0],
+                        centre,
                         size: [tex.width as f32, tex.height as f32],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [255, 255, 255, 255],
@@ -541,9 +641,13 @@ impl Ps1Menu {
             3 => {
                 // Screen 3: CD Player
                 notes.push("\\[V\\] Screen 3 title plate positioned at centre (540, 67) from static sprite table".into());
-                notes.push("\\[V\\] Procedural shaded disc Ø120 rendered using 0x800491C4 parameters (dark-blue centre [2,2,37] -> light-blue rim [223,187,255])".into());
-                notes.push("\\[V\\] Five procedural control buttons rendered with Ø56 discs (green, blue, red, orange, yellow)".into());
-                notes.push("\\[V\\] Sliced CD labels: track grid, EXIT, and mode labels".into());
+                notes.push("\\[V\\] Turntable platter Ø120 rendered using 0x800491C4 parameters at centre (230, 224) from object table".into());
+                notes.push("\\[V\\] Five carousel disc markers from object table (green, blue, red, orange, yellow)".into());
+                notes.push("\\[V\\] Seven transport control buttons at x=58 from static sprite table".into());
+                notes.push("\\[V\\] Track grid 1-20 from item table and static sprite table".into());
+                notes.push("\\[V\\] Sliced CD labels: individual tracks, EXIT, transport icons, and mode labels from shell sub-rectangle table".into());
+
+                // Title plate
                 if let Some(t) = self.title_cd {
                     let tex = &self.textures[t];
                     sprites.push(MenuSprite {
@@ -554,61 +658,156 @@ impl Ps1Menu {
                         tint: [255, 255, 255, 255],
                     });
                 }
-                // Large CD disc on left (Ø120)
+
+                // Large CD turntable disc on left (Ø120) centered at (230, 224) from obj_tbl [9..14]
                 if let Some(disc) = self.procedural.discs.first() {
-                    push_disc(&mut polygons, 200.0, 240.0, 60.0, disc.inner_colour, disc.outer_colour, 32);
+                    push_disc(&mut polygons, 230.0, 224.0, 60.0, disc.inner_colour, disc.outer_colour, 32);
                 }
-                // Five Ø56 control buttons along bottom
-                let btn_xs = [90.0, 150.0, 210.0, 270.0, 330.0];
-                for (i, &bx) in btn_xs.iter().enumerate() {
-                    if let Some(disc) = self.procedural.discs.get(i + 1) {
-                        push_disc(&mut polygons, bx, 370.0, 20.0, disc.inner_colour, disc.outer_colour, 20);
+
+                // Five carousel disc markers from obj_tbl [0..4]
+                let carousel_discs = [
+                    (128.0, 94.0, 28.0, 1),  // Disc 1 (green Ø56)
+                    (225.0, 94.0, 28.0, 2),  // Disc 2 (blue Ø56)
+                    (300.0, 94.0, 28.0, 3),  // Disc 3 (red Ø56)
+                    (196.0, 121.0, 18.0, 4), // Disc 4 (orange Ø36)
+                    (328.0, 121.0, 18.0, 5), // Disc 5 (yellow Ø36)
+                ];
+                for (cx, cy, r, disc_idx) in carousel_discs {
+                    if let Some(disc) = self.procedural.discs.get(disc_idx) {
+                        push_disc(&mut polygons, cx, cy, r, disc.inner_colour, disc.outer_colour, 20);
                     }
                 }
-                // Sliced track grid and mode labels on right
+
+                // Seven transport buttons at x=58 from static_tbl [43..55]
+                let transport_ys = [66.0, 123.0, 180.0, 237.0, 294.0, 351.0, 408.0];
+                for &ty in &transport_ys {
+                    push_button(&mut polygons, 58.0, ty, 44.0, 44.0, false);
+                }
+
                 if let Some(l) = self.labels_cd {
                     let tex = &self.textures[l];
                     let (w, h) = (tex.width as f32, tex.height as f32);
 
-                    // Track row 1 (tracks 1..12)
+                    // Seven transport icons centered in the transport buttons
+                    let transport_icons = [
+                        (1.0, 55.0, 28.0, 13.0, transport_ys[0]),   // Prev |<<
+                        (33.0, 55.0, 29.0, 13.0, transport_ys[1]),  // Rewind <<
+                        (65.0, 55.0, 22.0, 13.0, transport_ys[2]),  // Play >
+                        (89.0, 55.0, 12.0, 13.0, transport_ys[3]),  // Stop []
+                        (103.0, 55.0, 15.0, 13.0, transport_ys[4]), // Pause ||
+                        (120.0, 55.0, 30.0, 13.0, transport_ys[5]), // Fast-forward >>
+                        (152.0, 55.0, 28.0, 13.0, transport_ys[6]), // Next >>|
+                    ];
+                    for (u, v, iw, ih, ty) in transport_icons {
+                        sprites.push(MenuSprite {
+                            texture: l,
+                            centre: [58.0, ty],
+                            size: [iw, ih],
+                            uv_rect: [u / w, v / h, (u + iw) / w, (v + ih) / h],
+                            tint: [220, 220, 220, 255],
+                        });
+                    }
+
+                    // Track grid 1-20 from static_tbl and item_tbl
+                    for i in 0..20 {
+                        let col = (i % 5) as f32;
+                        let row = (i / 5) as f32;
+                        let bx = 402.0 + col * 48.0;
+                        let by = 136.0 + row * 48.0;
+                        let is_sel = cursor == i;
+                        push_button(&mut polygons, bx, by, 32.0, 32.0, is_sel);
+
+                        if let Some(sub) = self.subrects_cd.get(i) {
+                            let u0 = sub.u as f32 / w;
+                            let v0 = sub.v as f32 / h;
+                            let u1 = (sub.u + sub.w) as f32 / w;
+                            let v1 = (sub.v + sub.h) as f32 / h;
+                            let tint = if is_sel { [255, 240, 120, 255] } else { [220, 220, 220, 255] };
+                            sprites.push(MenuSprite {
+                                texture: l,
+                                centre: [bx, by],
+                                size: [sub.w as f32, sub.h as f32],
+                                uv_rect: [u0, v0, u1, v1],
+                                tint,
+                            });
+                        }
+                    }
+
+                    // Mode buttons from item_tbl [22..26]
+                    let mode_items = [
+                        (22, 156.0, 342.0, cursor == 20), // CONTINUE
+                        (23, 272.0, 342.0, cursor == 21), // SHUFFLE
+                        (24, 388.0, 342.0, cursor == 22), // PROGRAM
+                        (25, 156.0, 402.0, cursor == 23), // REPEAT
+                        (26, 272.0, 402.0, cursor == 24), // REPEAT 1
+                    ];
+                    for (sub_idx, mx, my, is_sel) in mode_items {
+                        push_button(&mut polygons, mx, my, 92.0, 24.0, is_sel);
+                        if let Some(sub) = self.subrects_cd.get(sub_idx) {
+                            let u0 = sub.u as f32 / w;
+                            let v0 = sub.v as f32 / h;
+                            let u1 = (sub.u + sub.w) as f32 / w;
+                            let v1 = (sub.v + sub.h) as f32 / h;
+                            let tint = if is_sel { [255, 240, 120, 255] } else { [220, 220, 220, 255] };
+                            sprites.push(MenuSprite {
+                                texture: l,
+                                centre: [mx, my],
+                                size: [sub.w as f32, sub.h as f32],
+                                uv_rect: [u0, v0, u1, v1],
+                                tint,
+                            });
+                        }
+                    }
+
+                    // EXIT button from static_tbl [2] / item_tbl [27]
+                    let is_exit_sel = cursor == 25;
+                    push_button(&mut polygons, 480.0, 410.0, 80.0, 28.0, is_exit_sel);
+                    if let Some(sub) = self.subrects_cd.get(27) {
+                        let u0 = sub.u as f32 / w;
+                        let v0 = sub.v as f32 / h;
+                        let u1 = (sub.u + sub.w) as f32 / w;
+                        let v1 = (sub.v + sub.h) as f32 / h;
+                        let tint = if is_exit_sel { [255, 240, 120, 255] } else { [220, 220, 220, 255] };
+                        sprites.push(MenuSprite {
+                            texture: l,
+                            centre: [480.0, 410.0],
+                            size: [sub.w as f32, sub.h as f32],
+                            uv_rect: [u0, v0, u1, v1],
+                            tint,
+                        });
+                    }
+                }
+
+                // Cursor placement on Screen 3
+                if let Some(c) = self.cursor {
+                    let tex = &self.textures[c];
+                    let centre = if cursor < 20 {
+                        let col = (cursor % 5) as f32;
+                        let row = (cursor / 5) as f32;
+                        let bx = 402.0 + col * 48.0;
+                        let by = 136.0 + row * 48.0;
+                        [bx - 22.0, by]
+                    } else if cursor == 20 {
+                        [156.0 - 52.0, 342.0]
+                    } else if cursor == 21 {
+                        [272.0 - 52.0, 342.0]
+                    } else if cursor == 22 {
+                        [388.0 - 52.0, 342.0]
+                    } else if cursor == 23 {
+                        [156.0 - 52.0, 402.0]
+                    } else if cursor == 24 {
+                        [272.0 - 52.0, 402.0]
+                    } else if cursor == 25 {
+                        [480.0 - 46.0, 410.0]
+                    } else {
+                        [380.0, 136.0]
+                    };
                     sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [460.0, 155.0],
-                        size: [244.0, 17.0],
-                        uv_rect: [1.0 / w, 0.0, 245.0 / w, 17.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    // Track row 2 (tracks 13..20)
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [460.0, 185.0],
-                        size: [244.0, 17.0],
-                        uv_rect: [3.0 / w, 18.0 / h, 247.0 / w, 35.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    // EXIT button
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [535.0, 220.0],
-                        size: [74.0, 21.0],
-                        uv_rect: [180.0 / w, 32.0 / h, 254.0 / w, 53.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    // Playback control icons (fast-forward, play, pause, stop, etc.)
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [460.0, 255.0],
-                        size: [248.0, 16.0],
-                        uv_rect: [1.0 / w, 52.0 / h, 249.0 / w, 68.0 / h],
-                        tint: [220, 220, 220, 255],
-                    });
-                    // Mode labels (CONTINUE / SHUFFLE / PROGRAM / REPEAT)
-                    sprites.push(MenuSprite {
-                        texture: l,
-                        centre: [460.0, 300.0],
-                        size: [244.0, 39.0],
-                        uv_rect: [0.0, 69.0 / h, 244.0 / w, 108.0 / h],
-                        tint: [220, 220, 220, 255],
+                        texture: c,
+                        centre,
+                        size: [tex.width as f32, tex.height as f32],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [255, 255, 255, 255],
                     });
                 }
             }

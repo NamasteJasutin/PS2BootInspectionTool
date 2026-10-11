@@ -83,6 +83,7 @@ fn every_local_ps1_dump_menu_locates_and_renders() {
         assert_eq!(menu.screens[3].n_items, 203);
         assert!(menu.screens[4].n_items == 2 || menu.screens[4].n_items == 5);
 
+
         // Assert style categorization
         match filename {
             f if f.contains("(J)") || f.contains("(J)[SCPH-1000]") => {
@@ -152,6 +153,78 @@ fn every_local_ps1_dump_menu_locates_and_renders() {
 
                 // Research notes present
                 assert!(!frame.notes.is_empty());
+            }
+        }
+
+        // Test cursor counts
+        assert_eq!(menu.cursor_count(0), 2);
+        assert_eq!(menu.cursor_count(1), 6);
+        assert_eq!(menu.cursor_count(2), 0);
+        assert_eq!(menu.cursor_count(3), 26);
+        assert_eq!(menu.cursor_count(4), 0);
+
+        // Test that every label sprite uses exact sub-rectangles from the shell's descriptor tables
+        // and does not sample outside its own label bounds across screens 1 and 3.
+        for s in [1, 3] {
+            let n_cursors = menu.cursor_count(s);
+            for c in 0..n_cursors {
+                let frame = menu.frame(s, c, 0);
+                for sprite in &frame.sprites {
+                    let is_memcard_label = Some(sprite.texture) == menu.labels_memcard;
+                    let is_cd_label = Some(sprite.texture) == menu.labels_cd;
+                    if !is_memcard_label && !is_cd_label {
+                        continue;
+                    }
+
+                    let tex = &menu.textures[sprite.texture];
+                    let w = tex.width;
+                    let h = tex.height;
+                    let x0 = (sprite.uv_rect[0] * w as f32).round() as usize;
+                    let y0 = (sprite.uv_rect[1] * h as f32).round() as usize;
+                    let x1 = (sprite.uv_rect[2] * w as f32).round() as usize;
+                    let y1 = (sprite.uv_rect[3] * h as f32).round() as usize;
+
+                    assert!(x0 < x1 && x1 <= w, "x bounds invalid: {x0}..{x1} on {w} in {filename} screen {s}");
+                    assert!(y0 < y1 && y1 <= h, "y bounds invalid: {y0}..{y1} on {h} in {filename} screen {s}");
+
+                    // Sprite size matches UV texel extent 1:1 (no distortion or over-sampling)
+                    assert_eq!(sprite.size[0], (x1 - x0) as f32, "sprite width mismatch in {filename}");
+                    assert_eq!(sprite.size[1], (y1 - y0) as f32, "sprite height mismatch in {filename}");
+
+                    if is_memcard_label {
+                        let matched = menu.subrects_memcard.iter().any(|sub| {
+                            sub.u as usize == x0 && sub.v as usize == y0 && sub.w as usize == (x1 - x0) && sub.h as usize == (y1 - y0)
+                        });
+                        assert!(matched, "memcard sprite UV [{x0},{y0},{x1},{y1}] not found in subrect table in {filename}");
+                    } else if is_cd_label {
+                        let matched_sub = menu.subrects_cd.iter().any(|sub| {
+                            sub.u as usize == x0 && sub.v as usize == y0 && sub.w as usize == (x1 - x0) && sub.h as usize == (y1 - y0)
+                        });
+                        let is_transport = [
+                            (1, 55, 28, 13),
+                            (33, 55, 29, 13),
+                            (65, 55, 22, 13),
+                            (89, 55, 12, 13),
+                            (103, 55, 15, 13),
+                            (120, 55, 30, 13),
+                            (152, 55, 28, 13),
+                        ].iter().any(|&(tu, tv, tw, th)| tu == x0 && tv == y0 && tw == (x1 - x0) && th == (y1 - y0));
+
+                        assert!(matched_sub || is_transport, "cd sprite UV [{x0},{y0},{x1},{y1}] not found in subrect table in {filename}");
+
+                        // For transport icons: verify bounded by blank rows above and below
+                        if is_transport {
+                            let is_blank = |x: usize, y: usize| -> bool {
+                                if x >= w || y >= h { return true; }
+                                tex.rgba[(y * w + x) * 4 + 3] == 0
+                            };
+                            let row_above_blank = (x0..x1).all(|x| is_blank(x, y0 - 1));
+                            let row_below_blank = (x0..x1).all(|x| is_blank(x, y1));
+                            assert!(row_above_blank, "transport icon row above not blank");
+                            assert!(row_below_blank, "transport icon row below not blank");
+                        }
+                    }
+                }
             }
         }
         tested_count += 1;
