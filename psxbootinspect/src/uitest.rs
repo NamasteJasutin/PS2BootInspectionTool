@@ -6,7 +6,7 @@
 //! `shot path.png` (a PNG of that moment; the final frame always goes to `<out.png>`),
 //! `save song.psxsong`, `wav song.wav` (the song as the engine renders it), `waitlib` (wait
 //! for the Studio's background library scan), `soundfonts dir` (the Soundfonts folder for this
-//! run, never saved), `waitextract` (wait for a running extraction).
+//! run, never saved), `waitextract` (wait for a running extraction), `tab name` (switch tabs).
 
 use crate::model::{Model, Tab};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -80,13 +80,17 @@ fn point(s: &str) -> Result<Pos2, String> {
 
 fn press(pos: Pos2, button: PointerButton, pressed: bool) -> Event { Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE } }
 
+fn tab_named(name: &str) -> Tab {
+    match name { "boot" => Tab::Boot, "save" => Tab::SaveData, "disc" => Tab::Disc, "bios" => Tab::Bios, "lab" => Tab::Lab, "sound" => Tab::Sound, "fonts" => Tab::Fonts, "soundfonts" => Tab::Soundfonts, _ => Tab::Music }
+}
+
 pub fn run(args: &[String], edition: crate::Edition) -> Result<(), String> {
     let mut out = None;
     let (mut tab, mut size, mut script) = (Tab::Music, Vec2::new(1400.0, 812.0), String::new());
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--tab" => { i += 1; tab = match args.get(i).map(String::as_str) { Some("boot") => Tab::Boot, Some("save") => Tab::SaveData, Some("disc") => Tab::Disc, Some("bios") => Tab::Bios, Some("lab") => Tab::Lab, Some("sound") => Tab::Sound, Some("fonts") => Tab::Fonts, Some("soundfonts") => Tab::Soundfonts, _ => Tab::Music } }
+            "--tab" => { i += 1; tab = tab_named(args.get(i).map(String::as_str).unwrap_or("")) }
             "--size" => { i += 1; let (w, h) = args.get(i).and_then(|s| s.split_once('x')).ok_or("--size WxH")?; size = Vec2::new(w.parse().map_err(|_| "bad width")?, h.parse().map_err(|_| "bad height")?) }
             "--script" => { i += 1; script = args.get(i).cloned().unwrap_or_default() }
             other => out = Some(other.to_string()),
@@ -150,6 +154,7 @@ pub fn run(args: &[String], edition: crate::Edition) -> Result<(), String> {
                 if h.model.soundfonts.job.is_some() { return Err("the extraction did not finish".into()) }
                 h.frame(Vec::new());
             }
+            "tab" => { h.model.tab = tab_named(rest); h.frame(Vec::new()) }
             "frames" => for _ in 0..rest.parse::<usize>().map_err(|_| "frames n")? { h.frame(Vec::new()) },
             "shot" => { h.frame(Vec::new()); h.snapshot(rest)? }
             "save" => { let song = h.model.music.song.as_ref().ok_or("no song")?; std::fs::write(rest, song.to_text().map_err(|e| e.to_string())?).map_err(|e| e.to_string())? }

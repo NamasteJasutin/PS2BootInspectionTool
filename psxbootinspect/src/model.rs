@@ -139,11 +139,13 @@ pub struct SoundfontShelf {
     pub log: Vec<String>,
     /// A set the user asked to delete, waiting for the second click.
     pub confirm_delete: Option<PathBuf>,
+    /// The bank chosen for SoundFont 2 export.
+    pub export: Option<ps2kit::library::BankKey>,
 }
 
 impl SoundfontShelf {
     pub fn new(settings: &crate::settings::Settings) -> Self {
-        Self { dir: settings.soundfonts_dir(), custom: settings.soundfonts_dir.is_some(), sets: Vec::new(), listed: false, discs: Vec::new(), job: None, log: Vec::new(), confirm_delete: None }
+        Self { dir: settings.soundfonts_dir(), custom: settings.soundfonts_dir.is_some(), sets: Vec::new(), listed: false, discs: Vec::new(), job: None, log: Vec::new(), confirm_delete: None, export: None }
     }
 
     /// Reads the sets in the folder: each sub-folder with an `index.tsv`, counted by kind.

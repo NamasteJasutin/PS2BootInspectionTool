@@ -1,5 +1,6 @@
 //! The egui application: sidebar, the picture with camera input, visualiser, hand-off card.
 
+use crate::Dialog;
 use crate::audio::{VisualizerMode, BAND_COUNT};
 use crate::model::{outcome_name, video_mode_name, CameraMode, Console, DiscOverride, HistorySource, Model, Scene, Tab, Workspace, LANGUAGES, REGIONS};
 use crate::renderer::{Renderer, TowerLayout, TowerTint};
@@ -324,7 +325,7 @@ fn file_row(ui: &mut egui::Ui, label: &str, status: &str, directories: bool, fil
                 let mut d = rfd::FileDialog::new();
                 if let Some(p) = Model::pcsx2_dir() { d = d.set_directory(p) }
                 if !filter.is_empty() { d = d.add_filter("files", filter) }
-                picked = if directories { d.pick_folder().or_else(|| rfd::FileDialog::new().pick_file()) } else { d.pick_file() };
+                picked = if directories { d.pick_folder_ui().or_else(|| rfd::FileDialog::new().pick_file_ui()) } else { d.pick_file_ui() };
             }
         });
     });
@@ -492,7 +493,7 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
             ui.horizontal(|ui| {
                 if ui.button("View from the side").clicked() { m.free_camera_enabled = true; m.view_path_from_side() }
                 if ui.button("Export CSV…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-opening-camera-path.csv").save_file() { let _ = std::fs::write(p, m.camera_path_csv()); }
+                    if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-opening-camera-path.csv").save_file_ui() { let _ = std::fs::write(p, m.camera_path_csv()); }
                 }
             });
         }
@@ -627,16 +628,16 @@ fn save_data_tab(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Export", |ui| {
         ui.horizontal(|ui| {
             if ui.button("History CSV…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-play-history.csv").save_file() { let _ = std::fs::write(p, m.history_csv()); }
+                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-play-history.csv").save_file_ui() { let _ = std::fs::write(p, m.history_csv()); }
             }
             if ui.button("Hand-off facts…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-handoff.txt").save_file() {
+                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-handoff.txt").save_file_ui() {
                     let text: String = m.handoff_steps().iter().map(|s| format!("{:<44} {s}\n", s.who())).collect();
                     let _ = std::fs::write(p, text);
                 }
             }
             if ui.button("Graphs SVG…").on_hover_text("Launches per title and the Pareto curve, as a vector file").clicked() {
-                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-play-history.svg").save_file() { let _ = std::fs::write(p, history_svg(&m.history.records)); }
+                if let Some(p) = rfd::FileDialog::new().set_file_name("ps2-play-history.svg").save_file_ui() { let _ = std::fs::write(p, history_svg(&m.history.records)); }
             }
         });
     });
@@ -891,6 +892,18 @@ mod tests {
         }
     }
 
+    /// The headless harness must never reach the user's screen: every native dialog goes through
+    /// `crate::Dialog` (a no-op under `--ui`) and the file manager through `settings::reveal`.
+    #[test]
+    fn dialogs_only_through_the_headless_guard() {
+        for (name, src) in [("ui.rs", include_str!("ui.rs")), ("model.rs", include_str!("model.rs")), ("offline.rs", include_str!("offline.rs")), ("uitest.rs", include_str!("uitest.rs")), ("director.rs", include_str!("director.rs"))] {
+            for bare in [".pick_file()", ".save_file()", ".pick_folder()", ".pick_files()", "rfd::MessageDialog", "Command::new("] {
+                let hits = src.lines().filter(|l| l.contains(bare) && !l.contains("for bare in")).count();
+                assert_eq!(hits, 0, "{name} calls {bare} directly");
+            }
+        }
+    }
+
     #[test]
     fn one_image_per_disc() {
         use std::path::PathBuf;
@@ -990,7 +1003,7 @@ fn lab_tab(ui: &mut egui::Ui, m: &mut Model) {
     }
     section(ui, "PS1 memory card", |ui| {
         if ui.button("Open a PS1 card…").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("PS1 card", &["mcr", "mcd", "mc", "mem", "gme", "srm", "bin"]).pick_file() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("PS1 card", &["mcr", "mcd", "mc", "mem", "gme", "srm", "bin"]).pick_file_ui() {
                 m.ps1_card = std::fs::read(&p).ok().and_then(|d| ps2kit::ps1card::Ps1Card::parse(&d).ok()).map(|c| (p, c));
             }
         }
@@ -1006,13 +1019,13 @@ fn lab_tab(ui: &mut egui::Ui, m: &mut Model) {
         let firmware = m.ps3_firmware.clone();
         ui.horizontal(|ui| {
             if ui.button("Open a disc folder…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().pick_folder() { m.ps3_lines = ps3_disc_lines(&p, firmware.as_deref()) }
+                if let Some(p) = rfd::FileDialog::new().pick_folder_ui() { m.ps3_lines = ps3_disc_lines(&p, firmware.as_deref()) }
             }
             if ui.button("Disc image…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("disc image", &["iso", "ISO"]).pick_file() { m.ps3_lines = ps3_disc_lines(&p, firmware.as_deref()) }
+                if let Some(p) = rfd::FileDialog::new().add_filter("disc image", &["iso", "ISO"]).pick_file_ui() { m.ps3_lines = ps3_disc_lines(&p, firmware.as_deref()) }
             }
             if ui.button("Save folder…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder_ui() {
                     m.ps3_lines = match ps2kit::ps3::Ps3Save::open(&p) {
                         Ok(s) => {
                             let mut v: Vec<(String, String)> = s.sfo.entries.iter().map(|e| (e.key.clone(), format!("{:?}", e.value))).collect();
@@ -1039,10 +1052,10 @@ fn lab_tab(ui: &mut egui::Ui, m: &mut Model) {
             // Snapshots read the update's tables, so they are built on a click, never per frame.
             let snapshot = |m: &Model| m.pup_path.as_ref().and_then(|p| ps2kit::pup::Pup::open(p).ok()).and_then(|pup| ps2kit::pup::PupSnapshot::from_pup(&pup).ok());
             if ui.add_enabled(m.pup_path.is_some(), egui::Button::new("Save snapshot…")).clicked() {
-                if let (Some(s), Some(p)) = (snapshot(m), rfd::FileDialog::new().set_file_name("PS3UPDAT.pupsnap").save_file()) { let _ = std::fs::write(p, s.to_text()); }
+                if let (Some(s), Some(p)) = (snapshot(m), rfd::FileDialog::new().set_file_name("PS3UPDAT.pupsnap").save_file_ui()) { let _ = std::fs::write(p, s.to_text()); }
             }
             if ui.add_enabled(m.pup_path.is_some(), egui::Button::new("Compare with…")).clicked() {
-                if let (Some(a), Some(p)) = (snapshot(m), rfd::FileDialog::new().add_filter("PS3 update or snapshot", &["pup", "PUP", "pupsnap"]).pick_file()) {
+                if let (Some(a), Some(p)) = (snapshot(m), rfd::FileDialog::new().add_filter("PS3 update or snapshot", &["pup", "PUP", "pupsnap"]).pick_file_ui()) {
                     let other = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pup")) {
                         ps2kit::pup::Pup::open(&p).ok().and_then(|x| ps2kit::pup::PupSnapshot::from_pup(&x).ok())
                     } else { std::fs::read_to_string(&p).ok().and_then(|t| ps2kit::pup::PupSnapshot::parse(&t).ok()) };
@@ -1085,7 +1098,7 @@ fn director_controls(ui: &mut egui::Ui, m: &mut Model) {
     });
     ui.horizontal(|ui| {
         if ui.small_button("Import JSON…").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("camera script", &["json"]).pick_file() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("camera script", &["json"]).pick_file_ui() {
                 match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| crate::director::CameraScript::from_json(&t)) {
                     Ok(s) => { m.director = Some(s); m.free_camera_enabled = false; m.options.solid_towers = true }
                     Err(e) => eprintln!("camera script {}: {e}", p.display()),
@@ -1093,7 +1106,7 @@ fn director_controls(ui: &mut egui::Ui, m: &mut Model) {
             }
         }
         if ui.add_enabled(m.director.is_some(), egui::Button::new("Export JSON…").small()).clicked() {
-            if let (Some(s), Some(p)) = (&m.director, rfd::FileDialog::new().set_file_name("camera-script.json").save_file()) { let _ = std::fs::write(p, s.to_json()); }
+            if let (Some(s), Some(p)) = (&m.director, rfd::FileDialog::new().set_file_name("camera-script.json").save_file_ui()) { let _ = std::fs::write(p, s.to_json()); }
         }
     });
 }
@@ -1244,7 +1257,7 @@ fn sound_tab(ui: &mut egui::Ui, m: &mut Model) {
             painter.line_segment([Pos2::new(x, rect.center().y - peak * 28.0), Pos2::new(x, rect.center().y + peak * 28.0)], Stroke::new(1.0, Color32::from_rgb(115, 153, 255)));
         }
         if ui.button("Export WAV…").clicked() {
-            if let Some(p) = rfd::FileDialog::new().set_file_name("bios-instrument.wav").save_file() { let _ = std::fs::write(p, wav_bytes(&a.last)); }
+            if let Some(p) = rfd::FileDialog::new().set_file_name("bios-instrument.wav").save_file_ui() { let _ = std::fs::write(p, wav_bytes(&a.last)); }
         }
     });
 }
@@ -1313,7 +1326,7 @@ fn fonts_tab(ui: &mut egui::Ui, m: &mut Model) {
     }
     if ui.button("Export this page as PNG…").clicked() {
         let (w, h, rgba) = font.atlas(start..end);
-        if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}-page{}.png", font.name(), a.page)).save_file() { let _ = image::save_buffer(p, &rgba, w as u32, h as u32, image::ColorType::Rgba8); }
+        if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}-page{}.png", font.name(), a.page)).save_file_ui() { let _ = image::save_buffer(p, &rgba, w as u32, h as u32, image::ColorType::Rgba8); }
     }
 }
 
@@ -1327,7 +1340,7 @@ fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
         ui.small(if sf.custom { "Chosen by you." } else { "The default location." });
         let mut chosen = None;
         ui.horizontal(|ui| {
-            if ui.button("Change…").clicked() { chosen = rfd::FileDialog::new().set_directory(&sf.dir).pick_folder().map(Some) }
+            if ui.button("Change…").clicked() { chosen = rfd::FileDialog::new().set_directory(&sf.dir).pick_folder_ui().map(Some) }
             if sf.custom && ui.button("Use the default").clicked() { chosen = Some(None) }
             if ui.button("Show").clicked() {
                 let _ = std::fs::create_dir_all(&sf.dir);
@@ -1349,7 +1362,7 @@ fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
         let mut start: Vec<std::path::PathBuf> = Vec::new();
         ui.add_enabled_ui(!busy, |ui| {
             if ui.button("Extract from a disc image…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("disc images", &["cue", "iso", "bin", "img"]).pick_file() { start.push(p) }
+                if let Some(p) = rfd::FileDialog::new().add_filter("disc images", &["cue", "iso", "bin", "img"]).pick_file_ui() { start.push(p) }
             }
             let discs = &m.soundfonts.discs;
             if !discs.is_empty() {
@@ -1373,6 +1386,7 @@ fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
         }
         ui.small("Each disc becomes one set; extracting a disc again replaces its set. The banks are checked by parsing them, so look-alike bytes are left out.");
     });
+    soundfonts_export(ui, m);
     section(ui, "Sets", |ui| {
         let sf = &mut m.soundfonts;
         if sf.sets.is_empty() { ui.small("No sets yet: extract a disc above."); return }
@@ -1403,6 +1417,38 @@ fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
             sf.listed = false;
             m.music.forget_library();
         }
+    });
+}
+
+/// Export any bank in the library — BIOS or game — as a SoundFont 2 file for other music
+/// software (`ps2kit::sf2`): programs in bank 0, one-shot effects in bank 1, its derived drum kit
+/// as the percussion preset.
+fn soundfonts_export(ui: &mut egui::Ui, m: &mut Model) {
+    section(ui, "Export as SoundFont 2", |ui| {
+        let Some(lib) = music_library(m) else { ui.horizontal(|ui| { ui.spinner(); ui.small("Reading your BIOS files and Soundfonts…") }); return };
+        let name = |k: &ps2kit::library::BankKey| k.label.clone();
+        let current = m.soundfonts.export.clone().filter(|k| lib.bank(k).is_some()).or_else(|| lib.banks.first().map(|b| b.key.clone()));
+        let Some(current) = current else { ui.small("No banks yet."); return };
+        egui::ComboBox::from_id_salt("sf2-bank").width(ui.available_width() - 8.0).selected_text(name(&current)).show_ui(ui, |ui| {
+            for b in &lib.banks { if ui.selectable_label(b.key == current, name(&b.key)).clicked() { m.soundfonts.export = Some(b.key.clone()) } }
+        });
+        let Some(bank) = lib.bank(&current) else { return };
+        let (programs, effects, samples) = (bank.bench.programs.len(), bank.bench.effects.len(), bank.bench.samples.len());
+        let kit = bank.kit.as_ref().filter(|k| !k.pieces.is_empty());
+        ui.small(format!("{programs} programs · {effects} effects · {samples} samples{}", kit.map(|k| format!(" · drum kit of {} pieces", k.pieces.len())).unwrap_or_default()));
+        if ui.button("Export .sf2…").clicked() {
+            let file: String = current.label.chars().map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' }).collect();
+            if let Some(path) = rfd::FileDialog::new().add_filter("SoundFont 2", &["sf2"]).set_file_name(format!("{}.sf2", file.trim())).save_file_ui() {
+                let from: Vec<String> = bank.sources.iter().take(3).map(|p| p.file.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
+                let comment = format!("Exported locally by the PSX Boot Inspection Tool from your own file{}: {}.", if from.len() == 1 { "" } else { "s" }, from.join(", "));
+                let line = match ps2kit::sf2::sf2_from_bench(&bank.bench, kit, &current.label, &comment).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
+                    Ok(()) => format!("wrote {}", path.display()),
+                    Err(e) => format!("SoundFont export failed: {e}"),
+                };
+                m.soundfonts.log.push(line);
+            }
+        }
+        ui.small("For samplers and DAWs. The envelopes are converted from the console's ADSR registers (an approximation); the drum kit's pieces are written as rendered samples.");
     });
 }
 
@@ -1604,7 +1650,7 @@ fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
                 set_song(m, Ok(s));
             }
             if ui.button("Open…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("song", &["psxsong"]).pick_file() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("song", &["psxsong"]).pick_file_ui() {
                     set_song(m, std::fs::read_to_string(&p).map_err(ps2kit::Error::from).and_then(|t| Song::parse(&t)));
                 }
             }
@@ -1612,20 +1658,20 @@ fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
             if ui.add_enabled(has, egui::Button::new("Save…")).clicked() {
                 if let Some(s) = &m.music.song {
                     match s.to_text() {
-                        Ok(t) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.psxsong", s.name)).save_file() { let _ = std::fs::write(p, t); },
+                        Ok(t) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.psxsong", s.name)).save_file_ui() { let _ = std::fs::write(p, t); },
                         Err(e) => m.music.status = e.to_string(),
                     }
                 }
             }
             if ui.add_enabled(has, egui::Button::new("Export WAV…")).clicked() {
                 if let Some(s) = &m.music.song {
-                    if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.wav", s.name)).save_file() { let _ = std::fs::write(p, wav_bytes(&s.render(lib.as_ref()))); }
+                    if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.wav", s.name)).save_file_ui() { let _ = std::fs::write(p, wav_bytes(&s.render(lib.as_ref()))); }
                 }
             }
             if ui.add_enabled(has, egui::Button::new("Export SSsq…")).on_hover_text("The PS2 BIOS's own sequence format (single-bank songs on PS2 instruments)").clicked() {
                 if let Some(s) = &m.music.song {
                     match s.to_sssq() {
-                        Ok(bytes) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.sq", s.name)).save_file() { let _ = std::fs::write(p, bytes); },
+                        Ok(bytes) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.sq", s.name)).save_file_ui() { let _ = std::fs::write(p, bytes); },
                         Err(e) => m.music.status = e.to_string(),
                     }
                 }

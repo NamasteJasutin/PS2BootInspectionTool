@@ -57,6 +57,7 @@ impl Settings {
 
 /// Opens a folder in the system's file manager (Finder, Explorer, the desktop's own).
 pub fn reveal(dir: &Path) -> Result<(), String> {
+    if crate::headless() { return Err(format!("would show {} (headless)", dir.display())) }
     let program = if cfg!(target_os = "macos") { "open" } else if cfg!(windows) { "explorer" } else { "xdg-open" };
     std::process::Command::new(program).arg(dir).spawn().map(|_| ()).map_err(|e| format!("{program}: {e}"))
 }

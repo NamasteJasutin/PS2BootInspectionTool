@@ -15,7 +15,28 @@ mod ui;
 mod uitest;
 
 use eframe::egui;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Set by the headless UI harness (`--ui`): native file dialogs and the file manager never open
+/// then, whatever a script clicks — the harness must never reach the user's screen.
+pub(crate) static HEADLESS: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn headless() -> bool { HEADLESS.load(Ordering::Relaxed) }
+
+/// The only way the app opens a native file dialog: a no-op returning `None` under the harness.
+pub(crate) trait Dialog {
+    fn pick_file_ui(self) -> Option<PathBuf>;
+    fn save_file_ui(self) -> Option<PathBuf>;
+    fn pick_folder_ui(self) -> Option<PathBuf>;
+}
+
+impl Dialog for rfd::FileDialog {
+    fn pick_file_ui(self) -> Option<PathBuf> { if headless() { eprintln!("ui: file dialog suppressed (headless)"); None } else { self.pick_file() } }
+    fn save_file_ui(self) -> Option<PathBuf> { if headless() { eprintln!("ui: save dialog suppressed (headless)"); None } else { self.save_file() } }
+    fn pick_folder_ui(self) -> Option<PathBuf> { if headless() { eprintln!("ui: folder dialog suppressed (headless)"); None } else { self.pick_folder() } }
+}
 
 /// Which launcher started the app.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -34,6 +55,7 @@ impl Edition {
 pub fn main(edition: Edition) -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--ui") {
+        HEADLESS.store(true, Ordering::Relaxed);
         if let Err(e) = uitest::run(&args[2..], edition) { eprintln!("error: {e}"); std::process::exit(1) }
         return Ok(());
     }
