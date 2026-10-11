@@ -25,10 +25,13 @@
 //! start ms, pitch, pitch drop, drop ms, decay ms, attack ms, low/high cutoff (`-`
 //! for bypass), gain, comma-separated retrigger offsets (`-` for none), then noise
 //! bank/source/start/pitch/mix (`- - 0 0 0` for none). Kits can add quoted `omission`
-//! records. Songs contain references and processing parameters, never samples,
-//! BIOS bytes or paths. Sampler parameters are our processing choices, not BIOS facts.
+//! records. Version 3 adds a `binding` record (quoted fingerprint, label) to every
+//! channel, and a pitched `sample:<index>` instrument for loose VAGs. Legacy files
+//! migrate to the default binding. Songs contain references and processing parameters,
+//! never samples, BIOS bytes or paths. Sampler parameters are editor choices, not BIOS facts.
 
 use crate::bench::SoundBench;
+use crate::library::{BankKey, BankResolver};
 use crate::ps1::{NoteEvent, Ps1Shell};
 use crate::ps1intro::SceIntro;
 use crate::rom::{unpack, RomDir};
@@ -299,7 +302,7 @@ fn sample_voice(
         return out;
     }
     let norm = pcm.iter().fold(0.0f32, |a, b| a.max(b.abs())).max(1e-9);
-    let mut position = f64::from(start_ms) * 44.1;
+    let mut position = f64::from(start_ms) * (f64::from(bench.sample_rate()) / 1000.0);
     let mut low_state = 0.0;
     let mut high_state = 0.0;
     let coefficient = |hz: f32| 1.0 - (-std::f32::consts::TAU * hz / SAMPLE_RATE as f32).exp();
@@ -335,7 +338,7 @@ fn sample_voice(
             0.0
         };
         position +=
-            44100.0 / SAMPLE_RATE as f64 * 2.0f64.powf(f64::from(pitch + root + drop) / 12.0);
+            f64::from(bench.sample_rate()) / SAMPLE_RATE as f64 * 2.0f64.powf(f64::from(pitch + root + drop) / 12.0);
     }
     out
 }
@@ -528,7 +531,7 @@ impl Kit {
                     .0
                     * block;
                 let power = spectrum(&pcm[start..], 32768);
-                let hz = 44100.0 / ((power.len() - 1) * 2) as f32;
+                let hz = bench.sample_rate() as f32 / ((power.len() - 1) * 2) as f32;
                 let total = power.iter().skip(1).sum::<f32>().max(1e-20);
                 let brightness = power
                     .iter()
@@ -552,7 +555,7 @@ impl Kit {
                     peak: spectral_peak(&power, hz, 30.0, 8000.0),
                     brightness,
                     flatness,
-                    start_ms: start as f32 / 44.1,
+                    start_ms: start as f32 / (bench.sample_rate() as f32 / 1000.0),
                 })
             })
             .collect();
@@ -800,10 +803,12 @@ impl Kit {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Instrument {
-    /// Legacy MIDI program in the song's bank.
+    /// Native MIDI program in the instrument reference's bank.
     Program(u8),
-    /// One-shot effect ID in the song's bank, at its stored pitch.
+    /// One-shot effect ID in the instrument reference's bank, at its stored pitch.
     Effect(usize),
+    /// One decoded sample, pitched around MIDI key 60 with its declared source rate.
+    Sample(usize),
     /// One processed source, triggered by every key.
     Drum(DrumVoice),
     /// Named GM-like drum lanes, selected by each note's key.
@@ -814,7 +819,7 @@ impl Instrument {
     fn validate(&self) -> Result<()> {
         match self {
             Self::Program(p) if *p <= 127 => Ok(()),
-            Self::Effect(i) if *i < MAX_ITEMS => Ok(()),
+            Self::Effect(i) | Self::Sample(i) if *i < MAX_ITEMS => Ok(()),
             Self::Drum(v) => v.validate(),
             Self::Kit(k) => {
                 if k.pieces.len() > 128 || k.omissions.len() > 128 {
@@ -833,6 +838,31 @@ impl Instrument {
             _ => Err(bad("instrument reference out of range")),
         }
     }
+}
+
+/// A portable instrument binding: local content fingerprint plus a human bank label.
+/// Legacy/default bindings resolve using `Song::bank`; no BIOS bytes or file paths are saved.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct InstrumentRef {
+    /// Bank containing the program, effect or sample recipe.
+    pub bank: BankKey,
+    /// Native instrument or caller-created processing recipe within that bank.
+    pub instrument: Instrument,
+}
+
+impl InstrumentRef {
+    /// Binds an instrument to a bank fingerprint computed from the caller's files.
+    pub fn new(bank: BankKey, instrument: Instrument) -> Self { Self { bank, instrument } }
+
+    fn validate(&self) -> Result<()> {
+        self.bank.validate()?;
+        self.instrument.validate()
+    }
+}
+
+impl From<Instrument> for InstrumentRef {
+    fn from(instrument: Instrument) -> Self { Self::new(BankKey::default(), instrument) }
 }
 
 /// One note, measured in pattern ticks; note-off starts the bank tone's release.
@@ -888,7 +918,7 @@ pub struct Channel {
     /// Editor-visible name.
     pub name: String,
     /// Program, one-shot effect, processed sample, or a key-mapped drum kit.
-    pub instrument: Instrument,
+    pub instrument: InstrumentRef,
     /// Channel volume, 0..=127.
     pub volume: u8,
     /// Pan, 0..=127 (64 = centre), combined with each tone's pan.
@@ -904,7 +934,7 @@ impl Channel {
     pub fn new(name: impl Into<String>, program: u8) -> Self {
         Self {
             name: name.into(),
-            instrument: Instrument::Program(program),
+            instrument: Instrument::Program(program).into(),
             volume: 127,
             pan: 64,
             patterns: Vec::new(),
@@ -913,9 +943,9 @@ impl Channel {
     }
 
     /// Creates a track using an effect, drum recipe or key-mapped kit.
-    pub fn with_instrument(name: impl Into<String>, instrument: Instrument) -> Self {
+    pub fn with_instrument(name: impl Into<String>, instrument: impl Into<InstrumentRef>) -> Self {
         let mut c = Self::new(name, 0);
-        c.instrument = instrument;
+        c.instrument = instrument.into();
         c
     }
 }
@@ -966,7 +996,7 @@ pub struct Song {
     pub ticks_per_beat: u16,
     /// Meter numerator, 1..=32 beats per bar.
     pub beats_per_bar: u8,
-    /// Instrument bank kind; an incompatible bench produces silence.
+    /// Default binding and clock for legacy files; each channel carries its own bank key.
     pub bank: BankRef,
     /// Instrument tracks, independent of the SSsq writer's 16-channel limit.
     pub channels: Vec<Channel>,
@@ -1051,7 +1081,7 @@ impl Song {
     }
 
     /// Validates references, MIDI ranges, arithmetic and finite rendering budgets.
-    /// Version 1 bounds songs to 120 s, 128 channels and 8192 stored/placed notes or bars.
+    /// Bounds songs to 120 s (600 s for marked loops), 128 channels and 8192 items.
     pub fn validate(&self) -> Result<()> {
         if self.bpm == 0
             || self.bpm > 960
@@ -1141,16 +1171,17 @@ impl Song {
             .sample_tick(end)?
             .checked_add(self.nominal_frames(self.tail_ticks))
             .ok_or_else(|| bad("duration overflow"))?;
-        if frames > (MAX_SECONDS * SAMPLE_RATE as f64) as usize {
-            return Err(bad("render exceeds 120 seconds"));
+        let max_seconds = if self.loop_bars.is_some() { 600.0 } else { MAX_SECONDS };
+        if frames > (max_seconds * SAMPLE_RATE as f64) as usize {
+            return Err(bad("render exceeds duration budget (120 s; 600 s for marked loops)"));
         }
         let text_bytes = self
             .name
             .len()
-            .saturating_add(self.channels.iter().map(|c| c.name.len()).sum::<usize>())
+            .saturating_add(self.channels.iter().map(|c| c.name.len() + c.instrument.bank.label.len() + c.instrument.bank.fingerprint.len()).sum::<usize>())
             .saturating_add(self.import_notes.iter().map(String::len).sum::<usize>());
         let text_bytes = self.channels.iter().fold(text_bytes, |sum, c| {
-            if let Instrument::Kit(k) = &c.instrument {
+            if let Instrument::Kit(k) = &c.instrument.instrument {
                 k.pieces
                     .iter()
                     .fold(sum, |n, p| {
@@ -1173,7 +1204,7 @@ impl Song {
             .channels
             .iter()
             .map(|c| sound::Channel {
-                program: match c.instrument {
+                program: match c.instrument.instrument {
                     Instrument::Program(p) => i32::from(p),
                     _ => 255,
                 },
@@ -1184,7 +1215,7 @@ impl Song {
             .collect();
         let mut events = Vec::new();
         for (ci, c) in self.channels.iter().enumerate() {
-            if !matches!(c.instrument, Instrument::Program(_)) {
+            if !matches!(c.instrument.instrument, Instrument::Program(_)) {
                 continue;
             }
             for (bar, cell) in c.arrangement.iter().enumerate() {
@@ -1248,28 +1279,71 @@ impl Song {
     /// PS2 on/off times use the driver's 20.12/60 Hz clock (sound.md §2.2); PS1 uses
     /// the grid's exact sample clock. Invalid songs return empty; absent programs are silent.
     /// Peaks above unity scale the whole mix uniformly, preserving stereo balance.
-    pub fn render(&self, bench: &SoundBench) -> Vec<f32> {
+    pub fn render(&self, bench: &(impl BankResolver + ?Sized)) -> Vec<f32> {
         self.render_checked(bench).unwrap_or_default()
     }
 
     /// Renders like [`Self::render`], reporting invalid models with [`Error::Corrupt`].
-    pub fn render_checked(&self, bench: &SoundBench) -> Result<Vec<f32>> {
+    pub fn render_checked(&self, bench: &(impl BankResolver + ?Sized)) -> Result<Vec<f32>> {
         self.validate()?;
         let end = self.end();
         let (seq, channels) = self.sequence(end + self.tail_ticks)?;
         let frames = self.sample_tick(end)? + self.nominal_frames(self.tail_ticks);
-        let mut mix = bench.render_song(&seq, &channels, frames, self.bank == BankRef::Ps1);
-        self.mix_one_shots(bench, &mut mix)?;
+        let mut mix = self.mix_banks(bench, &seq, &channels, frames)?;
         limit(&mut mix);
         Ok(mix)
     }
 
-    fn mix_one_shots(&self, bench: &SoundBench, mix: &mut [f32]) -> Result<()> {
-        if self.bank != bench.bank {
-            return Ok(());
-        }
+    /// Unresolved dependencies, preserving the song's human labels for the editor.
+    pub fn missing_banks(&self, resolver: &(impl BankResolver + ?Sized)) -> Vec<BankKey> {
+        let mut missing = Vec::new();
         for c in &self.channels {
-            if matches!(c.instrument, Instrument::Program(_)) {
+            if resolver.resolve(&c.instrument.bank, self.bank).is_none()
+                && !missing.contains(&c.instrument.bank) {
+                let mut key = c.instrument.bank.clone();
+                if key.is_default() { key.label = BankKey::legacy_label(self.bank).into(); }
+                missing.push(key);
+            }
+        }
+        missing
+    }
+
+    fn mix_banks(&self, resolver: &(impl BankResolver + ?Sized), seq: &SoundSequence,
+        channels: &[sound::Channel], frames: usize) -> Result<Vec<f32>> {
+        let mut mix = vec![0.0; frames * 2];
+        let mut benches: Vec<&SoundBench> = Vec::new();
+        for c in &self.channels {
+            if let Some(resolved) = resolver.resolve(&c.instrument.bank, self.bank) {
+                if !benches.iter().any(|b| std::ptr::eq(*b, resolved.bench)) { benches.push(resolved.bench); }
+            }
+        }
+        for bench in benches {
+            let belongs = |i: usize| self.channels.get(i).and_then(|c| resolver.resolve(&c.instrument.bank, self.bank))
+                .is_some_and(|b| std::ptr::eq(b.bench, bench));
+            let mut part = seq.clone();
+            part.events.retain(|e| e.kind == EventKind::End || belongs(e.channel));
+            let ps1 = bench.bank == BankRef::Ps1;
+            if ps1 {
+                for e in &mut part.events { e.update = self.sample_tick(e.tick as u32)? as i64; }
+            } else if self.bank == BankRef::Ps1 {
+                sound::schedule_events(&mut part.events, part.resolution, part.bpm)?;
+            }
+            let selected: Vec<_> = channels.iter().enumerate().map(|(i, c)| {
+                if belongs(i) { *c } else { sound::Channel { program: 255, volume: 0, ..*c } }
+            }).collect();
+            // One native renderer call per bank keeps single-bank accumulation bit-identical.
+            let pcm = bench.render_song(&part, &selected, frames, ps1);
+            for (a, b) in mix.iter_mut().zip(pcm) { *a += b; }
+        }
+        self.mix_one_shots(resolver, &mut mix)?;
+        Ok(mix)
+    }
+
+    fn mix_one_shots(&self, resolver: &(impl BankResolver + ?Sized), mix: &mut [f32]) -> Result<()> {
+        for c in &self.channels {
+            let Some(resolved) = resolver.resolve(&c.instrument.bank, self.bank) else { continue };
+            let bench = resolved.bench;
+            if matches!(c.instrument.instrument, Instrument::Program(_)) {
                 continue;
             }
             let mut cache = std::collections::BTreeMap::<u8, Vec<f32>>::new();
@@ -1283,13 +1357,14 @@ impl Song {
                     if at >= mix.len() {
                         continue;
                     }
-                    let key = if matches!(c.instrument, Instrument::Kit(_)) {
+                    let key = if matches!(c.instrument.instrument, Instrument::Kit(_) | Instrument::Sample(_)) {
                         n.key
                     } else {
                         0
                     };
+                    if matches!(c.instrument.instrument, Instrument::Sample(_)) { cache.remove(&key); }
                     if let std::collections::btree_map::Entry::Vacant(entry) = cache.entry(key) {
-                        let pcm = match &c.instrument {
+                        let pcm = match &c.instrument.instrument {
                             Instrument::Effect(id) => {
                                 let seconds = bench
                                     .effects
@@ -1312,6 +1387,10 @@ impl Song {
                                 .map(|p| p.voice.render(bench))
                                 .transpose()?
                                 .unwrap_or_default(),
+                            Instrument::Sample(id) => {
+                                let seconds = f64::from(n.length) * 60.0 / f64::from(self.bpm) / f64::from(self.ticks_per_beat);
+                                bench.render_sample(*id, n.key, 127, seconds)
+                            }
                             Instrument::Program(_) => Vec::new(),
                         };
                         entry.insert(pcm);
@@ -1356,7 +1435,7 @@ impl Song {
 
     /// Renders from a tick with earlier voices/envelopes and whole-song limiting intact.
     /// This is exactly the tail of `render_checked`; it prerenders the bounded song.
-    pub fn render_from(&self, bench: &SoundBench, tick: u32) -> Result<Vec<f32>> {
+    pub fn render_from(&self, bench: &(impl BankResolver + ?Sized), tick: u32) -> Result<Vec<f32>> {
         let first = self.frame_at_tick(tick)?;
         let pcm = self.render_checked(bench)?;
         Ok(pcm[first.min(pcm.len() / 2) * 2..].to_vec())
@@ -1366,7 +1445,7 @@ impl Song {
     /// PS2 positions invert the driver's clock; the release tail uses nominal ticks.
     pub fn render_with_positions(
         &self,
-        bench: &SoundBench,
+        bench: &(impl BankResolver + ?Sized),
         block_frames: usize,
     ) -> Result<SongRender> {
         if block_frames == 0 {
@@ -1411,7 +1490,7 @@ impl Song {
     /// Previews `[start, end)` bars, preserving earlier notes/releases but omitting the
     /// final tail. Only audio up to the requested endpoint is synthesised; invalid ranges
     /// return empty. A multi-bar pattern can continue past its channel's last explicit cell.
-    pub fn render_bar_range(&self, bench: &SoundBench, bars: Range<usize>) -> Vec<f32> {
+    pub fn render_bar_range(&self, bench: &(impl BankResolver + ?Sized), bars: Range<usize>) -> Vec<f32> {
         if self.validate().is_err() || bars.start >= bars.end || bars.end > MAX_ITEMS {
             return Vec::new();
         }
@@ -1431,10 +1510,7 @@ impl Song {
         if first >= last {
             return Vec::new();
         }
-        let mut mix = bench.render_song(&seq, &channels, last, self.bank == BankRef::Ps1);
-        if self.mix_one_shots(bench, &mut mix).is_err() {
-            return Vec::new();
-        }
+        let Ok(mix) = self.mix_banks(bench, &seq, &channels, last) else { return Vec::new() };
         let mut preview = mix[first * 2..last * 2].to_vec();
         limit(&mut preview);
         preview
@@ -1562,6 +1638,27 @@ impl Song {
             ));
         }
         song.end_tick = Some(last);
+        // [V] NRPN 20/30 bracket the infinite ambience loops; sound_inventory.md,
+        // "Every stored score, its bank, and its role". Align the bar grid to both
+        // markers rather than discarding the intro or rounding away half a bar.
+        let mut loop_start = None;
+        let mut loop_end = None;
+        for e in &seq.events {
+            if let EventKind::Control(99, marker @ (20 | 30)) = e.kind {
+                let tick = u32::try_from(e.tick).map_err(|_| bad("invalid loop marker"))?;
+                if marker == 20 { loop_start = Some(tick); } else { loop_end = Some(tick); }
+            }
+        }
+        if let (Some(a), Some(b)) = (loop_start, loop_end) {
+            if a >= b || b > last { return Err(bad("invalid NRPN loop region")); }
+            song.beats_per_bar = (1..=4).rev().find(|&beats| {
+                let bar = u32::from(song.ticks_per_beat) * u32::from(beats);
+                a % bar == 0 && b % bar == 0
+            }).ok_or_else(|| bad("NRPN loop markers do not fit the beat grid"))?;
+            let bar = song.ticks_per_bar();
+            song.loop_bars = Some(((a / bar) as usize, (b / bar) as usize));
+            song.import_notes.push("NRPN loop retained; render plays the intro and one loop traversal".into());
+        }
         for (ch, notes) in raw.into_iter().enumerate() {
             let Some(c) = chosen[ch] else { continue };
             let mut channel =
@@ -1742,7 +1839,7 @@ impl Song {
     }
 
     /// Exports this song's finite render as hand-written 16-bit stereo PCM WAV.
-    pub fn write_wav(&self, bench: &SoundBench, path: impl AsRef<Path>) -> Result<()> {
+    pub fn write_wav(&self, bench: &(impl BankResolver + ?Sized), path: impl AsRef<Path>) -> Result<()> {
         sound::write_wav(path, &self.render_checked(bench)?, SAMPLE_RATE as u32)
     }
 
@@ -1758,11 +1855,14 @@ impl Song {
             || self
                 .channels
                 .iter()
-                .any(|c| !matches!(c.instrument, Instrument::Program(_)))
+                .any(|c| !matches!(c.instrument.instrument, Instrument::Program(_)))
         {
             return Err(bad(
                 "SSsq export requires PS2, at most 16 channels and no editor loop",
             ));
+        }
+        if self.channels.windows(2).any(|c| c[0].instrument.bank != c[1].instrument.bank) {
+            return Err(bad("SSsq export cannot retain multiple bank bindings"));
         }
         for c in &self.channels {
             for (bar, cell) in c.arrangement.iter().enumerate() {
@@ -1811,15 +1911,17 @@ impl Song {
     }
 
     /// Emits canonical, diffable text, retaining empty patterns and bar cells.
-    /// Legacy program songs use version 1; effects/drums/kits/logo use version 2.
+    /// Default program songs use version 1; default effects/drums/kits/logo use version 2.
+    /// Explicit bank bindings and loose samples use version 3.
     pub fn to_text(&self) -> Result<String> {
         self.validate()?;
         let extended = self.bank == BankRef::Ps2Logo
             || self
                 .channels
                 .iter()
-                .any(|c| !matches!(c.instrument, Instrument::Program(_)));
-        let mut text = format!("psxsong {}\n", if extended { 2 } else { 1 });
+                .any(|c| !matches!(c.instrument.instrument, Instrument::Program(_)));
+        let multi = self.channels.iter().any(|c| !c.instrument.bank.is_default() || matches!(c.instrument.instrument, Instrument::Sample(_)));
+        let mut text = format!("psxsong {}\n", if multi { 3 } else if extended { 2 } else { 1 });
         let _ = writeln!(
             text,
             "name {}\nbank {}\nclock {} {} {}\nmix {} {} {}",
@@ -1846,11 +1948,14 @@ impl Song {
                 text,
                 "channel {} {} {} {}",
                 quote(&c.name),
-                instrument_tag(&c.instrument),
+                instrument_tag(&c.instrument.instrument),
                 c.volume,
                 c.pan
             );
-            write_instrument(&mut text, &c.instrument);
+            if multi {
+                let _ = writeln!(text, "binding {} {}", quote(&c.instrument.bank.fingerprint), quote(&c.instrument.bank.label));
+            }
+            write_instrument(&mut text, &c.instrument.instrument);
             text.push_str("arrangement");
             for cell in &c.arrangement {
                 let _ = write!(
@@ -1879,7 +1984,7 @@ impl Song {
         Ok(text)
     }
 
-    /// Parses version-1/2 text with line-numbered syntax errors and bounded allocation.
+    /// Parses version-1/2/3 text with line-numbered syntax errors and bounded allocation.
     /// Unknown/duplicate/missing records and dangling pattern references are errors.
     pub fn parse(text: &str) -> Result<Self> {
         parse_text(text)
@@ -1938,13 +2043,17 @@ fn instrument_tag(instrument: &Instrument) -> String {
     match instrument {
         Instrument::Program(p) => p.to_string(),
         Instrument::Effect(i) => format!("effect:{i}"),
+        Instrument::Sample(i) => format!("sample:{i}"),
         Instrument::Drum(_) => "drum".into(),
         Instrument::Kit(_) => "kit".into(),
     }
 }
 
 fn parse_instrument(s: &str, version: u8) -> Result<Instrument> {
-    if version == 2 {
+    if version >= 2 {
+        if version >= 3 {
+            if let Some(i) = s.strip_prefix("sample:") { return Ok(Instrument::Sample(number(i)?)); }
+        }
         if let Some(i) = s.strip_prefix("effect:") {
             return Ok(Instrument::Effect(number(i)?));
         }
@@ -2189,6 +2298,7 @@ fn parse_text(text: &str) -> Result<Song> {
     let mut channel: Option<Channel> = None;
     let mut pattern: Option<Pattern> = None;
     let mut arranged = false;
+    let mut bound = false;
     let mut count = 0usize;
     for (line_no, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -2204,7 +2314,7 @@ fn parse_text(text: &str) -> Result<Song> {
         }
         let result: Result<()> = (|| {
             match (stage, fields.as_slice()) {
-                (0, ["psxsong", v @ ("1" | "2")]) => {
+                (0, ["psxsong", v @ ("1" | "2" | "3")]) => {
                     version = number(v)?;
                     stage = 1;
                 }
@@ -2216,7 +2326,7 @@ fn parse_text(text: &str) -> Result<Song> {
                     song.bank = match *bank {
                         "ps1" => BankRef::Ps1,
                         "ps2" => BankRef::Ps2,
-                        "logo" if version == 2 => BankRef::Ps2Logo,
+                        "logo" if version >= 2 => BankRef::Ps2Logo,
                         _ => return Err(bad("expected ps1 or ps2 bank")),
                     };
                     stage = 3
@@ -2247,26 +2357,29 @@ fn parse_text(text: &str) -> Result<Song> {
                 }
                 (6, ["channel", name, program, volume, pan]) if channel.is_none() => {
                     let mut c = Channel::new(*name, 0);
-                    c.instrument = parse_instrument(program, version)?;
+                    c.instrument = parse_instrument(program, version)?.into();
                     c.volume = number(volume)?;
                     c.pan = number(pan)?;
                     channel = Some(c);
                     arranged = false;
+                    bound = version < 3;
+                }
+                (6, ["binding", fingerprint, label]) if version == 3 && channel.is_some() && !bound && !arranged => {
+                    let c = channel.as_mut().ok_or_else(|| bad("binding without channel"))?;
+                    c.instrument.bank = BankKey::new(*fingerprint, *label);
+                    c.instrument.bank.validate()?;
+                    bound = true;
                 }
                 (6, ["voice", values @ ..])
-                    if version == 2 && channel.is_some() && !arranged && pattern.is_none() =>
+                    if version >= 2 && channel.is_some() && !arranged && pattern.is_none() =>
                 {
                     let c = channel
                         .as_mut()
                         .ok_or_else(|| bad("voice without channel"))?;
-                    read_voice(&mut c.instrument, values)?;
+                    read_voice(&mut c.instrument.instrument, values)?;
                 }
-                (6, ["omission", reason]) if version == 2 && !arranged && pattern.is_none() => {
-                    if let Some(Channel {
-                        instrument: Instrument::Kit(k),
-                        ..
-                    }) = channel.as_mut()
-                    {
+                (6, ["omission", reason]) if version >= 2 && !arranged && pattern.is_none() => {
+                    if let Some(InstrumentRef { instrument: Instrument::Kit(k), .. }) = channel.as_mut().map(|c| &mut c.instrument) {
                         if k.omissions.len() >= 128 {
                             return Err(bad("too many kit omissions"));
                         }
@@ -2275,7 +2388,7 @@ fn parse_text(text: &str) -> Result<Song> {
                         return Err(bad("omission requires a kit channel"));
                     }
                 }
-                (6, ["arrangement", cells @ ..]) if channel.is_some() && !arranged => {
+                (6, ["arrangement", cells @ ..]) if channel.is_some() && bound && !arranged => {
                     let c = channel
                         .as_mut()
                         .ok_or_else(|| bad("arrangement without channel"))?;
