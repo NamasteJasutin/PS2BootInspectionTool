@@ -103,6 +103,8 @@ pub struct MusicMaker {
     /// The (track, pattern) the piano roll last showed, to scroll to a new pattern's notes.
     pub roll_for: (usize, usize),
     pub last_render: Option<std::time::Instant>,
+    /// The browser's source filter: `None` for everything, "BIOS", or a disc's title.
+    pub source: Option<String>,
 }
 
 
@@ -118,7 +120,7 @@ impl MusicMaker {
 }
 
 impl Default for MusicMaker {
-    fn default() -> Self { Self { song: None, library: None, library_rx: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, bar_offset: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None, roll_for: (usize::MAX, 0) } }
+    fn default() -> Self { Self { song: None, library: None, library_rx: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, bar_offset: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None, roll_for: (usize::MAX, 0), source: None } }
 }
 
 /// The Soundfonts folder: banks the extractor took from the user's own game discs, kept for the
@@ -153,8 +155,13 @@ impl SoundfontShelf {
         dirs.sort();
         for path in dirs {
             let index = std::fs::read_to_string(path.join("index.tsv")).unwrap_or_default();
+            // Rows are occurrences on the disc; count each kind's distinct files.
+            let mut files: Vec<(&str, &str)> = index.lines().filter(|l| !l.starts_with('#') && !l.starts_with("kind\t"))
+                .filter_map(|l| { let mut f = l.split('\t'); Some((f.next()?, f.next()?)) }).filter(|(k, _)| !k.is_empty()).collect();
+            files.sort();
+            files.dedup();
             let mut counts: Vec<(String, usize)> = Vec::new();
-            for kind in index.lines().filter(|l| !l.starts_with('#') && !l.starts_with("kind\t")).filter_map(|l| l.split('\t').next()).filter(|k| !k.is_empty()) {
+            for (kind, _) in files {
                 match counts.iter_mut().find(|(k, _)| k == kind) { Some((_, n)) => *n += 1, None => counts.push((kind.to_string(), 1)) }
             }
             let bytes = std::fs::read_dir(&path).map(|d| d.filter_map(Result::ok).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0);
@@ -168,7 +175,8 @@ impl SoundfontShelf {
 pub struct SoundfontSet {
     pub path: PathBuf,
     pub name: String,
-    /// How many of each kind (`vab`, `vag`, `seq`, `sshd`, `hd`, `wav`, …), from its `index.tsv`.
+    /// How many distinct files of each kind (`VAB`, `VAG`, `SEQ`, `SShd`, `HD`, `WAVE`, …), from its
+    /// `index.tsv`.
     pub counts: Vec<(String, usize)>,
     pub bytes: u64,
 }

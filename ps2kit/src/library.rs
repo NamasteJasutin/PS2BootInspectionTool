@@ -419,6 +419,7 @@ impl SoundLibrary {
         }
         let (mut samples, mut content, mut sources) = (Vec::new(), Vec::new(), Vec::new());
         let mut bank_number = 0;
+        let mut bank_names = std::collections::HashSet::new();
         for (file, rows) in files {
             let row = &rows[0];
             let path = folder.join(&file);
@@ -437,7 +438,16 @@ impl SoundLibrary {
                     AssetKind::Vab | AssetKind::SShd | AssetKind::Hd => {
                         let bench = asset_bench(row.kind, &data, &body)?;
                         bank_number += 1;
-                        let label = format!("{} — bank {bank_number:02}", index.title);
+                        // Named after the file it came from on the disc ("ANNA" for
+                        // /CHAR_CD/OMOTE/ANNA.ARC;1), numbered when a name repeats or is absent.
+                        let stem = row.source.file.rsplit('/').next().unwrap_or("").split(';').next().unwrap_or("");
+                        let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
+                        let base = if stem.is_empty() { format!("bank {bank_number:02}") } else { stem.to_string() };
+                        let mut name = base.clone();
+                        let mut n = 1;
+                        while bank_names.contains(&name) { n += 1; name = format!("{base} {n}") }
+                        bank_names.insert(name.clone());
+                        let label = format!("{} — {name}", index.title);
                         let kind = match row.kind {
                             AssetKind::Vab => BankKind::GameVab, AssetKind::SShd => BankKind::GameSShd,
                             _ => BankKind::GameHd,

@@ -1431,14 +1431,22 @@ fn start_extract(m: &mut Model, discs: Vec<std::path::PathBuf>) {
 
 /// One disc into the Soundfonts folder (`ps2kit::extract`): a summary line of what was kept.
 fn extract_disc(image: &std::path::Path, dir: &std::path::Path) -> Result<String, String> {
-    let _ = (image, dir);
-    Err("the extractor is not in this build yet".into())
+    use ps2kit::extract::{AssetKind, Extractor};
+    let x = Extractor::scan(image).map_err(|e| e.to_string())?;
+    let found: Vec<String> = AssetKind::ALL.into_iter().filter_map(|k| {
+        let c = x.counts(k);
+        (c.found > 0).then(|| format!("{} {}{}", c.unique, k.name(), if c.rejected > 0 { format!(" ({} look-alike{} left out)", c.rejected, if c.rejected == 1 { "" } else { "s" }) } else { String::new() }))
+    }).collect();
+    if x.assets.is_empty() { return Ok(format!("{}: no sound banks found{}", x.title, if found.is_empty() { String::new() } else { format!(" — {}", found.join(", ")) })) }
+    let set = x.write(dir).map_err(|e| e.to_string())?;
+    Ok(format!("{}: {} → {}", x.title, found.join(", "), set.folder.file_name().unwrap_or_default().to_string_lossy()))
 }
 
 type Library = std::sync::Arc<ps2kit::library::SoundLibrary>;
 
 /// The Studio's library, started in the background on first use: every BIOS file on the shelf
-/// (and the loaded ones) is scanned once by `ps2kit::library`; `None` until it is ready.
+/// (and the loaded ones) and every set in the Soundfonts folder is scanned once by
+/// `ps2kit::library`; `None` until it is ready.
 fn music_library(m: &mut Model) -> Option<Library> {
     if m.music.library.is_none() {
         match &m.music.library_rx {
@@ -1450,8 +1458,9 @@ fn music_library(m: &mut Model) -> Option<Library> {
             None => {
                 let mut paths: Vec<std::path::PathBuf> = m.shelf.iter().map(|e| e.path.clone()).collect();
                 for p in [&m.bios_path, &m.ps1_bios_path].into_iter().flatten() { if !paths.contains(p) { paths.push(p.clone()) } }
+                let soundfonts = m.soundfonts.dir.clone();
                 let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || { let _ = tx.send(ps2kit::library::SoundLibrary::scan(&paths)); });
+                std::thread::spawn(move || { let _ = tx.send(ps2kit::library::SoundLibrary::scan_with_soundfonts(&paths, &soundfonts)); });
                 m.music.library_rx = Some(rx);
             }
         }
@@ -1474,9 +1483,23 @@ fn bank_tag(lib: &ps2kit::library::SoundLibrary, key: &ps2kit::library::BankKey)
         Some(BankKind::Ps2Logo) => "PS2 logo",
         Some(BankKind::Ps2Menu) => "PS2 menu",
         Some(BankKind::TestSine) => "test",
+        Some(BankKind::GameVab | BankKind::GameSShd | BankKind::GameHd | BankKind::GameSamples) => "game",
         _ => "bank",
     }
 }
+
+/// Where a bank comes from, for the browser's source filter: "BIOS", or the disc's title for a
+/// bank extracted into the Soundfonts folder (its label is "<title> — bank 07" / "— samples").
+fn bank_source(lib: &ps2kit::library::SoundLibrary, key: &ps2kit::library::BankKey) -> String {
+    if bank_tag(lib, key) != "game" { return "BIOS".into() }
+    key.label.split(" — ").next().unwrap_or(&key.label).to_string()
+}
+
+/// A game bank's name inside its disc ("bank 07", "samples").
+fn bank_part(key: &ps2kit::library::BankKey) -> &str { key.label.split(" — ").nth(1).unwrap_or("") }
+
+/// A disc title without its region and version tags ("Tekken (Europe)" → "Tekken").
+fn short_title(title: &str) -> &str { title.split(" (").next().unwrap_or(title).trim() }
 
 /// The instrument a library entry (bank, native id) plays: a program in an instrument bank, an
 /// effect in an effect bank, the sample of the loose test tone.
@@ -1497,7 +1520,7 @@ fn style_word(m: &Model, key: &ps2kit::library::BankKey, id: i32) -> &'static st
         ps2kit::bench::Style::BellsAndChimes => "bell", ps2kit::bench::Style::KeysAndBellPads => "keys", ps2kit::bench::Style::MalletsAndPlucks => "mallet",
         ps2kit::bench::Style::SoftLeadsAndStrings => "lead", ps2kit::bench::Style::BrightPads => "bright", ps2kit::bench::Style::WarmPads => "pad",
         ps2kit::bench::Style::DarkPadsAndDrones => "drone", ps2kit::bench::Style::Swells => "swell", ps2kit::bench::Style::AirAndNoise => "air",
-        ps2kit::bench::Style::PercussiveNoise => "perc", _ => "sound",
+        ps2kit::bench::Style::PercussiveNoise => "perc", ps2kit::bench::Style::Samples => "sample", _ => "sound",
     })
 }
 
@@ -1505,10 +1528,12 @@ fn style_word(m: &Model, key: &ps2kit::library::BankKey, id: i32) -> &'static st
 fn instrument_name(m: &Model, r: &ps2kit::song::InstrumentRef) -> String {
     use ps2kit::song::Instrument;
     let tag = m.music.library.as_ref().map_or("", |l| bank_tag(l, &r.bank));
-    let ps1 = if tag == "PS1" { "PS1 " } else { "" };
+    let game = format!("{} ", short_title(&r.bank.label));
+    let ps1 = match tag { "PS1" => "PS1 ", "game" => game.as_str(), _ => "" };
     match &r.instrument {
         Instrument::Program(p) => format!("{ps1}{} {p}", style_word(m, &r.bank, *p as i32)),
         Instrument::Effect(e) => format!("{tag} fx {e}"),
+        Instrument::Sample(i) if tag == "game" => format!("{ps1}sample {i}"),
         Instrument::Sample(_) => "test sine".into(),
         Instrument::Kit(_) => format!("{ps1}drums"),
         Instrument::Drum(_) => "drum".into(),
@@ -1565,7 +1590,9 @@ fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Song", |ui| {
         let Some(lib) = &lib else { ui.horizontal(|ui| { ui.spinner(); ui.small("Reading the sounds in your BIOS files…"); }); return };
         let sounds: usize = m.music.styles.iter().map(|(_, v)| v.len()).sum();
-        ui.small(format!("{} banks · {sounds} sounds · {} pieces of music, from your BIOS files — mixed freely in one song. Song files hold notes and recipes only.", lib.banks.len(), lib.pieces.len()));
+        let discs = lib.banks.iter().map(|b| bank_source(&lib, &b.key)).filter(|s| s != "BIOS").collect::<std::collections::BTreeSet<_>>().len();
+        let from = if discs == 0 { "your BIOS files".to_string() } else { format!("your BIOS files and {discs} disc{} in Soundfonts", if discs == 1 { "" } else { "s" }) };
+        ui.small(format!("{} banks · {sounds} sounds · {} pieces of music, from {from} — mixed freely in one song. Song files hold notes and recipes only.", lib.banks.len(), lib.pieces.len()));
         ui.horizontal_wrapped(|ui| {
             if ui.button("New song").clicked() {
                 let mut s = Song::new("untitled", BankRef::Ps2);
@@ -1716,27 +1743,49 @@ fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let Some(lib) = m.music.library.clone() else { return };
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.label(egui::RichText::new("Instruments").strong().color(Color32::WHITE));
+        // Source filter: everything, the BIOS files, or one disc's extracted set.
+        let mut sources: Vec<String> = vec!["BIOS".into()];
+        for b in &lib.banks { let s = bank_source(&lib, &b.key); if !sources.contains(&s) { sources.push(s) } }
+        if sources.len() > 1 {
+            let shown = m.music.source.clone().unwrap_or_else(|| "All sources".into());
+            egui::ComboBox::from_id_salt("browser-source").width(rect.width() - 8.0).selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut m.music.source, None, "All sources");
+                for s in &sources { ui.selectable_value(&mut m.music.source, Some(s.clone()), s); }
+            });
+        }
+        let filter = m.music.source.clone();
+        let wanted = |key: &ps2kit::library::BankKey| filter.as_ref().is_none_or(|f| *f == bank_source(&lib, key));
         egui::ScrollArea::vertical().id_salt("browser").show(ui, |ui| {
             let mut audition_ref = None;
             let mut add = None;
             for (style, entries) in &m.music.styles {
-                ui.label(egui::RichText::new(style.name()).small().color(Color32::from_rgb(140, 160, 210)));
-                for (key, id, c) in entries {
-                    let r = library_instrument(&lib, key, *id);
-                    ui.horizontal(|ui| {
-                        if ui.small_button("+").on_hover_text("Add as a track").clicked() { add = Some(r.clone()) }
-                        let label = format!("{} {} {id}", bank_tag(&lib, key), style.name().split([' ', '&']).next().unwrap_or("").to_lowercase());
-                        if ui.selectable_label(false, label).on_hover_text(format!("{} · attack {:.2} s · rings {:.1} s · {:.0} Hz{}", key.label, c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, if c.looped { " · loops" } else { "" })).clicked() { audition_ref = Some(r) }
-                    });
-                }
+                let entries: Vec<_> = entries.iter().filter(|(k, _, _)| wanted(k)).collect();
+                if entries.is_empty() { continue }
+                let header = egui::RichText::new(format!("{} ({})", style.name(), entries.len())).small().color(Color32::from_rgb(140, 160, 210));
+                egui::CollapsingHeader::new(header).id_salt(("style", style.name())).default_open(entries.len() <= 40).show(ui, |ui| {
+                    for (key, id, c) in entries {
+                        let r = library_instrument(&lib, key, *id);
+                        ui.horizontal(|ui| {
+                            if ui.small_button("+").on_hover_text("Add as a track").clicked() { add = Some(r.clone()) }
+                            let word = style.name().split([' ', '&']).next().unwrap_or("").to_lowercase();
+                            let label = match bank_tag(&lib, key) {
+                                "game" if filter.is_some() => format!("{} · {word} {id}", bank_part(key)),
+                                "game" => format!("{} {} · {word} {id}", short_title(&key.label), bank_part(key)),
+                                tag => format!("{tag} {word} {id}"),
+                            };
+                            if ui.selectable_label(false, label).on_hover_text(format!("{} · attack {:.2} s · rings {:.1} s · {:.0} Hz{}", key.label, c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, if c.looped { " · loops" } else { "" })).clicked() { audition_ref = Some(r) }
+                        });
+                    }
+                });
             }
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Drum kits (derived from your samples)").small().color(Color32::from_rgb(140, 160, 210)));
-            for bank in lib.banks.iter().filter(|b| b.kit.as_ref().is_some_and(|k| !k.pieces.is_empty())) {
+            for bank in lib.banks.iter().filter(|b| b.kit.as_ref().is_some_and(|k| !k.pieces.is_empty()) && wanted(&b.key)) {
                 let kit = bank.kit.as_ref().unwrap();
                 ui.horizontal(|ui| {
                     if ui.small_button("+").on_hover_text("Add a drum track with this kit").clicked() { add = Some(ps2kit::song::InstrumentRef::new(bank.key.clone(), ps2kit::song::Instrument::Kit(kit.clone()))) }
-                    ui.label(format!("{} kit · {} pieces", bank_tag(&lib, &bank.key), kit.pieces.len())).on_hover_text(kit.explain());
+                    let name = if bank_tag(&lib, &bank.key) == "game" { format!("{} {}", short_title(&bank.key.label), bank_part(&bank.key)) } else { bank_tag(&lib, &bank.key).to_string() };
+                    ui.label(format!("{name} kit · {} pieces", kit.pieces.len())).on_hover_text(kit.explain());
                 });
                 ui.horizontal_wrapped(|ui| {
                     for piece in &kit.pieces { if ui.small_button(&piece.name).on_hover_text(&piece.reason).clicked() { m.audio.preview(piece.voice.render(&bank.bench).unwrap_or_default()) } }
@@ -1768,9 +1817,14 @@ fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
 /// The inspector: the selected track (instrument from any bank, volume, pan) and pattern.
 fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let Some(lib) = m.music.library.clone() else { return };
+    // The choices follow the browser's source filter (a disc's set can hold hundreds of sounds).
+    let filter = m.music.source.clone();
+    let wanted = |key: &ps2kit::library::BankKey| filter.as_ref().is_none_or(|f| *f == bank_source(&lib, key));
+    let name = |k: &ps2kit::library::BankKey| if bank_tag(&lib, k) == "game" { format!("{} {}", short_title(&k.label), bank_part(k)) } else { bank_tag(&lib, k).to_string() };
     let choices: Vec<(String, ps2kit::song::InstrumentRef)> = m.music.styles.iter().flat_map(|(s, v)| v.iter().map(move |(k, id, _)| (k.clone(), *id, s.name())))
-        .map(|(k, id, s)| (format!("{} {id} — {s}", bank_tag(&lib, &k)), library_instrument(&lib, &k, id)))
-        .chain(lib.banks.iter().filter_map(|b| b.kit.as_ref().filter(|k| !k.pieces.is_empty()).map(|k| (format!("{} drum kit", bank_tag(&lib, &b.key)), ps2kit::song::InstrumentRef::new(b.key.clone(), ps2kit::song::Instrument::Kit(k.clone()))))))
+        .filter(|(k, _, _)| wanted(k))
+        .map(|(k, id, s)| (format!("{} {id} — {s}", name(&k)), library_instrument(&lib, &k, id)))
+        .chain(lib.banks.iter().filter(|b| wanted(&b.key)).filter_map(|b| b.kit.as_ref().filter(|k| !k.pieces.is_empty()).map(|k| (format!("{} drum kit", name(&b.key)), ps2kit::song::InstrumentRef::new(b.key.clone(), ps2kit::song::Instrument::Kit(k.clone()))))))
         .collect();
     let mut rename = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
@@ -1779,7 +1833,7 @@ fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
         let Some(c) = song.channels.get_mut(m.music.channel) else { ui.small("Select a track."); return };
         ui.label(egui::RichText::new("Track").strong().color(Color32::WHITE));
         ui.text_edit_singleline(&mut c.name);
-        let current = format!("{} · {}", bank_tag(&lib, &c.instrument.bank), instrument_label(&c.instrument.instrument));
+        let current = format!("{} · {}", name(&c.instrument.bank), instrument_label(&c.instrument.instrument));
         let mut choice = None;
         egui::ComboBox::from_id_salt("insp-prog").width(rect.width() - 8.0).selected_text(current).show_ui(ui, |ui| {
             for (label, r) in &choices { if ui.selectable_label(&c.instrument == r, label).clicked() { choice = Some(r.clone()) } }
