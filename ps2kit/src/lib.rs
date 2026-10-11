@@ -40,6 +40,7 @@ pub mod bench;
 pub mod bios;
 mod bytes;
 pub mod disc;
+pub mod extract;
 pub mod history;
 pub mod icon;
 pub mod hooks;

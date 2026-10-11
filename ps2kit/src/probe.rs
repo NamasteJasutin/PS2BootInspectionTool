@@ -43,6 +43,7 @@ pub struct DiscFileEntry {
 pub struct DiscFiles {
     reader: SectorReader,
     entries: Vec<DiscFileEntry>,
+    volume_id: String,
 }
 
 impl DiscFiles {
@@ -121,8 +122,10 @@ impl DiscFiles {
         }
 
         entries.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Self { reader, entries })
+        Ok(Self { reader, entries, volume_id: pvd.cstr(40, 32).trim().to_string() })
     }
+
+    pub(crate) fn volume_id(&self) -> &str { &self.volume_id }
 
     /// List of all files and directories indexed on the disc.
     #[must_use]
