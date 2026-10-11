@@ -5,7 +5,7 @@
 
 use crate::bytes::Bytes;
 use crate::locate::{LogoLayout, ProgramImage};
-use crate::song::BankRef;
+use crate::banks::BankRef;
 use crate::ps1::{NoteEvent, Vab};
 use crate::ps1bios::Ps1Bios;
 use crate::rom::{unpack, RomDir};
@@ -105,7 +105,7 @@ pub struct SoundBench {
     /// Bank addressed by sample/song references.
     pub bank: BankRef,
     /// Content identity assigned when this bench belongs to a runtime sound library.
-    pub key: Option<crate::library::BankKey>,
+    pub key: Option<crate::banks::BankKey>,
     /// All decoded samples referenced by the programs and UI effects. PS1 VAG zero is absent.
     pub samples: Vec<BenchSample>,
     /// All OSD UI effects, when the PS2 image includes the second bank.
@@ -130,7 +130,6 @@ impl std::fmt::Debug for SoundBench {
 /// ([`SoundBench::character`]). The style is a heuristic grouping for browsing, not a name
 /// the console uses.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub struct Character {
     /// Time to reach 90 % of the peak level, in milliseconds.
     pub attack_ms: f32,
@@ -363,7 +362,8 @@ impl SoundBench {
         Ok(bench)
     }
 
-    pub(crate) fn from_sample(pcm: Vec<f32>, loop_start: Option<usize>, rate: u32) -> Self {
+    /// A bench holding one caller-decoded mono sample (PCM, loop start, declared rate).
+    pub fn from_sample(pcm: Vec<f32>, loop_start: Option<usize>, rate: u32) -> Self {
         Self {
             programs: Vec::new(), bank: BankRef::Ps2, key: None,
             samples: vec![BenchSample { index: 0, length: pcm.len(), loop_start }],
@@ -490,7 +490,8 @@ impl SoundBench {
         }
     }
 
-    pub(crate) fn add_effects(&mut self, header: &[u8], body: &[u8]) -> Result<()> {
+    /// Adds the one-shot effects of an SShd effect bank (`header` + headerless `body`) to this bench.
+    pub fn add_effects(&mut self, header: &[u8], body: &[u8]) -> Result<()> {
         let bad = || Error::Corrupt(Format::SoundBank, "truncated OSD effect bank".into());
         if header.len() < 0x30 || &header[0xC..0x10] != b"SShd" {
             return Err(bad());
@@ -613,9 +614,10 @@ impl SoundBench {
         Some(measure(&self.render_effect(id, 4.0), looped))
     }
 
-    // Arrangement rendering shares the sequencer and VAB voice paths, including note-off
-    // release (notes/sound.md §2.2; ps1_shell_scenes.md §2). No audition-length heuristic.
-    pub(crate) fn render_song(&self, seq: &crate::sound::SoundSequence, channels: &[crate::sound::Channel], frames: usize, ps1: bool) -> Vec<f32> {
+    /// Renders `frames` stereo frames of a caller's sequence on this bank through the console's own
+    /// sequencer and VAB voice paths, including note-off release (`notes/sound.md` §2.2;
+    /// `ps1_shell_scenes.md` §2); `ps1` selects the VAB voice path. No audition-length heuristic.
+    pub fn render_song(&self, seq: &crate::sound::SoundSequence, channels: &[crate::sound::Channel], frames: usize, ps1: bool) -> Vec<f32> {
         let mut mix = Vec::new();
         match (&self.backend, ps1) {
             (SoundBenchBackend::Ps2 { bank, tables }, false) => {

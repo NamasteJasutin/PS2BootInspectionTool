@@ -1,6 +1,6 @@
-//! SoundFont 2.04 export for sound benches and drum kits.
+//! SoundFont 2.04 export for sound benches (and caller-rendered percussion).
 //!
-//! Converts a [`SoundBench`] (and an optional derived drum [`Kit`]) into a
+//! Converts a [`SoundBench`] (and optional rendered percussion, [`Percussion`]) into a
 //! standard SoundFont 2.04 (`.sf2`) binary file that any DAW or software sampler
 //! (e.g. FluidSynth, Polyphone, Logic, Ableton) can load.
 //!
@@ -17,8 +17,7 @@
 //! - `notes/research/sound_inventory.md`: bank identity, roles, and sample structures \[V\].
 
 use crate::bench::SoundBench;
-use crate::song::{BankRef, Kit};
-use crate::sound::SAMPLE_RATE;
+use crate::banks::BankRef;
 use crate::{Error, Format, Result};
 
 // SoundFont 2.04 generator operators (§8.1.2)
@@ -214,7 +213,7 @@ struct SampleRecord {
 #[non_exhaustive]
 pub struct Sf2Writer<'a> {
     bench: &'a SoundBench,
-    kit: Option<&'a Kit>,
+    percussion: &'a [Percussion],
     name: String,
     comment: String,
 }
@@ -224,16 +223,16 @@ impl<'a> Sf2Writer<'a> {
     pub fn new(bench: &'a SoundBench) -> Self {
         Self {
             bench,
-            kit: None,
+            percussion: &[],
             name: "SoundBank".to_string(),
             comment: "Exported by PSX Boot Inspection Tool".to_string(),
         }
     }
 
-    /// Attaches an optional drum kit to be exported to bank 128 preset 0.
+    /// Adds rendered percussion sounds, exported as the percussion preset (bank 128, preset 0).
     #[must_use]
-    pub fn with_kit(mut self, kit: &'a Kit) -> Self {
-        self.kit = Some(kit);
+    pub fn with_percussion(mut self, percussion: &'a [Percussion]) -> Self {
+        self.percussion = percussion;
         self
     }
 
@@ -308,15 +307,16 @@ impl<'a> Sf2Writer<'a> {
             });
         }
 
-        // 1b. Drum Kit pieces (rendered voices as standalone 48 kHz mono samples)
-        if let Some(kit) = self.kit {
-            for piece in &kit.pieces {
-                let stereo_pcm = piece.voice.render(self.bench).map_err(|e| {
-                    Error::Corrupt(Format::SoundBank, format!("failed to render kit piece {}: {e}", piece.name))
-                })?;
-                let mut pcm: Vec<i16> = stereo_pcm
-                    .chunks_exact(2)
-                    .map(|c| ((c[0] + c[1]) * 0.5 * 32767.0).clamp(-32768.0, 32767.0).round() as i16)
+        // 1b. Percussion sounds (already rendered by the caller, mono)
+        {
+            for piece in self.percussion {
+                if piece.rate == 0 {
+                    return Err(Error::Corrupt(Format::SoundBank, format!("percussion {} has no sample rate", piece.name)));
+                }
+                let mut pcm: Vec<i16> = piece
+                    .pcm
+                    .iter()
+                    .map(|v| (v * 32767.0).clamp(-32768.0, 32767.0).round() as i16)
                     .collect();
                 if pcm.len() < 48 {
                     pcm.resize(48, 0);
@@ -334,7 +334,7 @@ impl<'a> Sf2Writer<'a> {
                     end,
                     startloop: start,
                     endloop: end,
-                    sample_rate: SAMPLE_RATE as u32,
+                    sample_rate: piece.rate,
                     original_pitch: piece.key,
                     pitch_correction: 0,
                 });
@@ -481,14 +481,14 @@ impl<'a> Sf2Writer<'a> {
             push_gen(&mut pgen_bytes, &mut pgen_count, GEN_INSTRUMENT, inst_index);
         }
 
-        // 2c. Drum Kit -> Preset in Bank 128 Preset 0
-        if let Some(kit) = self.kit {
-            if !kit.pieces.is_empty() {
+        // 2c. Percussion -> Preset in Bank 128 Preset 0
+        {
+            if !self.percussion.is_empty() {
                 let inst_index = inst_count;
                 push_inst(&mut inst_bytes, &mut inst_count, "Standard Kit", ibag_count);
 
                 let base_sample = self.bench.samples.len();
-                for (p_idx, piece) in kit.pieces.iter().enumerate() {
+                for (p_idx, piece) in self.percussion.iter().enumerate() {
                     push_bag(&mut ibag_bytes, &mut ibag_count, igen_count, 0);
 
                     // Active strictly on this piece's GM key
@@ -577,17 +577,35 @@ impl<'a> Sf2Writer<'a> {
     }
 }
 
-/// Converts a [`SoundBench`] (and an optional derived drum [`Kit`]) into a SoundFont 2 (`.sf2`) file.
+/// One rendered percussion sound for the percussion preset: mono PCM in -1..1 at `rate`, played on
+/// MIDI key `key` (General MIDI percussion numbering).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Percussion {
+    /// MIDI key the sound answers on.
+    pub key: u8,
+    /// Short name (written into the sample header, at most 20 bytes with its key prefix).
+    pub name: String,
+    /// Mono samples, -1..1.
+    pub pcm: Vec<f32>,
+    /// Sample rate in Hz.
+    pub rate: u32,
+}
+
+impl Percussion {
+    /// A percussion sound on `key`.
+    pub fn new(key: u8, name: impl Into<String>, pcm: Vec<f32>, rate: u32) -> Self {
+        Self { key, name: name.into(), pcm, rate }
+    }
+}
+
+/// Converts a [`SoundBench`] (and optional rendered percussion) into a SoundFont 2 (`.sf2`) file.
 ///
 /// # Arguments
 /// - `bench`: The source sound bench containing programs, tones, samples and/or UI effects.
-/// - `kit`: Optional drum kit whose pieces will be rendered and mapped to General MIDI percussion keys in Bank 128.
+/// - `percussion`: Rendered percussion sounds, mapped to their keys in bank 128 (may be empty).
 /// - `name`: The bank name recorded in the `INAM` chunk.
 /// - `comment`: The provenance or user description recorded in the `ICMT` chunk.
-pub fn sf2_from_bench(bench: &SoundBench, kit: Option<&Kit>, name: &str, comment: &str) -> Result<Vec<u8>> {
-    let mut writer = Sf2Writer::new(bench).with_name(name).with_comment(comment);
-    if let Some(kit) = kit {
-        writer = writer.with_kit(kit);
-    }
-    writer.write()
+pub fn sf2_from_bench(bench: &SoundBench, percussion: &[Percussion], name: &str, comment: &str) -> Result<Vec<u8>> {
+    Sf2Writer::new(bench).with_name(name).with_comment(comment).with_percussion(percussion).write()
 }

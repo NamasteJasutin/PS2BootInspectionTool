@@ -10,7 +10,7 @@
 
 use crate::bench::SoundBench;
 use crate::bytes::Bytes;
-use crate::library::{fingerprint, header_extent, sequence_extent};
+use crate::banks::{fingerprint, header_extent, sequence_extent};
 use crate::probe::{DiscFileEntry, DiscFiles};
 use crate::sound::{decode_adpcm, EventKind, Program, ProgramKind, SoundBank, SoundSequence, Tone};
 use crate::{Error, Format, Result};
@@ -1168,7 +1168,8 @@ fn vlq(bytes: &[u8], at: &mut usize) -> Result<u32> {
     Err(bad("variable length value exceeds four bytes"))
 }
 
-pub(crate) fn asset_bench(kind: AssetKind, data: &[u8], body: &[u8]) -> Result<SoundBench> {
+/// A playable bench for one extracted bank (VAB, SShd + body, or HD/BD), parsed and bounded again.
+pub fn asset_bench(kind: AssetKind, data: &[u8], body: &[u8]) -> Result<SoundBench> {
     match kind {
         AssetKind::Vab => {
             validate_vab(data)?;
@@ -1238,7 +1239,8 @@ pub(crate) fn asset_bench(kind: AssetKind, data: &[u8], body: &[u8]) -> Result<S
         _ => Err(bad("asset is not a bank")),
     }
 }
-pub(crate) fn asset_sample(kind: AssetKind, data: &[u8]) -> Result<(Vec<f32>, Option<usize>, u32)> {
+/// One extracted loose sample (VAG or RIFF WAVE): mono PCM, loop start, declared sample rate.
+pub fn asset_sample(kind: AssetKind, data: &[u8]) -> Result<(Vec<f32>, Option<usize>, u32)> {
     match kind {
         AssetKind::Vag => {
             let (size, rate) = vag_extent(data)?;
@@ -1273,24 +1275,38 @@ pub(crate) fn asset_sample(kind: AssetKind, data: &[u8]) -> Result<(Vec<f32>, Op
     }
 }
 
-pub(crate) struct SetIndex {
+/// An extracted set's `index.tsv`: the disc title and one row per occurrence of an asset.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SetIndex {
+    /// The disc title recorded when the set was written.
     pub title: String,
+    /// Every occurrence of every native file, in index order.
     pub rows: Vec<SetRow>,
 }
-pub(crate) struct SetRow {
+/// One `index.tsv` row: the native file, its body companion (SShd/HD) and where it came from.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SetRow {
+    /// Asset format.
     pub kind: AssetKind,
+    /// Native file name inside the set folder.
     pub file: String,
+    /// Body companion file name, empty when the asset is self-contained.
     pub body_file: String,
+    /// Source coordinates on the disc.
     pub source: AssetSource,
 }
-pub(crate) fn read_native(path: &Path) -> Result<Vec<u8>> {
+/// Reads one native file of a set: a bounded regular file, never through a symlink.
+pub fn read_native(path: &Path) -> Result<Vec<u8>> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > LIMIT as u64 {
         return Err(bad("native asset is not a bounded regular file"));
     }
     Ok(std::fs::read(path)?)
 }
-pub(crate) fn read_index(folder: &Path) -> Result<SetIndex> {
+/// Reads a set folder's `index.tsv` written by [`Extraction::write`].
+pub fn read_index(folder: &Path) -> Result<SetIndex> {
     let text = std::fs::read_to_string(folder.join("index.tsv"))?;
     if text.lines().next() != Some(MARKER) {
         return Err(bad("unrecognised soundfonts index"));
@@ -1391,7 +1407,8 @@ fn utc_date() -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-pub(crate) fn bank_parts<'a>(kind: AssetKind, data: &'a [u8], body: &'a [u8]) -> Result<(&'a [u8], &'a [u8])> {
+/// Splits an extracted bank into its header and body bytes (the parts its fingerprint covers).
+pub fn bank_parts<'a>(kind: AssetKind, data: &'a [u8], body: &'a [u8]) -> Result<(&'a [u8], &'a [u8])> {
     if kind == AssetKind::Vab {
         let (header, _) = vab_sizes(data)?;
         Ok((&data[..header], &data[header..]))

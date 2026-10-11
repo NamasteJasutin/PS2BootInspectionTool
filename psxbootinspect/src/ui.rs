@@ -25,14 +25,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, edition: crate::Edition) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let rs = cc.wgpu_render_state.as_ref().expect("wgpu");
         let (device, queue) = arc_device(rs);
         let renderer = Renderer::new(device, queue);
         let view = SceneView::register(rs, &renderer.targets["scene"].1);
         let mut model = Model::new();
         model.load_defaults();
-        model.set_edition(edition);
         Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None, menu_textures: None, loaded_icons: u32::MAX }
     }
 
@@ -113,11 +112,11 @@ impl eframe::App for App {
         let dt = (now - self.last).as_secs_f64().min(0.1);
         self.last = now;
         self.model.poll_sound();
-        let music = focus_workspace(&mut self.model);
+        let sound = focus_workspace(&mut self.model);
         self.model.tick(dt);
         self.model.sync_audio();
         let t0 = Instant::now();
-        if !music { if let Some(rs) = frame.wgpu_render_state() { self.render_frame(rs) } }
+        if !sound { if let Some(rs) = frame.wgpu_render_state() { self.render_frame(rs) } }
         self.model.cpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let view = &self.view;
@@ -126,26 +125,26 @@ impl eframe::App for App {
     }
 }
 
-/// The Studio takes the focus: the boot pauses (and resumes where it was on leaving), its audio
-/// stops and the 3D scene is not rendered. Returns whether the Studio is open.
+/// The Sound workspace takes the focus: the boot pauses (and resumes where it was on leaving) so
+/// auditions are heard alone, and the 3D scene is not re-rendered. Returns whether it is open.
 pub fn focus_workspace(m: &mut Model) -> bool {
-    let studio = Workspace::of(m.tab) == Workspace::Studio;
-    if studio != m.music.focused {
-        m.music.focused = studio;
-        if studio { m.music.resume_boot = m.playing; m.playing = false } else { m.playing = m.music.resume_boot; m.audio.music_play(false) }
+    let sound = Workspace::of(m.tab) == Workspace::Sound;
+    if sound != m.sound_focus {
+        m.sound_focus = sound;
+        if sound { m.resume_boot = m.playing; m.playing = false } else { m.playing = m.resume_boot }
     }
-    studio
+    sound
 }
 
 /// The window's panels — sidebar and centre — shared by the app and the headless UI harness
-/// (`uitest.rs`); `picture` draws the boot scene in the centre outside the Studio.
+/// (`uitest.rs`); `picture` draws the boot scene in the centre.
 pub fn layout(root: &mut egui::Ui, m: &mut Model, picture: impl FnOnce(&mut egui::Ui, &mut Model)) {
     m.poll_extract();
     egui::Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(root, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, m));
     });
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(root, |ui| {
-        if Workspace::of(m.tab) == Workspace::Studio { music_editor(ui, m) } else { picture(ui, m) }
+        picture(ui, m)
     });
 }
 
@@ -347,19 +346,14 @@ fn file_row(ui: &mut egui::Ui, label: &str, status: &str, directories: bool, fil
 
 fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     ui.add_space(6.0);
-    // Workspaces first (Boot · Inspect · Studio), then the open workspace's own tabs.
-    // PSX Studio (the Studio-only edition) shows its own tabs and nothing else.
+    // Workspaces first (Boot · Inspect · Sound), then the open workspace's own tabs.
     let current = Workspace::of(m.tab);
-    if m.edition == crate::Edition::Full {
-        ui.horizontal(|ui| {
-            for w in Workspace::ALL {
-                let b = egui::Button::selectable(w == current, egui::RichText::new(w.name()).size(15.0).strong()).min_size(Vec2::new(86.0, 28.0));
-                if ui.add(b).clicked() && w != current { m.tab = w.tabs()[0] }
-            }
-        });
-    } else {
-        ui.label(egui::RichText::new("PSX Studio").size(17.0).strong());
-    }
+    ui.horizontal(|ui| {
+        for w in Workspace::ALL {
+            let b = egui::Button::selectable(w == current, egui::RichText::new(w.name()).size(15.0).strong()).min_size(Vec2::new(86.0, 28.0));
+            if ui.add(b).clicked() && w != current { m.tab = w.tabs()[0] }
+        }
+    });
     let tabs = Workspace::of(m.tab).tabs();
     if tabs.len() > 1 {
         ui.horizontal_wrapped(|ui| { for t in tabs { ui.selectable_value(&mut m.tab, *t, t.name()); } });
@@ -373,7 +367,6 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         Tab::Lab => lab_tab(ui, m),
         Tab::Sound => sound_tab(ui, m),
         Tab::Fonts => fonts_tab(ui, m),
-        Tab::Music => music_tab(ui, m),
         Tab::Soundfonts => soundfonts_tab(ui, m),
     }
     ui.add_space(12.0);
@@ -1343,7 +1336,7 @@ fn fonts_tab(ui: &mut egui::Ui, m: &mut Model) {
 }
 
 /// The Soundfonts folder: where it is, extracting banks from the user's own discs into it, and
-/// the sets it holds. The Studio's library reads it with the BIOS files.
+/// the sets it holds, and SoundFont 2 export of any bank.
 fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
     if !m.soundfonts.listed { m.soundfonts.list() }
     section(ui, "Soundfonts folder", |ui| {
@@ -1365,9 +1358,9 @@ fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
             sf.dir = settings.soundfonts_dir();
             sf.custom = settings.soundfonts_dir.is_some();
             sf.listed = false;
-            m.music.forget_library();
+            m.soundfonts.forget_banks();
         }
-        ui.small("Banks extracted from your own game discs are kept here for the Studio, in their native formats with an index of where each came from. Nothing in this folder comes with the app.");
+        ui.small("Banks extracted from your own game discs are kept here, in their native formats with an index of where each came from. Nothing in this folder comes with the app.");
     });
     section(ui, "Extract from your discs", |ui| {
         let busy = m.soundfonts.job.is_some();
@@ -1427,41 +1420,110 @@ fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
             }
             sf.confirm_delete = None;
             sf.listed = false;
-            m.music.forget_library();
+            m.soundfonts.forget_banks();
         }
     });
 }
 
-/// Export any bank in the library — BIOS or game — as a SoundFont 2 file for other music
-/// software (`ps2kit::sf2`): programs in bank 0, one-shot effects in bank 1, its derived drum kit
-/// as the percussion preset.
+/// Export any bank — the loaded BIOS's own (PS2 boot, PS2 logo, PS1 shell) or one extracted from a
+/// disc into the Soundfonts folder — as a SoundFont 2 file for other music software (`ps2kit::sf2`):
+/// programs in bank 0, one-shot effects in bank 1.
 fn soundfonts_export(ui: &mut egui::Ui, m: &mut Model) {
     section(ui, "Export as SoundFont 2", |ui| {
-        let Some(lib) = music_library(m) else { ui.horizontal(|ui| { ui.spinner(); ui.small("Reading your BIOS files and Soundfonts…") }); return };
-        let name = |k: &ps2kit::library::BankKey| k.label.clone();
-        let current = m.soundfonts.export.clone().filter(|k| lib.bank(k).is_some()).or_else(|| lib.banks.first().map(|b| b.key.clone()));
-        let Some(current) = current else { ui.small("No banks yet."); return };
-        egui::ComboBox::from_id_salt("sf2-bank").width(ui.available_width() - 8.0).selected_text(name(&current)).show_ui(ui, |ui| {
-            for b in &lib.banks { if ui.selectable_label(b.key == current, name(&b.key)).clicked() { m.soundfonts.export = Some(b.key.clone()) } }
+        let Some(banks) = export_banks(m) else { ui.horizontal(|ui| { ui.spinner(); ui.small("Reading your BIOS files and Soundfonts…") }); return };
+        if banks.is_empty() { ui.small("No banks yet: load a BIOS or extract a disc."); return }
+        let current = m.soundfonts.export.min(banks.len() - 1);
+        egui::ComboBox::from_id_salt("sf2-bank").width(ui.available_width() - 8.0).selected_text(&banks[current].0).show_ui(ui, |ui| {
+            for (i, (label, _)) in banks.iter().enumerate() { ui.selectable_value(&mut m.soundfonts.export, i, label); }
         });
-        let Some(bank) = lib.bank(&current) else { return };
-        let (programs, effects, samples) = (bank.bench.programs.len(), bank.bench.effects.len(), bank.bench.samples.len());
-        let kit = bank.kit.as_ref().filter(|k| !k.pieces.is_empty());
-        ui.small(format!("{programs} programs · {effects} effects · {samples} samples{}", kit.map(|k| format!(" · drum kit of {} pieces", k.pieces.len())).unwrap_or_default()));
+        let (label, bench) = &banks[current];
+        ui.small(format!("{} programs · {} effects · {} samples", bench.programs.len(), bench.effects.len(), bench.samples.len()));
         if ui.button("Export .sf2…").clicked() {
-            let file: String = current.label.chars().map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' }).collect();
+            let file: String = label.chars().map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' }).collect();
             if let Some(path) = rfd::FileDialog::new().add_filter("SoundFont 2", &["sf2"]).set_file_name(format!("{}.sf2", file.trim())).save_file_ui() {
-                let from: Vec<String> = bank.sources.iter().take(3).map(|p| p.file.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
-                let comment = format!("Exported locally by the PSX Boot Inspection Tool from your own file{}: {}.", if from.len() == 1 { "" } else { "s" }, from.join(", "));
-                let line = match ps2kit::sf2::sf2_from_bench(&bank.bench, kit, &current.label, &comment).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
+                let comment = format!("Exported locally by the PSX Boot Inspection Tool from your own files: {label}.");
+                let line = match ps2kit::sf2::sf2_from_bench(bench, &[], label, &comment).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
                     Ok(()) => format!("wrote {}", path.display()),
                     Err(e) => format!("SoundFont export failed: {e}"),
                 };
                 m.soundfonts.log.push(line);
             }
         }
-        ui.small("For samplers and DAWs. The envelopes are converted from the console's ADSR registers (an approximation); the drum kit's pieces are written as rendered samples.");
+        ui.small("For samplers and DAWs. The envelopes are converted from the console's ADSR registers (an approximation).");
     });
+}
+
+type Banks = std::sync::Arc<Vec<(String, ps2kit::bench::SoundBench)>>;
+
+/// The banks the export offers, read once in the background from the loaded BIOS files and the
+/// Soundfonts folder; `None` until ready.
+fn export_banks(m: &mut Model) -> Option<Banks> {
+    if m.soundfonts.banks.is_none() {
+        match &m.soundfonts.banks_rx {
+            Some(rx) => if let Ok(banks) = rx.try_recv() {
+                m.soundfonts.banks = Some(std::sync::Arc::new(banks));
+                m.soundfonts.banks_rx = None;
+            },
+            None => {
+                let bios: Vec<std::path::PathBuf> = [&m.bios_path, &m.ps1_bios_path].into_iter().flatten().cloned().collect();
+                let dir = m.soundfonts.dir.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || { let _ = tx.send(collect_banks(&bios, &dir)); });
+                m.soundfonts.banks_rx = Some(rx);
+            }
+        }
+    }
+    m.soundfonts.banks.clone()
+}
+
+/// Every bank in the given BIOS files (`SoundBench::open`, the PS2 logo bank) and in each set of the
+/// Soundfonts folder (`ps2kit::extract`'s readers): a bank per native bank file, named after its
+/// file on the disc, and one bank of the set's loose samples.
+fn collect_banks(bios: &[std::path::PathBuf], soundfonts: &std::path::Path) -> Vec<(String, ps2kit::bench::SoundBench)> {
+    use ps2kit::bench::SoundBench;
+    use ps2kit::extract::{asset_bench, asset_sample, read_index, read_native, AssetKind};
+    let mut out = Vec::new();
+    for path in bios {
+        let file = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if let Ok(b) = SoundBench::open(path) {
+            let kind = if b.bank == ps2kit::banks::BankRef::Ps1 { "PS1 shell VAB" } else { "PS2 boot bank" };
+            out.push((format!("{kind} — {file}"), b));
+        }
+        if let Ok(b) = std::fs::read(path).map_err(ps2kit::Error::from).and_then(ps2kit::rom::RomDir::new).and_then(|rom| SoundBench::ps2_logo(&rom)) {
+            out.push((format!("PS2 logo bank — {file}"), b));
+        }
+    }
+    let mut sets: Vec<std::path::PathBuf> = std::fs::read_dir(soundfonts).map(|d| d.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.join("index.tsv").is_file()).collect()).unwrap_or_default();
+    sets.sort();
+    for set in sets {
+        let Ok(index) = read_index(&set) else { continue };
+        let (mut seen, mut names, mut samples) = (Vec::new(), Vec::new(), Vec::new());
+        for row in &index.rows {
+            if seen.contains(&row.file) { continue }
+            seen.push(row.file.clone());
+            let Ok(data) = read_native(&set.join(&row.file)) else { continue };
+            match row.kind {
+                AssetKind::Vab | AssetKind::SShd | AssetKind::Hd => {
+                    let body = if row.body_file.is_empty() { Vec::new() } else { read_native(&set.join(&row.body_file)).unwrap_or_default() };
+                    let Ok(bench) = asset_bench(row.kind, &data, &body) else { continue };
+                    // Named after its file on the disc ("ANNA" for /CHAR_CD/OMOTE/ANNA.ARC;1).
+                    let stem = row.source.file.rsplit('/').next().unwrap_or("").split(';').next().unwrap_or("");
+                    let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s).to_string();
+                    let mut name = if stem.is_empty() { format!("bank {}", names.len() + 1) } else { stem.clone() };
+                    let mut n = 1;
+                    while names.contains(&name) { n += 1; name = format!("{stem} {n}") }
+                    names.push(name.clone());
+                    out.push((format!("{} — {name}", index.title), bench));
+                }
+                AssetKind::Vag | AssetKind::Wave => if let Ok(s) = asset_sample(row.kind, &data) { samples.push(s) },
+                _ => {}
+            }
+        }
+        if !samples.is_empty() {
+            if let Ok(bench) = SoundBench::from_samples(samples) { out.push((format!("{} — samples", index.title), bench)) }
+        }
+    }
+    out
 }
 
 /// A disc's name for a list: its folder's name for a multi-track set, else the file's.
@@ -1498,636 +1560,4 @@ fn extract_disc(image: &std::path::Path, dir: &std::path::Path) -> Result<String
     if x.assets.is_empty() { return Ok(format!("{}: no sound banks found{}", x.title, if found.is_empty() { String::new() } else { format!(" — {}", found.join(", ")) })) }
     let set = x.write(dir).map_err(|e| e.to_string())?;
     Ok(format!("{}: {} → {}", x.title, found.join(", "), set.folder.file_name().unwrap_or_default().to_string_lossy()))
-}
-
-type Library = std::sync::Arc<ps2kit::library::SoundLibrary>;
-
-/// The Studio's library, started in the background on first use: every BIOS file on the shelf
-/// (and the loaded ones) and every set in the Soundfonts folder is scanned once by
-/// `ps2kit::library`; `None` until it is ready.
-fn music_library(m: &mut Model) -> Option<Library> {
-    if m.music.library.is_none() {
-        match &m.music.library_rx {
-            Some(rx) => if let Ok(lib) = rx.try_recv() {
-                m.music.styles = lib.by_style();
-                m.music.library = Some(std::sync::Arc::new(lib));
-                m.music.library_rx = None;
-            },
-            None => {
-                let mut paths: Vec<std::path::PathBuf> = m.shelf.iter().map(|e| e.path.clone()).collect();
-                for p in [&m.bios_path, &m.ps1_bios_path].into_iter().flatten() { if !paths.contains(p) { paths.push(p.clone()) } }
-                let soundfonts = m.soundfonts.dir.clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || { let _ = tx.send(ps2kit::library::SoundLibrary::scan_with_soundfonts(&paths, &soundfonts)); });
-                m.music.library_rx = Some(rx);
-            }
-        }
-    }
-    m.music.library.clone()
-}
-
-/// The bench (and kit) a track's instrument plays on, through the song's bank resolution.
-fn music_resolve<'a>(lib: &'a ps2kit::library::SoundLibrary, song_bank: ps2kit::song::BankRef, r: &ps2kit::song::InstrumentRef) -> Option<&'a ps2kit::bench::SoundBench> {
-    use ps2kit::library::BankResolver;
-    lib.resolve(&r.bank, song_bank).map(|b| b.bench)
-}
-
-/// A short tag for a bank: which console and which part of the BIOS it comes from.
-fn bank_tag(lib: &ps2kit::library::SoundLibrary, key: &ps2kit::library::BankKey) -> &'static str {
-    use ps2kit::library::BankKind;
-    match lib.bank(key).map(|b| b.kind) {
-        Some(BankKind::Ps2Boot) => "PS2",
-        Some(BankKind::Ps1Shell) => "PS1",
-        Some(BankKind::Ps2Logo) => "PS2 logo",
-        Some(BankKind::Ps2Menu) => "PS2 menu",
-        Some(BankKind::TestSine) => "test",
-        Some(BankKind::GameVab | BankKind::GameSShd | BankKind::GameHd | BankKind::GameSamples) => "game",
-        _ => "bank",
-    }
-}
-
-/// Where a bank comes from, for the browser's source filter: "BIOS", or the disc's title for a
-/// bank extracted into the Soundfonts folder (its label is "<title> — bank 07" / "— samples").
-fn bank_source(lib: &ps2kit::library::SoundLibrary, key: &ps2kit::library::BankKey) -> String {
-    if bank_tag(lib, key) != "game" { return "BIOS".into() }
-    key.label.split(" — ").next().unwrap_or(&key.label).to_string()
-}
-
-/// A game bank's name inside its disc ("bank 07", "samples").
-fn bank_part(key: &ps2kit::library::BankKey) -> &str { key.label.split(" — ").nth(1).unwrap_or("") }
-
-/// A disc title without its region and version tags ("Tekken (Europe)" → "Tekken").
-fn short_title(title: &str) -> &str { title.split(" (").next().unwrap_or(title).trim() }
-
-/// The instrument a library entry (bank, native id) plays: a program in an instrument bank, an
-/// effect in an effect bank, the sample of the loose test tone.
-fn library_instrument(lib: &ps2kit::library::SoundLibrary, key: &ps2kit::library::BankKey, id: i32) -> ps2kit::song::InstrumentRef {
-    use ps2kit::library::BankKind;
-    use ps2kit::song::Instrument;
-    let inst = match lib.bank(key).map(|b| b.kind) {
-        Some(BankKind::Ps2Logo) | Some(BankKind::Ps2Menu) => Instrument::Effect(id.max(0) as usize),
-        Some(BankKind::TestSine) => Instrument::Sample(id.max(0) as usize),
-        _ => Instrument::Program(id.clamp(0, 127) as u8),
-    };
-    ps2kit::song::InstrumentRef::new(key.clone(), inst)
-}
-
-/// The style word for a library entry ("keys", "drone", "air"…).
-fn style_word(m: &Model, key: &ps2kit::library::BankKey, id: i32) -> &'static str {
-    m.music.styles.iter().find(|(_, v)| v.iter().any(|(k, i, _)| k == key && *i == id)).map_or("sound", |(s, _)| match s {
-        ps2kit::bench::Style::BellsAndChimes => "bell", ps2kit::bench::Style::KeysAndBellPads => "keys", ps2kit::bench::Style::MalletsAndPlucks => "mallet",
-        ps2kit::bench::Style::SoftLeadsAndStrings => "lead", ps2kit::bench::Style::BrightPads => "bright", ps2kit::bench::Style::WarmPads => "pad",
-        ps2kit::bench::Style::DarkPadsAndDrones => "drone", ps2kit::bench::Style::Swells => "swell", ps2kit::bench::Style::AirAndNoise => "air",
-        ps2kit::bench::Style::PercussiveNoise => "perc", ps2kit::bench::Style::Samples => "sample", _ => "sound",
-    })
-}
-
-/// A short name for a track's instrument ("keys 0", "PS1 bell 3", "drums", "PS2 menu fx 4"…).
-fn instrument_name(m: &Model, r: &ps2kit::song::InstrumentRef) -> String {
-    use ps2kit::song::Instrument;
-    let tag = m.music.library.as_ref().map_or("", |l| bank_tag(l, &r.bank));
-    let game = format!("{} ", short_title(&r.bank.label));
-    let ps1 = match tag { "PS1" => "PS1 ", "game" => game.as_str(), _ => "" };
-    match &r.instrument {
-        Instrument::Program(p) => format!("{ps1}{} {p}", style_word(m, &r.bank, *p as i32)),
-        Instrument::Effect(e) => format!("{tag} fx {e}"),
-        Instrument::Sample(i) if tag == "game" => format!("{ps1}sample {i}"),
-        Instrument::Sample(_) => "test sine".into(),
-        Instrument::Kit(_) => format!("{ps1}drums"),
-        Instrument::Drum(_) => "drum".into(),
-        _ => "track".into(),
-    }
-}
-
-/// One note of any instrument, for auditioning: a program note, an effect, the loose sample, the
-/// kit lane under `key`, a drum voice.
-fn audition(bench: &ps2kit::bench::SoundBench, inst: &ps2kit::song::Instrument, key: u8, seconds: f64) -> Vec<f32> {
-    use ps2kit::song::Instrument;
-    match inst {
-        Instrument::Program(p) => bench.render(*p as i32, key as i32, 100, seconds),
-        Instrument::Effect(e) => bench.render_effect(*e, seconds.min(2.0)),
-        Instrument::Sample(i) => bench.render_sample(*i, key, 100, seconds),
-        Instrument::Kit(k) => k.piece(key).and_then(|piece| piece.voice.render(bench).ok()).unwrap_or_default(),
-        Instrument::Drum(v) => v.render(bench).unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-fn set_song(m: &mut Model, song: ps2kit::Result<ps2kit::song::Song>) {
-    match song {
-        Ok(s) => {
-            m.music.status = s.import_notes.join(" ");
-            if let Some(lib) = &m.music.library {
-                let missing = s.missing_banks(lib.as_ref());
-                if !missing.is_empty() { m.music.status = format!("This song needs sounds that are not in your BIOS files: {}.", missing.iter().map(|k| k.label.as_str()).collect::<Vec<_>>().join(", ")) }
-            }
-            m.music.step = (s.ticks_per_beat as u32 / 4).max(1);
-            m.music.channel = 0;
-            m.music.pattern = 0;
-            m.music.loop_bars = s.loop_bars;
-            m.music.song = Some(s);
-            name_tracks_by_style(m);
-        }
-        Err(e) => m.music.status = e.to_string(),
-    }
-}
-
-/// Imported songs name their tracks after the MIDI channel; name them after the instrument instead.
-fn name_tracks_by_style(m: &mut Model) {
-    let names: Vec<String> = m.music.song.as_ref().map(|s| s.channels.iter().map(|c| instrument_name(m, &c.instrument)).collect()).unwrap_or_default();
-    if let Some(song) = &mut m.music.song {
-        for (c, n) in song.channels.iter_mut().zip(names) { if c.name.starts_with("MIDI channel") || c.name.starts_with("channel") || c.name.starts_with("ch ") { c.name = n } }
-    }
-}
-
-/// Music maker, sidebar: the library's state, every piece of BIOS music to import, a new song,
-/// open/save/export. The editor fills the picture area while the Studio is open.
-fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
-    use ps2kit::song::{BankRef, Channel, Pattern, Song};
-    let lib = music_library(m);
-    section(ui, "Song", |ui| {
-        let Some(lib) = &lib else { ui.horizontal(|ui| { ui.spinner(); ui.small("Reading the sounds in your BIOS files…"); }); return };
-        let sounds: usize = m.music.styles.iter().map(|(_, v)| v.len()).sum();
-        let discs = lib.banks.iter().map(|b| bank_source(&lib, &b.key)).filter(|s| s != "BIOS").collect::<std::collections::BTreeSet<_>>().len();
-        let from = if discs == 0 { "your BIOS files".to_string() } else { format!("your BIOS files and {discs} disc{} in Soundfonts", if discs == 1 { "" } else { "s" }) };
-        ui.small(format!("{} banks · {sounds} sounds · {} pieces of music, from {from} — mixed freely in one song. Song files hold notes and recipes only.", lib.banks.len(), lib.pieces.len()));
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("New song").clicked() {
-                let mut s = Song::new("untitled", BankRef::Ps2);
-                let first = m.music.styles.iter().flat_map(|(_, v)| v.iter()).next().map(|(k, id, _)| library_instrument(lib, k, *id));
-                let mut c = match first { Some(r) => Channel::with_instrument("track 1", r), None => Channel::new("track 1", 0) };
-                c.patterns.push(Pattern::new(s.ticks_per_bar()));
-                c.arrangement = vec![Some(0), None, None, None];
-                s.channels.push(c);
-                set_song(m, Ok(s));
-            }
-            if ui.button("Open…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("song", &["psxsong"]).pick_file_ui() {
-                    set_song(m, std::fs::read_to_string(&p).map_err(ps2kit::Error::from).and_then(|t| Song::parse(&t)));
-                }
-            }
-            let has = m.music.song.is_some();
-            if ui.add_enabled(has, egui::Button::new("Save…")).clicked() {
-                if let Some(s) = &m.music.song {
-                    match s.to_text() {
-                        Ok(t) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.psxsong", s.name)).save_file_ui() { let _ = std::fs::write(p, t); },
-                        Err(e) => m.music.status = e.to_string(),
-                    }
-                }
-            }
-            if ui.add_enabled(has, egui::Button::new("Export WAV…")).clicked() {
-                if let Some(s) = &m.music.song {
-                    if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.wav", s.name)).save_file_ui() { let _ = std::fs::write(p, wav_bytes(&s.render(lib.as_ref()))); }
-                }
-            }
-            if ui.add_enabled(has, egui::Button::new("Export SSsq…")).on_hover_text("The PS2 BIOS's own sequence format (single-bank songs on PS2 instruments)").clicked() {
-                if let Some(s) = &m.music.song {
-                    match s.to_sssq() {
-                        Ok(bytes) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.sq", s.name)).save_file_ui() { let _ = std::fs::write(p, bytes); },
-                        Err(e) => m.music.status = e.to_string(),
-                    }
-                }
-            }
-        });
-        if !m.music.status.is_empty() { ui.small(&m.music.status); }
-    });
-    let Some(lib) = lib else { return };
-    section(ui, "BIOS music", |ui| {
-        ui.small("Every piece of music your BIOS files carry, deduplicated. Import one to play, study or remix it.");
-        let mut import = None;
-        for (i, p) in lib.pieces.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("Import").clicked() { import = Some((i, None)) }
-                ui.label(egui::RichText::new(&p.label).strong()).on_hover_text(format!("{}\nAlso known as: {}", p.role, p.aliases.join(", ")));
-                ui.small(format!("{:.1} s{}", p.length_s, if p.loops { " · loops" } else { "" }));
-            });
-            // The same stored table with each shell's own scene timing: one per shell and video mode.
-            if !p.console_timing.is_empty() {
-                ui.indent(("timing", i), |ui| {
-                    egui::CollapsingHeader::new(egui::RichText::new(format!("with console timing ({} shells × NTSC/PAL)", p.console_timing.len() / 2)).small()).id_salt(("timing", i)).show(ui, |ui| {
-                        for (v, t) in p.console_timing.iter().enumerate() {
-                            ui.horizontal(|ui| { if ui.small_button("Import").clicked() { import = Some((i, Some(v))) } ui.small(&t.label); });
-                        }
-                    });
-                });
-            }
-        }
-        if let Some((i, variant)) = import {
-            let p = &lib.pieces[i];
-            set_song(m, match variant { None => p.to_song(&lib), Some(v) => p.to_song_variant(&lib, v) });
-        }
-    });
-}
-
-/// Music maker, picture area — a DAW's usual layout (as in Bitwig and most others): transport
-/// across the top, an instrument browser on the left, the arranger in the middle with a playhead,
-/// the detail editor (piano roll) below it and an inspector on the right. Space plays/pauses.
-fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
-    let avail = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(avail, 0.0, Color32::from_rgb(18, 20, 28));
-    if m.music.song.is_none() {
-        ui.painter().text(avail.center(), egui::Align2::CENTER_CENTER, "Start a song in the Music tab: new, or import your BIOS's own boot music.", egui::FontId::proportional(16.0), Color32::GRAY);
-        return;
-    }
-    music_sync_audio(ui, m);
-    let transport = Rect::from_min_max(avail.min, Pos2::new(avail.max.x, avail.min.y + 40.0));
-    let browser = Rect::from_min_max(Pos2::new(avail.min.x, transport.max.y), Pos2::new(avail.min.x + 190.0, avail.max.y));
-    let inspector = Rect::from_min_max(Pos2::new(avail.max.x - 236.0, transport.max.y), avail.max);
-    let centre = Rect::from_min_max(Pos2::new(browser.max.x, transport.max.y), Pos2::new(inspector.min.x, avail.max.y));
-    let rows = m.music.song.as_ref().map_or(1, |s| s.channels.len().max(1)) as f32;
-    let arranger = Rect::from_min_max(centre.min + Vec2::new(6.0, 6.0), Pos2::new(centre.max.x - 6.0, centre.min.y + 30.0 + rows * 26.0));
-    let detail = Rect::from_min_max(Pos2::new(centre.min.x + 6.0, arranger.max.y + 8.0), centre.max - Vec2::new(6.0, 6.0));
-    for r in [browser, inspector] { ui.painter().rect_filled(r, 0.0, Color32::from_rgb(24, 27, 37)); }
-    ui.painter().rect_filled(transport, 0.0, Color32::from_rgb(30, 34, 46));
-    music_transport(ui, m, transport);
-    music_browser(ui, m, browser.shrink(8.0));
-    music_inspector(ui, m, inspector.shrink(8.0));
-    music_arranger(ui, m, arranger);
-    music_piano_roll(ui, m, detail);
-}
-
-/// Keeps the transport's audio in step with the song: re-renders (at most every quarter second)
-/// after an edit, applies the loop, and answers Space.
-fn music_sync_audio(ui: &mut egui::Ui, m: &mut Model) {
-    let Some(song) = &m.music.song else { return };
-    let text = song.to_text().unwrap_or_default();
-    let hash = { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); text.hash(&mut h); h.finish() };
-    let now = Instant::now();
-    if hash != m.music.rendered_hash && m.music.last_render.is_none_or(|t| now - t > std::time::Duration::from_millis(250)) {
-        if let Some(lib) = &m.music.library { m.audio.music_set(song.render(lib.as_ref())) }
-        m.music.rendered_hash = hash;
-        m.music.last_render = Some(now);
-    }
-    let fpt = music_frames_per_tick(song);
-    m.audio.music_loop(m.music.loop_bars.map(|(a, b)| (a as f64 * song.ticks_per_bar() as f64 * fpt, b as f64 * song.ticks_per_bar() as f64 * fpt)));
-    let typing = ui.ctx().egui_wants_keyboard_input();
-    if !typing && ui.input(|i| i.key_pressed(egui::Key::Space)) { let (_, playing) = m.audio.music_state(); m.audio.music_play(!playing) }
-}
-
-/// 48 kHz frames per song tick at the song's tempo.
-fn music_frames_per_tick(song: &ps2kit::song::Song) -> f64 { 48_000.0 * 60.0 / (song.bpm.max(1) as f64 * song.ticks_per_beat.max(1) as f64) }
-
-fn music_transport(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
-    let (pos, playing) = m.audio.music_state();
-    let Some(song) = &mut m.music.song else { return };
-    let fpt = music_frames_per_tick(song);
-    let tick = (pos / fpt) as u32;
-    let (tpb, bpb) = (song.ticks_per_beat.max(1) as u32, song.beats_per_bar.max(1) as u32);
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(10.0, 6.0))), |ui| {
-        ui.horizontal_centered(|ui| {
-            if ui.button("⏮").on_hover_text("To the start").clicked() { m.audio.music_seek(0.0) }
-            if ui.add(egui::Button::new(if playing { "⏸" } else { "▶" }).min_size(Vec2::new(36.0, 24.0))).on_hover_text("Play / pause (Space)").clicked() { m.audio.music_play(!playing) }
-            if ui.button("⏹").on_hover_text("Stop and return to the start").clicked() { m.audio.music_play(false); m.audio.music_seek(0.0) }
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new(format!("{:>3}.{}.{:02}", tick / (tpb * bpb) + 1, tick / tpb % bpb + 1, tick % tpb * 16 / tpb)).monospace().size(18.0).color(Color32::WHITE));
-            ui.add_space(10.0);
-            ui.add(egui::DragValue::new(&mut song.bpm).range(30..=300).suffix(" BPM"));
-            ui.add(egui::DragValue::new(&mut song.beats_per_bar).range(1..=12).suffix("/4"));
-            let mut looping = m.music.loop_bars.is_some();
-            if ui.toggle_value(&mut looping, "⟲ loop").on_hover_text("Loop the selected bars (set by dragging over the bar ruler)").changed() {
-                m.music.loop_bars = looping.then(|| { let b = m.music.selected_bar; (b, b + 1) });
-            }
-            if let Some((a, b)) = m.music.loop_bars { ui.small(format!("bars {}–{}", a + 1, b)); }
-            ui.add_space(10.0);
-            ui.small(format!("{} — {:?} bank", song.name, song.bank));
-        });
-    });
-}
-
-/// The instrument browser: every sound in the library grouped by measured style, tagged with the
-/// console and part of the BIOS it comes from, then each bank's derived drum kit. Click to
-/// audition; + adds a track playing it.
-fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
-    let Some(lib) = m.music.library.clone() else { return };
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        ui.label(egui::RichText::new("Instruments").strong().color(Color32::WHITE));
-        // Source filter: everything, the BIOS files, or one disc's extracted set.
-        let mut sources: Vec<String> = vec!["BIOS".into()];
-        for b in &lib.banks { let s = bank_source(&lib, &b.key); if !sources.contains(&s) { sources.push(s) } }
-        if sources.len() > 1 {
-            let shown = m.music.source.clone().unwrap_or_else(|| "All sources".into());
-            egui::ComboBox::from_id_salt("browser-source").width(rect.width() - 8.0).selected_text(shown).show_ui(ui, |ui| {
-                ui.selectable_value(&mut m.music.source, None, "All sources");
-                for s in &sources { ui.selectable_value(&mut m.music.source, Some(s.clone()), s); }
-            });
-        }
-        let filter = m.music.source.clone();
-        let wanted = |key: &ps2kit::library::BankKey| filter.as_ref().is_none_or(|f| *f == bank_source(&lib, key));
-        egui::ScrollArea::vertical().id_salt("browser").show(ui, |ui| {
-            let mut audition_ref = None;
-            let mut add = None;
-            for (style, entries) in &m.music.styles {
-                let entries: Vec<_> = entries.iter().filter(|(k, _, _)| wanted(k)).collect();
-                if entries.is_empty() { continue }
-                let header = egui::RichText::new(format!("{} ({})", style.name(), entries.len())).small().color(Color32::from_rgb(140, 160, 210));
-                egui::CollapsingHeader::new(header).id_salt(("style", style.name())).default_open(entries.len() <= 40).show(ui, |ui| {
-                    for (key, id, c) in entries {
-                        let r = library_instrument(&lib, key, *id);
-                        ui.horizontal(|ui| {
-                            if ui.small_button("+").on_hover_text("Add as a track").clicked() { add = Some(r.clone()) }
-                            let word = style.name().split([' ', '&']).next().unwrap_or("").to_lowercase();
-                            let label = match bank_tag(&lib, key) {
-                                "game" if filter.is_some() => format!("{} · {word} {id}", bank_part(key)),
-                                "game" => format!("{} {} · {word} {id}", short_title(&key.label), bank_part(key)),
-                                tag => format!("{tag} {word} {id}"),
-                            };
-                            if ui.selectable_label(false, label).on_hover_text(format!("{} · attack {:.2} s · rings {:.1} s · {:.0} Hz{}", key.label, c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, if c.looped { " · loops" } else { "" })).clicked() { audition_ref = Some(r) }
-                        });
-                    }
-                });
-            }
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Drum kits (derived from your samples)").small().color(Color32::from_rgb(140, 160, 210)));
-            for bank in lib.banks.iter().filter(|b| b.kit.as_ref().is_some_and(|k| !k.pieces.is_empty()) && wanted(&b.key)) {
-                let kit = bank.kit.as_ref().unwrap();
-                ui.horizontal(|ui| {
-                    if ui.small_button("+").on_hover_text("Add a drum track with this kit").clicked() { add = Some(ps2kit::song::InstrumentRef::new(bank.key.clone(), ps2kit::song::Instrument::Kit(kit.clone()))) }
-                    let name = if bank_tag(&lib, &bank.key) == "game" { format!("{} {}", short_title(&bank.key.label), bank_part(&bank.key)) } else { bank_tag(&lib, &bank.key).to_string() };
-                    ui.label(format!("{name} kit · {} pieces", kit.pieces.len())).on_hover_text(kit.explain());
-                });
-                ui.horizontal_wrapped(|ui| {
-                    for piece in &kit.pieces { if ui.small_button(&piece.name).on_hover_text(&piece.reason).clicked() { m.audio.preview(piece.voice.render(&bank.bench).unwrap_or_default()) } }
-                });
-            }
-            if let Some(r) = audition_ref {
-                let bank = m.music.song.as_ref().map_or(ps2kit::song::BankRef::Ps2, |s| s.bank);
-                if let Some(bench) = music_resolve(&lib, bank, &r) {
-                    let key = match r.instrument { ps2kit::song::Instrument::Program(p) => bench.program(p as i32).and_then(|p| p.tones.first()).map_or(60, |t| t.root.clamp(t.low, t.high)) as u8, _ => 60 };
-                    m.audio.preview(audition(bench, &r.instrument, key, 1.5));
-                }
-            }
-            if let (Some(r), Some(song)) = (add, &mut m.music.song) {
-                let bars = song.bars().max(4);
-                let mut c = ps2kit::song::Channel::with_instrument("new", r.clone());
-                c.patterns.push(ps2kit::song::Pattern::new(song.ticks_per_bar()));
-                c.arrangement = vec![None; bars];
-                song.channels.push(c);
-                let i = song.channels.len() - 1;
-                m.music.channel = i;
-                m.music.pattern = 0;
-                let name = instrument_name(m, &r);
-                if let Some(song) = &mut m.music.song { song.channels[i].name = name }
-            }
-        });
-    });
-}
-
-/// The inspector: the selected track (instrument from any bank, volume, pan) and pattern.
-fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
-    let Some(lib) = m.music.library.clone() else { return };
-    // The choices follow the browser's source filter (a disc's set can hold hundreds of sounds).
-    let filter = m.music.source.clone();
-    let wanted = |key: &ps2kit::library::BankKey| filter.as_ref().is_none_or(|f| *f == bank_source(&lib, key));
-    let name = |k: &ps2kit::library::BankKey| if bank_tag(&lib, k) == "game" { format!("{} {}", short_title(&k.label), bank_part(k)) } else { bank_tag(&lib, k).to_string() };
-    let choices: Vec<(String, ps2kit::song::InstrumentRef)> = m.music.styles.iter().flat_map(|(s, v)| v.iter().map(move |(k, id, _)| (k.clone(), *id, s.name())))
-        .filter(|(k, _, _)| wanted(k))
-        .map(|(k, id, s)| (format!("{} {id} — {s}", name(&k)), library_instrument(&lib, &k, id)))
-        .chain(lib.banks.iter().filter(|b| wanted(&b.key)).filter_map(|b| b.kit.as_ref().filter(|k| !k.pieces.is_empty()).map(|k| (format!("{} drum kit", name(&b.key)), ps2kit::song::InstrumentRef::new(b.key.clone(), ps2kit::song::Instrument::Kit(k.clone()))))))
-        .collect();
-    let mut rename = None;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        let Some(song) = &mut m.music.song else { return };
-        let ticks_per_bar = song.ticks_per_bar();
-        let Some(c) = song.channels.get_mut(m.music.channel) else { ui.small("Select a track."); return };
-        ui.label(egui::RichText::new("Track").strong().color(Color32::WHITE));
-        ui.text_edit_singleline(&mut c.name);
-        let current = format!("{} · {}", name(&c.instrument.bank), instrument_label(&c.instrument.instrument));
-        let mut choice = None;
-        egui::ComboBox::from_id_salt("insp-prog").width(rect.width() - 8.0).selected_text(current).show_ui(ui, |ui| {
-            for (label, r) in &choices { if ui.selectable_label(&c.instrument == r, label).clicked() { choice = Some(r.clone()) } }
-        });
-        if let Some(r) = choice { c.instrument = r.clone(); rename = Some(r) }
-        ui.small(&c.instrument.bank.label);
-        ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("vol"));
-        ui.add(egui::Slider::new(&mut c.pan, 0..=127).text("pan"));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(format!("Pattern {}", m.music.pattern + 1)).strong().color(Color32::WHITE));
-        if let Some(p) = c.patterns.get_mut(m.music.pattern) {
-            let mut bars = (p.length_ticks / ticks_per_bar.max(1)).max(1);
-            if ui.add(egui::Slider::new(&mut bars, 1..=8).text("bars")).changed() { p.length_ticks = bars * ticks_per_bar; p.notes.retain(|n| n.start + n.length <= p.length_ticks) }
-            ui.small(format!("{} notes", p.notes.len()));
-            if ui.small_button("Clear notes").clicked() { p.notes.clear() }
-        }
-        if ui.small_button("New pattern").on_hover_text("An empty pattern for this track; place it from the arranger").clicked() {
-            c.patterns.push(ps2kit::song::Pattern::new(ticks_per_bar));
-            m.music.pattern = c.patterns.len() - 1;
-        }
-        ui.horizontal_wrapped(|ui| {
-            for i in 0..c.patterns.len() { if ui.selectable_label(m.music.pattern == i, format!("{}", i + 1)).clicked() { m.music.pattern = i } }
-        });
-        ui.add_space(8.0);
-        ui.small("Arranger: click a cell to place the selected pattern, right-click to clear; drag across the ruler to set the loop. Piano roll: click to add or remove a note; wheel scrolls the keys.");
-    });
-    if let Some(r) = rename {
-        let name = instrument_name(m, &r);
-        if let Some(c) = m.music.song.as_mut().and_then(|s| s.channels.get_mut(m.music.channel)) { if c.name.is_empty() || !c.name.contains(' ') || c.name.starts_with("new") || c.name.contains(char::is_numeric) { c.name = name } }
-    }
-}
-
-/// The inspector's label for an instrument.
-fn instrument_label(inst: &ps2kit::song::Instrument) -> String {
-    use ps2kit::song::Instrument;
-    match inst {
-        Instrument::Program(p) => format!("program {p}"),
-        Instrument::Kit(k) => format!("drum kit ({} pieces)", k.pieces.len()),
-        Instrument::Drum(_) => "drum voice".into(),
-        Instrument::Effect(e) => format!("effect {e}"),
-        _ => "instrument".into(),
-    }
-}
-
-/// The arranger: a bar ruler (drag to set the loop), one lane per track, pattern cells, playhead.
-fn music_arranger(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
-    let (pos, playing) = m.audio.music_state();
-    let Some(song) = &mut m.music.song else { return };
-    let painter = ui.painter_at(rect);
-    let font = egui::FontId::monospace(11.0);
-    let total = song.bars().max(4) + 4;
-    let label_w = 112.0;
-    // Long pieces scroll: a fixed cell width, the wheel moves through the bars, and the view
-    // follows the playhead while the song plays.
-    let cell_w = ((rect.width() - label_w) / total as f32).clamp(26.0, 64.0);
-    let visible = (((rect.width() - label_w) / cell_w) as usize).max(1);
-    let play_bar = (pos / music_frames_per_tick(song) / song.ticks_per_bar().max(1) as f64) as usize;
-    if ui.rect_contains_pointer(rect) {
-        let wheel = ui.input(|i| i.smooth_scroll_delta);
-        let d = if wheel.x.abs() > wheel.y.abs() { -wheel.x } else { -wheel.y };
-        if d.abs() > 1.0 { m.music.bar_offset = (m.music.bar_offset as i64 + (d / 8.0).round().clamp(-8.0, 8.0) as i64).max(0) as usize }
-    }
-    if playing && !(m.music.bar_offset..m.music.bar_offset + visible).contains(&play_bar) { m.music.bar_offset = play_bar.saturating_sub(1) }
-    m.music.bar_offset = m.music.bar_offset.min(total.saturating_sub(visible));
-    let off = m.music.bar_offset;
-    let bars = visible.min(total - off);
-    let ruler = Rect::from_min_size(Pos2::new(rect.min.x + label_w, rect.min.y), Vec2::new(cell_w * bars as f32, 20.0));
-    painter.rect_filled(ruler, 0.0, Color32::from_rgb(36, 40, 54));
-    let bx = |b: usize| ruler.min.x + (b as f32 - off as f32) * cell_w;
-    if let Some((a, b)) = m.music.loop_bars { painter.rect_filled(Rect::from_min_max(Pos2::new(bx(a).max(ruler.min.x), ruler.min.y), Pos2::new(bx(b).min(ruler.max.x), ruler.max.y)), 0.0, Color32::from_rgba_unmultiplied(230, 190, 80, 90)); }
-    for b in off..off + bars { painter.text(Pos2::new(bx(b) + 3.0, ruler.center().y), egui::Align2::LEFT_CENTER, format!("{}", b + 1), font.clone(), Color32::GRAY); }
-    if total > visible {
-        // Where the view sits in the whole piece.
-        let track = Rect::from_min_size(Pos2::new(ruler.min.x, ruler.max.y), Vec2::new(ruler.width(), 2.0));
-        painter.rect_filled(track, 0.0, Color32::from_white_alpha(20));
-        let (a, w) = (off as f32 / total as f32, visible as f32 / total as f32);
-        painter.rect_filled(Rect::from_min_size(Pos2::new(track.min.x + a * track.width(), track.min.y), Vec2::new((w * track.width()).max(6.0), 2.0)), 0.0, Color32::from_white_alpha(120));
-    }
-    let rr = ui.interact(ruler, ui.id().with("ruler"), egui::Sense::click_and_drag());
-    if let Some(p) = rr.interact_pointer_pos() {
-        let bar = off + ((p.x - ruler.min.x) / cell_w).floor().max(0.0) as usize;
-        if rr.drag_started() || rr.clicked() { m.music.loop_anchor = bar }
-        if rr.dragged() || rr.drag_stopped() { let (a, b) = (m.music.loop_anchor.min(bar), m.music.loop_anchor.max(bar) + 1); m.music.loop_bars = Some((a, b)) }
-        if rr.clicked() { let t = bar as f64 * song.ticks_per_bar() as f64 * music_frames_per_tick(song); m.audio.music_seek(t) }
-    }
-    let lane_h = 24.0;
-    for (ci, c) in song.channels.iter().enumerate() {
-        let y = ruler.max.y + 4.0 + ci as f32 * (lane_h + 2.0);
-        let sel = ci == m.music.channel;
-        painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(label_w - 4.0, lane_h)), 2.0, if sel { Color32::from_rgb(55, 70, 110) } else { Color32::from_rgb(32, 36, 48) });
-        let name: String = if c.name.chars().count() > 14 { c.name.chars().take(13).chain(['…']).collect() } else { c.name.clone() };
-        painter.text(Pos2::new(rect.min.x + 6.0, y + lane_h / 2.0), egui::Align2::LEFT_CENTER, name, font.clone(), Color32::WHITE);
-        for b in off..off + bars {
-            let r = Rect::from_min_size(Pos2::new(bx(b), y), Vec2::new(cell_w - 2.0, lane_h));
-            let p = c.arrangement.get(b).copied().flatten();
-            painter.rect_filled(r, 2.0, match p { Some(_) => Color32::from_rgb(70, 100, 190), None => Color32::from_white_alpha(10) });
-            if let Some(p) = p { painter.text(r.center(), egui::Align2::CENTER_CENTER, format!("{}", p + 1), font.clone(), Color32::WHITE); }
-        }
-    }
-    let lanes = Rect::from_min_size(Pos2::new(rect.min.x, ruler.max.y + 4.0), Vec2::new(label_w + cell_w * bars as f32, song.channels.len() as f32 * (lane_h + 2.0)));
-    let lr = ui.interact(lanes, ui.id().with("lanes"), egui::Sense::click());
-    if let Some(p) = lr.interact_pointer_pos() {
-        let ci = ((p.y - lanes.min.y) / (lane_h + 2.0)) as usize;
-        let tpb = song.ticks_per_bar();
-        if let Some(c) = song.channels.get_mut(ci) {
-            if lr.clicked() || lr.secondary_clicked() { if m.music.channel != ci { m.music.pattern = 0 } m.music.channel = ci }
-            if p.x >= ruler.min.x {
-                let b = off + ((p.x - ruler.min.x) / cell_w) as usize;
-                if c.arrangement.len() <= b { c.arrangement.resize(b + 1, None) }
-                if lr.secondary_clicked() { c.arrangement[b] = None }
-                else if lr.clicked() {
-                    if c.patterns.is_empty() { c.patterns.push(ps2kit::song::Pattern::new(tpb)) }
-                    let pat = c.arrangement[b].unwrap_or(m.music.pattern.min(c.patterns.len() - 1));
-                    c.arrangement[b] = Some(pat);
-                    m.music.pattern = pat;
-                    m.music.selected_bar = b;
-                }
-            }
-        }
-    }
-    // Playhead.
-    let x = ruler.min.x + ((pos / music_frames_per_tick(song) / song.ticks_per_bar().max(1) as f64) as f32 - off as f32) * cell_w;
-    if (ruler.min.x..=rect.max.x).contains(&x) { painter.line_segment([Pos2::new(x, ruler.min.y), Pos2::new(x, lanes.max.y)], Stroke::new(2.0, Color32::from_rgb(255, 120, 90))); }
-}
-
-/// The detail editor: a piano roll for the selected track's selected pattern.
-fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
-    let lib = m.music.library.clone();
-    let Some(song) = &mut m.music.song else { return };
-    let (tpb, song_bank) = (song.ticks_per_beat as u32, song.bank);
-    let Some(c) = song.channels.get_mut(m.music.channel) else { return };
-    let inst_ref = c.instrument.clone();
-    let instrument = inst_ref.instrument.clone();
-    // The bench this track's bank resolves to (None while the library loads or the bank is missing).
-    let bench = lib.as_deref().and_then(|l| music_resolve(l, song_bank, &inst_ref));
-    if let ps2kit::song::Instrument::Kit(kit) = &instrument {
-        let name = c.name.clone();
-        let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
-        return drum_grid(ui, bench, &m.audio, kit, pattern, tpb, &name, m.music.pattern, rect);
-    }
-    let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
-    let keys = 36u8;
-    // A newly shown pattern scrolls the roll so its notes are in view.
-    if m.music.roll_for != (m.music.channel, m.music.pattern) {
-        m.music.roll_for = (m.music.channel, m.music.pattern);
-        if let (Some(lo), Some(hi)) = (pattern.notes.iter().map(|n| n.key).min(), pattern.notes.iter().map(|n| n.key).max()) {
-            let span = hi.saturating_sub(lo);
-            m.music.low_key = if span < keys { lo.saturating_sub((keys - span) / 2) } else { lo }.min(127 - keys);
-        }
-    }
-    let painter = ui.painter_at(rect);
-    let font = egui::FontId::monospace(10.0);
-    painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{} · pattern {} · {}", c.name, m.music.pattern + 1, instrument_label(&instrument)), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
-    let roll = Rect::from_min_max(Pos2::new(rect.min.x + 44.0, rect.min.y + 18.0), rect.max);
-    let row_h = roll.height() / keys as f32;
-    let step = m.music.step.max(1);
-    let steps = pattern.length_ticks.div_ceil(step).max(1);
-    let col_w = roll.width() / steps as f32;
-    for k in 0..keys {
-        let key = m.music.low_key.saturating_add(keys - 1 - k);
-        let y = roll.min.y + k as f32 * row_h;
-        let black = matches!(key % 12, 1 | 3 | 6 | 8 | 10);
-        painter.rect_filled(Rect::from_min_size(Pos2::new(roll.min.x, y), Vec2::new(roll.width(), row_h - 1.0)), 0.0, if black { Color32::from_white_alpha(6) } else { Color32::from_white_alpha(12) });
-        painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(40.0, row_h - 1.0)), 0.0, if black { Color32::from_gray(40) } else { Color32::from_gray(200) });
-        if key.is_multiple_of(12) { painter.text(Pos2::new(rect.min.x + 2.0, y + row_h / 2.0), egui::Align2::LEFT_CENTER, note_name(key as i32), font.clone(), Color32::BLACK); }
-    }
-    let beat_steps = (tpb / step).max(1);
-    for s in 0..=steps { let x = roll.min.x + s as f32 * col_w; painter.line_segment([Pos2::new(x, roll.min.y), Pos2::new(x, roll.max.y)], Stroke::new(1.0, Color32::from_white_alpha(if s % (beat_steps * 4) == 0 { 70 } else if s % beat_steps == 0 { 36 } else { 12 }))); }
-    for n in &pattern.notes {
-        if n.key < m.music.low_key || n.key >= m.music.low_key.saturating_add(keys) { continue }
-        let row = (m.music.low_key + keys - 1 - n.key) as f32;
-        let r = Rect::from_min_size(Pos2::new(roll.min.x + n.start as f32 / step as f32 * col_w, roll.min.y + row * row_h), Vec2::new((n.length as f32 / step as f32 * col_w - 1.0).max(3.0), row_h - 1.0));
-        painter.rect_filled(r, 2.0, Color32::from_rgb(230, 190, 80));
-    }
-    let rr = ui.interact(roll, ui.id().with("roll"), egui::Sense::click());
-    if rr.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll.abs() > 1.0 { m.music.low_key = (m.music.low_key as i32 + if scroll > 0.0 { 1 } else { -1 }).clamp(0, 127 - keys as i32) as u8 }
-    }
-    // The piano keys audition.
-    let kr = ui.interact(Rect::from_min_max(Pos2::new(rect.min.x, roll.min.y), Pos2::new(roll.min.x, roll.max.y)), ui.id().with("keys"), egui::Sense::click());
-    if let (true, Some(p), Some(b)) = (kr.clicked(), kr.interact_pointer_pos(), bench) {
-        let key = m.music.low_key + keys - 1 - ((p.y - roll.min.y) / row_h) as u8;
-        m.audio.preview(audition(b, &instrument, key, 0.8));
-    }
-    if let (true, Some(pos)) = (rr.clicked(), rr.interact_pointer_pos()) {
-        let s = ((pos.x - roll.min.x) / col_w) as u32;
-        let key = m.music.low_key + keys - 1 - ((pos.y - roll.min.y) / row_h) as u8;
-        let start = s * step;
-        if let Some(i) = pattern.notes.iter().position(|n| n.key == key && start >= n.start && start < n.start + n.length) { pattern.notes.remove(i); }
-        else if start < pattern.length_ticks {
-            pattern.notes.push(ps2kit::song::Note::new(start, step.min(pattern.length_ticks - start), key, 100));
-            if let Some(b) = bench { m.audio.preview(audition(b, &instrument, key, 0.4)); }
-        }
-    }
-}
-
-
-/// The drum grid for a kit track: one named lane per kit piece (kick, snare, hats…), sixteenth
-/// steps; click toggles a hit; the lane names audition their piece.
-#[allow(clippy::too_many_arguments)]
-fn drum_grid(ui: &mut egui::Ui, bench: Option<&ps2kit::bench::SoundBench>, audio: &crate::audio::AudioPlayer, kit: &ps2kit::song::Kit, pattern: &mut ps2kit::song::Pattern, tpb: u32, name: &str, index: usize, rect: Rect) {
-    let painter = ui.painter_at(rect);
-    painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{name} · pattern {} · drum grid", index + 1), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
-    if kit.pieces.is_empty() { painter.text(rect.center(), egui::Align2::CENTER_CENTER, "This bank's samples give no drum pieces.", egui::FontId::proportional(14.0), Color32::GRAY); return }
-    let step = (tpb / 4).max(1);
-    let steps = pattern.length_ticks.div_ceil(step).max(1);
-    let lanes = kit.pieces.len();
-    let grid = Rect::from_min_max(Pos2::new(rect.min.x + 90.0, rect.min.y + 22.0), Pos2::new(rect.max.x, (rect.min.y + 22.0 + lanes as f32 * 30.0).min(rect.max.y)));
-    let lane_h = grid.height() / lanes as f32;
-    let col_w = grid.width() / steps as f32;
-    for (li, piece) in kit.pieces.iter().enumerate() {
-        let y = grid.min.y + li as f32 * lane_h;
-        let label = Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(86.0, lane_h - 2.0));
-        painter.rect_filled(label, 2.0, Color32::from_rgb(40, 46, 62));
-        painter.text(label.left_center() + Vec2::new(6.0, 0.0), egui::Align2::LEFT_CENTER, &piece.name, egui::FontId::monospace(11.0), Color32::WHITE);
-        if ui.interact(label, ui.id().with(("lane", li)), egui::Sense::click()).on_hover_text(&piece.reason).clicked() {
-            if let Some(b) = bench { audio.preview(piece.voice.render(b).unwrap_or_default()) }
-        }
-        for s in 0..steps {
-            let r = Rect::from_min_size(Pos2::new(grid.min.x + s as f32 * col_w, y), Vec2::new(col_w - 2.0, lane_h - 2.0));
-            let on = pattern.notes.iter().any(|n| n.key == piece.key && n.start == s * step);
-            let beat = s % 4 == 0;
-            painter.rect_filled(r, 3.0, if on { Color32::from_rgb(255, 120, 90) } else if beat { Color32::from_white_alpha(22) } else { Color32::from_white_alpha(10) });
-        }
-    }
-    let gr = ui.interact(grid, ui.id().with("drumgrid"), egui::Sense::click());
-    if let (true, Some(p)) = (gr.clicked(), gr.interact_pointer_pos()) {
-        let (s, li) = (((p.x - grid.min.x) / col_w) as u32, ((p.y - grid.min.y) / lane_h) as usize);
-        if let (Some(piece), true) = (kit.pieces.get(li), s < steps) {
-            let start = s * step;
-            if let Some(i) = pattern.notes.iter().position(|n| n.key == piece.key && n.start == start) { pattern.notes.remove(i); }
-            else {
-                pattern.notes.push(ps2kit::song::Note::new(start, step.min(pattern.length_ticks - start), piece.key, 110));
-                if let Some(b) = bench { audio.preview(piece.voice.render(b).unwrap_or_default()) }
-            }
-        }
-    }
 }

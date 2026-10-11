@@ -55,13 +55,5 @@ path = "src/bin/bench.rs"
 png = "0.17"
 
 [[bin]]
-name = "song"
-path = "src/bin/song.rs"
-
-[[bin]]
-name = "library"
-path = "src/bin/library.rs"
-
-[[bin]]
 name = "extract"
 path = "src/bin/extract.rs"

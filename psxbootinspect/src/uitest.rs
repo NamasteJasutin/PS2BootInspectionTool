@@ -1,12 +1,12 @@
-//! `psxbootinspect --ui <out.png> [--tab music|sound|bios|…] [--size 1400x812] [--script "…"]`:
+//! `psxbootinspect --ui <out.png> [--tab boot|sound|soundfonts|bios|…] [--size 1400x812] [--script "…"]`:
 //! runs the app's real egui interface headless — the same `ui::layout` the window uses, the
 //! user's files loaded the same way, sound muted — feeds it a script of input and renders it to
 //! PNG with egui-wgpu. Script steps, separated by `;`: `click x,y`, `rclick x,y`,
 //! `drag x1,y1 x2,y2`, `wheel x,y dy`, `key space|enter|escape`, `type text`, `frames n`,
 //! `shot path.png` (a PNG of that moment; the final frame always goes to `<out.png>`),
-//! `save song.psxsong`, `wav song.wav` (the song as the engine renders it), `waitlib` (wait
-//! for the Studio's background library scan), `soundfonts dir` (the Soundfonts folder for this
-//! run, never saved), `waitextract` (wait for a running extraction), `tab name` (switch tabs).
+//! `soundfonts dir` (the Soundfonts folder for this run, never saved), `waitextract` (wait for a
+//! running extraction), `waitbanks` (wait for the SoundFont export's bank list), `tab name`
+//! (switch tabs).
 
 use crate::model::{Model, Tab};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -81,12 +81,12 @@ fn point(s: &str) -> Result<Pos2, String> {
 fn press(pos: Pos2, button: PointerButton, pressed: bool) -> Event { Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE } }
 
 fn tab_named(name: &str) -> Tab {
-    match name { "boot" => Tab::Boot, "save" => Tab::SaveData, "disc" => Tab::Disc, "bios" => Tab::Bios, "lab" => Tab::Lab, "sound" => Tab::Sound, "fonts" => Tab::Fonts, "soundfonts" => Tab::Soundfonts, _ => Tab::Music }
+    match name { "boot" => Tab::Boot, "save" => Tab::SaveData, "disc" => Tab::Disc, "bios" => Tab::Bios, "lab" => Tab::Lab, "sound" => Tab::Sound, "fonts" => Tab::Fonts, "soundfonts" => Tab::Soundfonts, _ => Tab::Boot }
 }
 
-pub fn run(args: &[String], edition: crate::Edition) -> Result<(), String> {
+pub fn run(args: &[String]) -> Result<(), String> {
     let mut out = None;
-    let (mut tab, mut size, mut script) = (Tab::Music, Vec2::new(1400.0, 812.0), String::new());
+    let (mut tab, mut size, mut script) = (Tab::Boot, Vec2::new(1400.0, 812.0), String::new());
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -105,7 +105,6 @@ pub fn run(args: &[String], edition: crate::Edition) -> Result<(), String> {
     let renderer = egui_wgpu::Renderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, egui_wgpu::RendererOptions::default());
     let mut model = Model::new();
     model.load_defaults();
-    model.set_edition(edition);
     model.sound_volume = 0.0;
     model.tab = tab;
     let mut h = Harness { ctx: egui::Context::default(), model, size, renderer, device, queue, last: None };
@@ -139,35 +138,29 @@ pub fn run(args: &[String], edition: crate::Edition) -> Result<(), String> {
                 h.frame(vec![Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }]);
             }
             "type" => h.frame(vec![Event::Text(rest.to_string())]),
-            // Blocks until the Studio's background library scan has finished (up to two minutes).
-            "waitlib" => {
-                h.model.tab = Tab::Music;
-                for _ in 0..1200 { h.frame(Vec::new()); if h.model.music.library.is_some() { break } std::thread::sleep(std::time::Duration::from_millis(100)) }
-                if h.model.music.library.is_none() { return Err("the library did not load".into()) }
-                h.frame(Vec::new());
-            }
             // Points the Soundfonts folder somewhere for this run (never saved).
-            "soundfonts" => { h.model.soundfonts.dir = std::path::PathBuf::from(rest); h.model.soundfonts.listed = false; h.model.music.forget_library() }
+            "soundfonts" => { h.model.soundfonts.dir = std::path::PathBuf::from(rest); h.model.soundfonts.listed = false; h.model.soundfonts.forget_banks() }
             // Blocks until a running extraction has finished (up to ten minutes).
             "waitextract" => {
                 for _ in 0..6000 { h.frame(Vec::new()); if h.model.soundfonts.job.is_none() { break } std::thread::sleep(std::time::Duration::from_millis(100)) }
                 if h.model.soundfonts.job.is_some() { return Err("the extraction did not finish".into()) }
                 h.frame(Vec::new());
             }
+            // Blocks until the SoundFont export's bank list has been read (up to ten minutes).
+            "waitbanks" => {
+                h.model.tab = Tab::Soundfonts;
+                for _ in 0..6000 { h.frame(Vec::new()); if h.model.soundfonts.banks.is_some() { break } std::thread::sleep(std::time::Duration::from_millis(100)) }
+                if h.model.soundfonts.banks.is_none() { return Err("the bank list did not load".into()) }
+                h.frame(Vec::new());
+            }
             "tab" => { h.model.tab = tab_named(rest); h.frame(Vec::new()) }
             "frames" => for _ in 0..rest.parse::<usize>().map_err(|_| "frames n")? { h.frame(Vec::new()) },
             "shot" => { h.frame(Vec::new()); h.snapshot(rest)? }
-            "save" => { let song = h.model.music.song.as_ref().ok_or("no song")?; std::fs::write(rest, song.to_text().map_err(|e| e.to_string())?).map_err(|e| e.to_string())? }
-            "wav" => {
-                let (song, lib) = (h.model.music.song.as_ref().ok_or("no song")?, h.model.music.library.as_ref().ok_or("library not loaded (use waitlib)")?);
-                std::fs::write(rest, crate::ui::wav_bytes(&song.render(lib.as_ref()))).map_err(|e| e.to_string())?;
-            }
             other => return Err(format!("unknown step {other:?}")),
         }
     }
     h.frame(Vec::new());
     h.snapshot(&out)?;
-    let (pos, playing) = h.model.audio.music_state();
-    println!("ui: tab {:?}, song {:?}, transport {:.0} frames, playing {playing}", h.model.tab, h.model.music.song.as_ref().map(|s| (&s.name, s.channels.len(), s.bars())), pos);
+    println!("ui: tab {:?}, {} soundfont sets", h.model.tab, h.model.soundfonts.sets.len());
     Ok(())
 }

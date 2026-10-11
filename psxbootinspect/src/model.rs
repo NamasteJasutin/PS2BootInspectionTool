@@ -40,7 +40,7 @@ pub fn video_mode_name(video: VideoMode) -> &'static str { if video == VideoMode
 
 /// The sidebar's tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tab { Boot, SaveData, Disc, Bios, Lab, Sound, Fonts, Music, Soundfonts }
+pub enum Tab { Boot, SaveData, Disc, Bios, Lab, Sound, Fonts, Soundfonts }
 
 /// State of the Sound and Fonts tabs: the bench read from the chosen console's BIOS, what is
 /// being auditioned, and the font page on screen.
@@ -71,60 +71,8 @@ impl Default for AssetInspection {
     }
 }
 
-/// The music maker's state: a song over the user's own BIOS instruments, the bench it plays on,
-/// and what the editor has selected.
-pub struct MusicMaker {
-    pub song: Option<ps2kit::song::Song>,
-    /// Every distinct bank and piece of music in the BIOS files on the shelf (`ps2kit::library`),
-    /// scanned once in the background the first time the Studio opens.
-    pub library: Option<std::sync::Arc<ps2kit::library::SoundLibrary>>,
-    pub library_rx: Option<mpsc::Receiver<ps2kit::library::SoundLibrary>>,
-    /// The library's sounds grouped by measured style, across banks and consoles.
-    pub styles: ps2kit::library::LibraryStyles,
-    pub channel: usize,
-    pub pattern: usize,
-    /// Lowest key shown in the piano roll.
-    pub low_key: u8,
-    /// Grid step in ticks for placing notes (a sixteenth by default).
-    pub step: u32,
-    pub status: String,
-    /// The bar last clicked in the arrangement.
-    pub selected_bar: usize,
-    /// First bar shown in the arranger (long pieces scroll).
-    pub bar_offset: usize,
-    /// Looping bars `[start, end)` on the transport, if set.
-    pub loop_bars: Option<(usize, usize)>,
-    pub loop_anchor: usize,
-    /// The tab currently has the focus (the boot is paused), and whether to resume it on leaving.
-    pub focused: bool,
-    pub resume_boot: bool,
-    /// The song text last rendered for the transport, and when.
-    pub rendered_hash: u64,
-    /// The (track, pattern) the piano roll last showed, to scroll to a new pattern's notes.
-    pub roll_for: (usize, usize),
-    pub last_render: Option<std::time::Instant>,
-    /// The browser's source filter: `None` for everything, "BIOS", or a disc's title.
-    pub source: Option<String>,
-}
-
-
-impl MusicMaker {
-    /// Drops the library so the Studio scans it again (the Soundfonts folder changed); the song
-    /// stays and resolves against the new scan.
-    pub fn forget_library(&mut self) {
-        self.library = None;
-        self.library_rx = None;
-        self.styles.clear();
-        self.rendered_hash = 0;
-    }
-}
-
-impl Default for MusicMaker {
-    fn default() -> Self { Self { song: None, library: None, library_rx: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, bar_offset: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None, roll_for: (usize::MAX, 0), source: None } }
-}
-
 /// The Soundfonts folder: banks the extractor took from the user's own game discs, kept for the
-/// Studio (`ps2kit::extract`). Nothing in it comes with the app.
+/// Sound workspace (`ps2kit::extract`). Nothing in it comes with the app.
 pub struct SoundfontShelf {
     pub dir: PathBuf,
     /// The folder was chosen by the user (else the platform default, `settings::Settings`).
@@ -139,13 +87,22 @@ pub struct SoundfontShelf {
     pub log: Vec<String>,
     /// A set the user asked to delete, waiting for the second click.
     pub confirm_delete: Option<PathBuf>,
-    /// The bank chosen for SoundFont 2 export.
-    pub export: Option<ps2kit::library::BankKey>,
+    /// The bank chosen for SoundFont 2 export (an index into `banks`).
+    pub export: usize,
+    /// The banks offered for export (the loaded BIOS files and every set), read in the background.
+    pub banks: Option<std::sync::Arc<Vec<(String, ps2kit::bench::SoundBench)>>>,
+    pub banks_rx: Option<mpsc::Receiver<Vec<(String, ps2kit::bench::SoundBench)>>>,
 }
 
 impl SoundfontShelf {
     pub fn new(settings: &crate::settings::Settings) -> Self {
-        Self { dir: settings.soundfonts_dir(), custom: settings.soundfonts_dir.is_some(), sets: Vec::new(), listed: false, discs: Vec::new(), job: None, log: Vec::new(), confirm_delete: None, export: None }
+        Self { dir: settings.soundfonts_dir(), custom: settings.soundfonts_dir.is_some(), sets: Vec::new(), listed: false, discs: Vec::new(), job: None, log: Vec::new(), confirm_delete: None, export: 0, banks: None, banks_rx: None }
+    }
+
+    /// Drops the export's bank list so it is read again (the folder or its sets changed).
+    pub fn forget_banks(&mut self) {
+        self.banks = None;
+        self.banks_rx = None;
     }
 
     /// Reads the sets in the folder: each sub-folder with an `index.tsv`, counted by kind.
@@ -194,19 +151,19 @@ pub enum ExtractEvent {
 }
 
 /// The app's three workspaces, each a set of tabs: watching the boot, inspecting the files, and
-/// making music with everything the BIOS files hold.
+/// the sounds (auditioning every instrument, extracting your games' banks, SoundFont export).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Workspace { Boot, Inspect, Studio }
+pub enum Workspace { Boot, Inspect, Sound }
 
 impl Workspace {
-    pub const ALL: [Self; 3] = [Self::Boot, Self::Inspect, Self::Studio];
-    pub fn name(self) -> &'static str { match self { Self::Boot => "Boot", Self::Inspect => "Inspect", Self::Studio => "Studio" } }
+    pub const ALL: [Self; 3] = [Self::Boot, Self::Inspect, Self::Sound];
+    pub fn name(self) -> &'static str { match self { Self::Boot => "Boot", Self::Inspect => "Inspect", Self::Sound => "Sound" } }
     /// The tabs this workspace shows, first one the default.
     pub fn tabs(self) -> &'static [Tab] {
         match self {
             Self::Boot => &[Tab::Boot, Tab::SaveData],
             Self::Inspect => &[Tab::Bios, Tab::Disc, Tab::Lab, Tab::Fonts],
-            Self::Studio => &[Tab::Music, Tab::Sound, Tab::Soundfonts],
+            Self::Sound => &[Tab::Sound, Tab::Soundfonts],
         }
     }
     /// The workspace a tab belongs to.
@@ -233,9 +190,9 @@ pub struct ShelfEntry {
 impl Tab {
     /// Every tab (the workspaces' test checks each lives in exactly one).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const ALL: [Self; 9] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios, Self::Lab, Self::Sound, Self::Fonts, Self::Music, Self::Soundfonts];
+    pub const ALL: [Self; 8] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios, Self::Lab, Self::Sound, Self::Fonts, Self::Soundfonts];
     pub fn name(self) -> &'static str {
-        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS", Self::Lab => "Lab", Self::Sound => "Sound", Self::Fonts => "Fonts", Self::Music => "Music", Self::Soundfonts => "Soundfonts" }
+        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS", Self::Lab => "Lab", Self::Sound => "Sound", Self::Fonts => "Fonts", Self::Soundfonts => "Soundfonts" }
     }
 }
 
@@ -566,12 +523,11 @@ pub struct Model {
     pub ps3_firmware: Option<String>,
     /// Sound and font inspection (`ps2kit::bench`), built on first use per console.
     pub asset_inspection: AssetInspection,
-    /// The music maker (`ps2kit::song`): the song being edited and the editor's selection.
-    pub music: MusicMaker,
     /// The Soundfonts folder and the extractor's state.
     pub soundfonts: SoundfontShelf,
-    /// Which launcher is running (the Studio-only edition hides the other workspaces).
-    pub edition: crate::Edition,
+    /// The Sound workspace has the focus (the boot is paused), and whether to resume it on leaving.
+    pub sound_focus: bool,
+    pub resume_boot: bool,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -602,14 +558,14 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_menu: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), music: MusicMaker::default(), soundfonts: SoundfontShelf::new(&crate::settings::Settings::load()), edition: crate::Edition::Full, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_menu: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), soundfonts: SoundfontShelf::new(&crate::settings::Settings::load()), sound_focus: false, resume_boot: false, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
     }
 
-    /// Takes what the background extraction reported; when it ends, the sets are read again and
-    /// the Studio's library rescans so the new banks appear.
+    /// Takes what the background extraction reported; when it ends, the sets and the export's bank
+    /// list are read again so the new banks appear.
     pub fn poll_extract(&mut self) {
         let Some(rx) = &self.soundfonts.job else { return };
         let mut done = false;
@@ -623,14 +579,8 @@ impl Model {
         if done {
             self.soundfonts.job = None;
             self.soundfonts.list();
-            self.music.forget_library();
+            self.soundfonts.forget_banks();
         }
-    }
-
-    /// The Studio-only edition opens on the music maker and stays in the Studio.
-    pub fn set_edition(&mut self, edition: crate::Edition) {
-        self.edition = edition;
-        if edition == crate::Edition::Studio && Workspace::of(self.tab) != Workspace::Studio { self.tab = Tab::Music }
     }
 
     pub fn pcsx2_dir() -> Option<PathBuf> {

@@ -1,3 +1,3 @@
-//! PSX Boot Inspection Tool: Boot, Inspect and Studio.
+//! PSX Boot Inspection Tool: Boot, Inspect and Sound.
 
-fn main() -> eframe::Result { psxbootinspect::main(psxbootinspect::Edition::Full) }
+fn main() -> eframe::Result { psxbootinspect::main() }

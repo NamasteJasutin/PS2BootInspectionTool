@@ -98,10 +98,9 @@ corrected where the ROM disagreed, and merged by Claude; 134 ps2kit tests.
 - **Assets**: Sound tab (every program/effect/sample in the PS2 banks or PS1 VAB, keyboard,
   WAV export) ✓, Fonts tab (every BIOS font, glyph inspector, PNG export) ✓, ROM explorer
   (`romdiff`) and asset bench (`bench`) ✓.
-- **Music maker**: `ps2kit::song` (patterns on a bar grid after Bosca Ceoil/BeepBox, clean-room;
-  the BIOS's own instruments; imports of the PS2 boot music — re-rendered within 6e-8 of the
-  driver — and the PS1 licence chime/SCE intro; `.psxsong`, WAV, SSsq export) ✓ and the Music tab
-  (arrangement grid + piano roll in the picture area) ✓ — to be played with.
+- **Game sound banks**: `ps2kit::extract` (validated VAB/VH+VB, SEQ, VAG, SShd/SSsq, HD/BD, WAVE
+  from the user's own discs into a Soundfonts folder) and `ps2kit::sf2` (SoundFont 2 export of any
+  bank) ✓, in the Sound workspace.
 - **PS3**: PUP card, snapshots/diffs, disc and save metadata card (`ps3card`, Lab), round-four
   survey ✓. Waiting on user-supplied plaintext: disc metadata folders, saves, a dev_flash.
 

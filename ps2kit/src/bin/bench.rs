@@ -4,7 +4,7 @@ use ps2kit::bench::{FontBench, SoundBench};
 use ps2kit::sound::{write_wav, SAMPLE_RATE};
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: bench <bios> [--sounds] [--render <prog> <note> <out.wav>] [--effect <id> <out.wav>] [--fonts] [--atlas <font> <out.ppm|pam>] [--sf2 <out.sf2> [--bank boot|logo|menu|ps1]]";
+const USAGE: &str = "usage: bench <bios> [--sounds] [--render <prog> <note> <out.wav>] [--effect <id> <out.wav>] [--fonts] [--atlas <font> <out.ppm|pam>] [--sf2 <out.sf2> [--bank boot|logo|ps1]]";
 
 enum RenderRequest {
     Program(i32, i32, PathBuf),
@@ -103,7 +103,7 @@ fn main() {
                     std::process::exit(2);
                 }
                 let bank_name = args[i + 1].to_ascii_lowercase();
-                if !["boot", "logo", "menu", "ps1"].contains(&bank_name.as_str()) {
+                if !["boot", "logo", "ps1"].contains(&bank_name.as_str()) {
                     eprintln!("invalid bank name: {}\n{USAGE}", args[i + 1]);
                     std::process::exit(2);
                 }
@@ -229,64 +229,24 @@ fn run(
 
     if let Some(out_path) = sf2_req {
         let bank_kind = bank_req.as_deref().unwrap_or("boot");
-        let library = ps2kit::library::SoundLibrary::scan(std::slice::from_ref(&bios_path));
-        let (bench, kit, name) = match bank_kind {
-            "boot" => {
-                if let Some(b) = library.banks.iter().find(|b| b.kind == ps2kit::library::BankKind::Ps2Boot) {
-                    (b.bench.clone(), b.kit.clone(), b.key.label.clone())
-                } else if let Some(b) = library.banks.iter().find(|b| b.kind == ps2kit::library::BankKind::Ps1Shell) {
-                    (b.bench.clone(), b.kit.clone(), b.key.label.clone())
-                } else {
-                    let bench = SoundBench::open(&bios_path)?;
-                    let kit = ps2kit::song::Kit::derive(&bench);
-                    let kit_opt = if kit.pieces.is_empty() { None } else { Some(kit) };
-                    (bench, kit_opt, "Boot Bank".to_string())
+        let (bench, name) = match bank_kind {
+            "boot" | "ps1" => {
+                let bench = SoundBench::open(&bios_path)?;
+                if bank_kind == "ps1" && bench.bank != ps2kit::banks::BankRef::Ps1 {
+                    return Err(ps2kit::Error::NotFound(ps2kit::Format::SoundBank, format!("PS1 sound bank in {}", bios_path.display())));
                 }
+                let name = if bench.bank == ps2kit::banks::BankRef::Ps1 { "PS1 shell VAB" } else { "PS2 boot bank" };
+                (bench, name.to_string())
             }
             "logo" => {
-                if let Some(b) = library.banks.iter().find(|b| b.kind == ps2kit::library::BankKind::Ps2Logo) {
-                    (b.bench.clone(), b.kit.clone(), b.key.label.clone())
-                } else {
-                    let data = std::fs::read(&bios_path)?;
-                    let rom = ps2kit::rom::RomDir::new(data)?;
-                    let bench = SoundBench::ps2_logo(&rom)?;
-                    let kit = ps2kit::song::Kit::derive(&bench);
-                    let kit_opt = if kit.pieces.is_empty() { None } else { Some(kit) };
-                    (bench, kit_opt, "PS2 Logo Bank".to_string())
-                }
-            }
-            "menu" => {
-                if let Some(b) = library.banks.iter().find(|b| b.kind == ps2kit::library::BankKind::Ps2Menu) {
-                    (b.bench.clone(), b.kit.clone(), b.key.label.clone())
-                } else {
-                    return Err(ps2kit::Error::NotFound(
-                        ps2kit::Format::SoundBank,
-                        format!("menu sound bank in {}", bios_path.display()),
-                    ));
-                }
-            }
-            "ps1" => {
-                if let Some(b) = library.banks.iter().find(|b| b.kind == ps2kit::library::BankKind::Ps1Shell) {
-                    (b.bench.clone(), b.kit.clone(), b.key.label.clone())
-                } else {
-                    let bench = SoundBench::open(&bios_path)?;
-                    if bench.bank == ps2kit::song::BankRef::Ps1 {
-                        let kit = ps2kit::song::Kit::derive(&bench);
-                        let kit_opt = if kit.pieces.is_empty() { None } else { Some(kit) };
-                        (bench, kit_opt, "PS1 Shell VAB".to_string())
-                    } else {
-                        return Err(ps2kit::Error::NotFound(
-                            ps2kit::Format::SoundBank,
-                            format!("PS1 sound bank in {}", bios_path.display()),
-                        ));
-                    }
-                }
+                let rom = ps2kit::rom::RomDir::new(std::fs::read(&bios_path)?)?;
+                (SoundBench::ps2_logo(&rom)?, "PS2 logo bank".to_string())
             }
             _ => unreachable!(),
         };
 
         let comment = format!("Exported from {}", bios_path.display());
-        let sf2_data = ps2kit::sf2::sf2_from_bench(&bench, kit.as_ref(), &name, &comment)?;
+        let sf2_data = ps2kit::sf2::sf2_from_bench(&bench, &[], &name, &comment)?;
         std::fs::write(&out_path, &sf2_data)?;
         println!(
             "Exported SoundFont 2 to {} ({} bytes, {} programs, {} UI effects, {} samples)",
@@ -294,7 +254,7 @@ fn run(
             sf2_data.len(),
             bench.programs.len(),
             bench.effects.len(),
-            bench.samples.len() + kit.as_ref().map_or(0, |k| k.pieces.len())
+            bench.samples.len()
         );
     }
 

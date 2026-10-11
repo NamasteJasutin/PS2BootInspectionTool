@@ -11,10 +11,8 @@
 //! - Real dumps in `bios/` (skipping silently if absent)
 
 use ps2kit::bench::SoundBench;
-use ps2kit::library::SoundLibrary;
 use ps2kit::ps1::Vab;
-use ps2kit::sf2::{adsr_to_vol_env, sf2_from_bench, Sf2Writer};
-use ps2kit::song::{DrumVoice, Kit, KitPiece, SampleRef};
+use ps2kit::sf2::{adsr_to_vol_env, sf2_from_bench, Percussion, Sf2Writer};
 use ps2kit::sound::{envelope, DriverTables, SoundBank, SAMPLE_RATE};
 use std::path::{Path, PathBuf};
 
@@ -477,7 +475,7 @@ fn synthetic_ps2_bank_sf2_export_and_parse() {
     let bank = SoundBank::new(&synthetic_bank_header(), synthetic_adpcm()).unwrap();
     let bench = SoundBench::from_bank(bank, Some(DriverTables::computed()));
 
-    let sf2_bytes = sf2_from_bench(&bench, None, "SyntheticPS2", "Integration Test").unwrap();
+    let sf2_bytes = sf2_from_bench(&bench, &[], "SyntheticPS2", "Integration Test").unwrap();
     let parsed = ParsedSf2::parse(&sf2_bytes);
 
     assert_eq!(parsed.inam, "SyntheticPS2");
@@ -502,7 +500,7 @@ fn synthetic_ps1_vab_sf2_export_and_parse() {
     let vab = Vab::parse(&synthetic_vab()).unwrap();
     let bench = SoundBench::ps1(&vab);
 
-    let sf2_bytes = sf2_from_bench(&bench, None, "SyntheticPS1", "VAB Test").unwrap();
+    let sf2_bytes = sf2_from_bench(&bench, &[], "SyntheticPS1", "VAB Test").unwrap();
     let parsed = ParsedSf2::parse(&sf2_bytes);
 
     assert_eq!(parsed.inam, "SyntheticPS1");
@@ -512,21 +510,18 @@ fn synthetic_ps1_vab_sf2_export_and_parse() {
 }
 
 #[test]
-fn synthetic_kit_export_in_bank_128() {
+fn synthetic_percussion_export_in_bank_128() {
     let bank = SoundBank::new(&synthetic_bank_header(), synthetic_adpcm()).unwrap();
     let bench = SoundBench::from_bank(bank, Some(DriverTables::computed()));
 
-    let mut voice = DrumVoice::new(SampleRef::sample(bench.bank, 0));
-    voice.decay_ms = 50.0;
-    voice.attack_ms = 1.0;
-    let piece = KitPiece::new(36, "Kick", voice, "Synthetic Kick check");
-    let mut kit = Kit::default();
-    kit.pieces = vec![piece];
+    // A short decaying thump, as a caller would render it.
+    let pcm: Vec<f32> = (0..2400).map(|i| (i as f32 * 0.05).sin() * (-(i as f32) / 600.0).exp()).collect();
+    let percussion = [Percussion::new(36, "Kick", pcm, SAMPLE_RATE as u32)];
 
     let sf2_bytes = Sf2Writer::new(&bench)
-        .with_kit(&kit)
-        .with_name("BankWithKit")
-        .with_comment("Drum Kit Test")
+        .with_percussion(&percussion)
+        .with_name("BankWithPercussion")
+        .with_comment("Percussion Test")
         .write()
         .unwrap();
 
@@ -604,39 +599,37 @@ fn real_bios_dumps_oracle_tests() {
     }
 
     for file in &files {
-        let library = SoundLibrary::scan(std::slice::from_ref(file));
-        for bank in &library.banks {
-            let kit = bank.kit.as_ref();
-            let sf2_bytes = match sf2_from_bench(&bank.bench, kit, &bank.key.label, "Real Dump Oracle") {
+        // Every bank the bench reads directly: the boot bank (or the PS1 VAB) and the PS2 logo bank.
+        let mut banks: Vec<(String, SoundBench)> = Vec::new();
+        if let Ok(b) = SoundBench::open(file) { banks.push(("boot".into(), b)) }
+        if let Ok(rom) = std::fs::read(file).map_err(ps2kit::Error::from).and_then(ps2kit::rom::RomDir::new) {
+            if let Ok(b) = SoundBench::ps2_logo(&rom) { banks.push(("logo".into(), b)) }
+        }
+        for (label, bench) in &banks {
+            let sf2_bytes = match sf2_from_bench(bench, &[], label, "Real Dump Oracle") {
                 Ok(b) => b,
-                Err(e) => panic!("failed to export bank {} from {}: {e}", bank.key.label, file.display()),
+                Err(e) => panic!("failed to export bank {label} from {}: {e}", file.display()),
             };
 
             let parsed = ParsedSf2::parse(&sf2_bytes);
 
-            // Check preset count = programs (+ effects) (+ 1 if kit present)
-            let mut expected_presets = bank.bench.programs.len() + bank.bench.effects.len();
-            if kit.is_some_and(|k| !k.pieces.is_empty()) {
-                expected_presets += 1;
-            }
+            // Check preset count = programs + effects
+            let expected_presets = bench.programs.len() + bench.effects.len();
             assert_eq!(
                 parsed.presets.len(),
                 expected_presets,
                 "preset count mismatch for {} in {}",
-                bank.key.label,
+                label,
                 file.display()
             );
 
-            // Check sample count = bench samples (+ kit pieces)
-            let mut expected_samples = bank.bench.samples.len();
-            if let Some(k) = kit {
-                expected_samples += k.pieces.len();
-            }
+            // Check sample count = bench samples
+            let expected_samples = bench.samples.len();
             assert_eq!(
                 parsed.samples.len(),
                 expected_samples,
                 "sample count mismatch for {} in {}",
-                bank.key.label,
+                label,
                 file.display()
             );
 
@@ -644,12 +637,12 @@ fn real_bios_dumps_oracle_tests() {
             assert!(
                 sf2_bytes.len() < 30 * 1024 * 1024,
                 "SF2 file size too large for {}: {} bytes",
-                bank.key.label,
+                label,
                 sf2_bytes.len()
             );
 
             // Write test output to temp_dir
-            let safe_bank = bank.key.label.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "");
+            let safe_bank = label.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "");
             let temp_out = std::env::temp_dir().join(format!("test_oracle_{safe_bank}.sf2"));
             std::fs::write(&temp_out, &sf2_bytes).unwrap();
             assert!(temp_out.exists());

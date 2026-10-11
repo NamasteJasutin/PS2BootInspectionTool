@@ -1,8 +1,5 @@
 //! PSX Boot Inspection Tool — cross-platform app (egui + wgpu): PS1, PS2 and PS3 boots from the
-//! user's own files, research instruments, and a studio for the BIOS's own instruments.
-//!
-//! Two launchers share this library: `psxbootinspect` (the whole tool) and `psxstudio` (the
-//! Studio on its own — music maker, sound bench and Soundfonts — without the boot scenes).
+//! user's own files, research instruments, and the sound of every instrument in them.
 
 mod audio;
 mod director;
@@ -38,25 +35,12 @@ impl Dialog for rfd::FileDialog {
     fn pick_folder_ui(self) -> Option<PathBuf> { if headless() { eprintln!("ui: folder dialog suppressed (headless)"); None } else { self.pick_folder() } }
 }
 
-/// Which launcher started the app.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Edition {
-    /// Boot, Inspect and Studio.
-    Full,
-    /// The Studio workspace only.
-    Studio,
-}
-
-impl Edition {
-    pub fn title(self) -> &'static str { match self { Self::Full => "PSX Boot Inspection Tool", Self::Studio => "PSX Studio" } }
-}
-
-/// Runs the launcher: the window, or with `--ui`/`--render` the headless harness and renderer.
-pub fn main(edition: Edition) -> eframe::Result {
+/// Runs the app: the window, or with `--ui`/`--render` the headless harness and renderer.
+pub fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--ui") {
         HEADLESS.store(true, Ordering::Relaxed);
-        if let Err(e) = uitest::run(&args[2..], edition) { eprintln!("error: {e}"); std::process::exit(1) }
+        if let Err(e) = uitest::run(&args[2..]) { eprintln!("error: {e}"); std::process::exit(1) }
         return Ok(());
     }
     if args.get(1).map(String::as_str) == Some("--render") {
@@ -67,15 +51,14 @@ pub fn main(edition: Edition) -> eframe::Result {
         let rgba = i.to_rgba8();
         egui::IconData { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
     });
-    let size = if edition == Edition::Studio { [1300.0, 800.0] } else { [1400.0, 860.0] };
-    let mut viewport = egui::ViewportBuilder::default().with_inner_size(size).with_min_inner_size([1000.0, 600.0]).with_title(edition.title());
+    let mut viewport = egui::ViewportBuilder::default().with_inner_size([1400.0, 860.0]).with_min_inner_size([1000.0, 600.0]).with_title("PSX Boot Inspection Tool");
     if let Some(icon) = icon { viewport = viewport.with_icon(std::sync::Arc::new(icon)) }
     let options = eframe::NativeOptions {
         viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native(edition.title(), options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, edition)))))
+    eframe::run_native("PSX Boot Inspection Tool", options, Box::new(|cc| Ok(Box::new(ui::App::new(cc)))))
 }
 
 /// The scene texture shown inside egui, re-registered whenever it is recreated.

@@ -36,6 +36,7 @@
 
 #![warn(missing_docs)]
 
+pub mod banks;
 pub mod bench;
 pub mod bios;
 mod bytes;
@@ -45,7 +46,6 @@ pub mod history;
 pub mod icon;
 pub mod hooks;
 pub mod locate;
-pub mod library;
 pub mod logo;
 pub mod memcard;
 pub mod nvm;
@@ -65,7 +65,6 @@ pub mod sectors;
 pub mod sf2;
 pub mod sim;
 pub mod sound;
-pub mod song;
 
 /// The vector types used in the public API, re-exported from `glam` so that callers need not
 /// match its version by hand.

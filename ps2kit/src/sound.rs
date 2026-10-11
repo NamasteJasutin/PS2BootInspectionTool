@@ -217,7 +217,6 @@ pub enum EventKind {
 
 /// One event of a sequence with its position on both clocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct SequenceEvent {
     /// What happens.
     pub kind: EventKind,
@@ -231,7 +230,6 @@ pub struct SequenceEvent {
 
 /// Initial state of one MIDI channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Channel {
     /// Program number.
     pub program: i32,
@@ -245,7 +243,6 @@ pub struct Channel {
 
 /// An `SSsq` sequence, decoded and scheduled on the driver's 60 Hz clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct SoundSequence {
     /// Sequence volume, 0..=127.
     pub volume: i32,
@@ -314,9 +311,10 @@ impl SoundSequence {
     }
 }
 
-// Shared 60 Hz sequencer clock (notes/sound.md §2.2). Checked arithmetic also bounds
-// editor-created events; parsed BIOS sequences retain exactly the previous countdown.
-pub(crate) fn schedule_events(events: &mut [SequenceEvent], resolution: i64, bpm: i64) -> Result<()> {
+/// Schedules `events` on the driver's 60 Hz sequencer clock (`notes/sound.md` §2.2) for a
+/// sequence of `resolution` ticks per beat at `bpm`. Checked arithmetic bounds caller-created
+/// events; parsed BIOS sequences keep exactly their countdown.
+pub fn schedule_events(events: &mut [SequenceEvent], resolution: i64, bpm: i64) -> Result<()> {
     let bad = || Error::Corrupt(Format::Sequence, "invalid or overflowing sequence clock".into());
     // The driver keeps a 20.12 fixed-point countdown and fires events while it is <= 0,
     // subtracting (resolution * bpm << 12) / 60 / 60 per 60 Hz update.
@@ -622,7 +620,7 @@ impl BootSound {
 /// sequences 0 (0x2789C0), 1 (0x278BC0), 6 (0x287000) are byte-identical to 1.60's SNDBOOTH,
 /// SNDBOOTB, SNDBOOTS, SNDTNNLS, SNDWARNS. Locate signatures, lengths and valid programs;
 /// no addresses or bank/sequence bytes are used as search patterns.
-pub(crate) fn embedded_boot_sounds(bios: &RomDir) -> Result<(SoundBank, [SoundSequence; 3])> {
+pub fn embedded_boot_sounds(bios: &RomDir) -> Result<(SoundBank, [SoundSequence; 3])> {
     let img = ProgramImage::from_module(bios.module("OSDSYS")?, 0x200000)?;
     let d = img.data();
     let missing = || Error::Corrupt(Format::SoundBank, "could not locate the inline OSD boot bank and eight sequences".into());

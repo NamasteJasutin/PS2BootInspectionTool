@@ -273,7 +273,6 @@ impl Font {
 
 /// One entry of the shell's note table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct NoteEvent {
     /// NTSC fields from the first text frame (PAL: × 5/6).
     pub time: u32,
@@ -824,8 +823,9 @@ impl Ps1Shell {
         self.bank.render_events(&keys, None, tail)
     }
 
-    // Shared licence clock/setup for rendering and music import (ps1_boot.md §6).
-    pub(crate) fn scheduled_sound_events(&self, video: VideoMode) -> Vec<(usize, NoteEvent)> {
+    /// The licence screen's note events with the field each starts on, on the shell's own clock
+    /// for `video` (`ps1_boot.md` §6).
+    pub fn scheduled_sound_events(&self, video: VideoMode) -> Vec<(usize, NoteEvent)> {
         let fps = video.fps() as f64;
         let fields_to_samples = |f: f64| (f / fps * SAMPLE_RATE as f64) as usize;
         let mut keys = Vec::new();

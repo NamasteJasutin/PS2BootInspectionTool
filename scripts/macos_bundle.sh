@@ -1,7 +1,6 @@
 #!/bin/sh
-# Wraps the release builds in "PSX Boot Inspection Tool.app" (psxbootinspect) and "PSX Studio.app"
-# (psxstudio, the Studio on its own), in dist/ by default or the directory given, with the
-# project icon. Builds first if needed.
+# Wraps the release build of psxbootinspect in "PSX Boot Inspection Tool.app" (in dist/ by
+# default, or the directory given), with the project icon. Builds first if needed.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
@@ -38,4 +37,3 @@ PLIST
 }
 
 bundle "PSX Boot Inspection Tool" psxbootinspect jp.live.justiin.psxbootinspectiontool
-bundle "PSX Studio" psxstudio jp.live.justiin.psxstudio

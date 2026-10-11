@@ -25,11 +25,6 @@ struct Shared {
     /// A one-shot sound (an auditioned instrument note) mixed over the timeline, playing or not.
     preview: Option<Arc<Vec<f32>>>,
     preview_pos: f64,
-    /// The music maker's rendered song, its transport and optional loop (frames at 48 kHz).
-    music: Arc<Vec<f32>>,
-    music_pos: f64,
-    music_playing: bool,
-    music_loop: Option<(f64, f64)>,
 }
 
 pub struct AudioPlayer {
@@ -85,15 +80,6 @@ impl AudioPlayer {
                                 r = sample_clips(&sh.clips, p, true, sh.gain) * (1.0 - f) + sample_clips(&sh.clips, p + 1, true, sh.gain) * f;
                                 sh.position += sh.rate * resample;
                             }
-                            if sh.music_playing {
-                                let k = sh.music_pos as usize;
-                                if k * 2 + 1 < sh.music.len() { l += sh.music[k * 2] * sh.gain; r += sh.music[k * 2 + 1] * sh.gain }
-                                sh.music_pos += resample;
-                                match sh.music_loop {
-                                    Some((a, b)) if sh.music_pos >= b => sh.music_pos = a,
-                                    _ => if sh.music_pos as usize * 2 >= sh.music.len() { sh.music_playing = false; sh.music_pos = 0.0 },
-                                }
-                            }
                             let k = sh.preview_pos as usize;
                             let done = match &sh.preview {
                                 Some(pcm) if k * 2 + 1 < pcm.len() => { l += pcm[k * 2] * sh.gain; r += pcm[k * 2 + 1] * sh.gain; false }
@@ -121,17 +107,6 @@ impl AudioPlayer {
     pub fn load(&mut self, sound: BootSound) { self.sounds = Some(Arc::new(sound)); self.ready = true }
     pub fn load_logo_chime(&mut self, pcm: Vec<f32>) { self.logo_chime = Arc::new(pcm) }
     pub fn load_intro_chime(&mut self, pcm: Vec<f32>) { self.intro_chime = Arc::new(pcm) }
-
-    /// Replaces the music maker's song audio, keeping the transport position (a live re-render).
-    pub fn music_set(&self, pcm: Vec<f32>) { self.shared.lock().unwrap().music = Arc::new(pcm) }
-    /// Starts or pauses the song.
-    pub fn music_play(&self, on: bool) { self.shared.lock().unwrap().music_playing = on }
-    /// Moves the transport to `frame` (48 kHz frames).
-    pub fn music_seek(&self, frame: f64) { self.shared.lock().unwrap().music_pos = frame.max(0.0) }
-    /// Loops between two frames, or plays through.
-    pub fn music_loop(&self, range: Option<(f64, f64)>) { self.shared.lock().unwrap().music_loop = range }
-    /// `(position in frames, playing)`.
-    pub fn music_state(&self) -> (f64, bool) { let sh = self.shared.lock().unwrap(); (sh.music_pos, sh.music_playing) }
 
     /// Plays `pcm` (stereo, 48 kHz) once, now, over whatever the timeline is doing.
     pub fn preview(&self, pcm: Vec<f32>) {

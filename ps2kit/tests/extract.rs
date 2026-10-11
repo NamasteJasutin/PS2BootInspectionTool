@@ -1,8 +1,6 @@
 //! Invented ISO fixtures and optional caller-disc oracles; no game bytes ship.
-use ps2kit::bench::Style;
-use ps2kit::extract::{AssetKind, Extractor};
-use ps2kit::library::{BankKind, BankResolver, Console, SoundLibrary};
-use ps2kit::song::{BankRef, Channel, Instrument, InstrumentRef, Note, Pattern, Song};
+use ps2kit::bench::SoundBench;
+use ps2kit::extract::{asset_bench, asset_sample, read_index, read_native, AssetKind, Extractor};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -247,6 +245,28 @@ fn fixtures() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// An extracted set read back through the public readers: one bench per bank file, the loose
+/// samples, and a diagnostic per file that failed to load.
+#[allow(clippy::type_complexity)]
+fn load_set(folder: &Path) -> (Vec<SoundBench>, Vec<(Vec<f32>, Option<usize>, u32)>, Vec<String>) {
+    let index = read_index(folder).unwrap();
+    let (mut banks, mut samples, mut diagnostics, mut seen) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for row in index.rows {
+        if seen.contains(&row.file) { continue }
+        seen.push(row.file.clone());
+        let loaded = read_native(&folder.join(&row.file)).and_then(|data| match row.kind {
+            AssetKind::Vab | AssetKind::SShd | AssetKind::Hd => {
+                let body = if row.body_file.is_empty() { Vec::new() } else { read_native(&folder.join(&row.body_file))? };
+                asset_bench(row.kind, &data, &body).map(|b| banks.push(b))
+            }
+            AssetKind::Vag | AssetKind::Wave => asset_sample(row.kind, &data).map(|s| samples.push(s)),
+            _ => Ok(()),
+        });
+        if let Err(e) = loaded { diagnostics.push(format!("{}: {e}", row.file)) }
+    }
+    (banks, samples, diagnostics)
+}
+
 #[test]
 fn native_formats_pair_deduplicate_and_load() {
     let f = Fixture::new();
@@ -280,40 +300,19 @@ fn native_formats_pair_deduplicate_and_load() {
     assert!(split.sources[0].body_file.as_ref().unwrap().ends_with(".VB;1"));
     let set = extraction.write(f.0.join("Soundfonts")).unwrap();
     assert_eq!(set.assets, 9);
-    let library = SoundLibrary::scan_with_soundfonts(&[], f.0.join("Soundfonts"));
-    assert!(library.diagnostics.is_empty(), "{:?}", library.diagnostics);
-    assert_eq!(library.banks.len(), 5);
-    assert!(library.banks.iter().all(|b| b.console == Console::Game));
-    assert_eq!(library.choices().len(), 7);
-    let sample_bank = library.banks.iter().find(|b| b.kind == BankKind::GameSamples).unwrap();
-    assert_eq!(sample_bank.bench.samples.len(), 3);
-    assert_eq!(sample_bank.bench.sample_rate(), 44100);
-    assert_eq!(
-        sample_bank.bench.samples.iter().map(|s| s.length).collect::<Vec<_>>(),
-        [16, 51, 112]
-    );
-    assert_eq!(sample_bank.bench.samples[1].loop_start, Some(0));
-    let groups = library.by_style();
-    let samples = &groups.iter().find(|r| r.0 == Style::Samples).unwrap().1;
-    assert_eq!(samples.len(), 4); // Three loose samples and one HD Vagi.
-    let bank = library
-        .banks
-        .iter()
-        .find(|b| b.kind == BankKind::GameVab && b.bench.program(7).is_some())
-        .unwrap();
-    assert!(bank.bench.render(7, 60, 127, 0.05).iter().any(|v| v.abs() > 1e-6));
-    assert!(bank.bench.render(7, 40, 127, 0.05).iter().all(|v| *v == 0.0));
-    assert!(library.resolve(&bank.key, BankRef::Ps2).is_some());
-    let mut song = Song::new("Extracted game", BankRef::Ps2);
-    let mut channel = Channel::with_instrument("Sample", Instrument::Sample(0));
-    channel.instrument = InstrumentRef::new(sample_bank.key.clone(), Instrument::Sample(0));
-    let mut pattern = Pattern::new(song.ticks_per_bar());
-    pattern.notes.push(Note::new(0, 120, 60, 100));
-    channel.patterns.push(pattern);
-    channel.arrangement.push(Some(0));
-    song.channels.push(channel);
-    song.validate().unwrap();
-    assert!(song.render_checked(&library).unwrap().iter().any(|v| v.abs() > 1e-6));
+    let (banks, samples, diagnostics) = load_set(&set.folder);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(banks.len(), 4); // Two VABs, one SShd + body, one HD/BD.
+    let samples = SoundBench::from_samples(samples).unwrap();
+    assert_eq!(samples.samples.len(), 3);
+    assert_eq!(samples.sample_rate(), 44100);
+    let mut lengths: Vec<usize> = samples.samples.iter().map(|s| s.length).collect();
+    lengths.sort();
+    assert_eq!(lengths, [16, 51, 112]);
+    assert!(samples.samples.iter().any(|s| s.length == 51 && s.loop_start == Some(0)));
+    let bank = banks.iter().find(|b| b.program(7).is_some()).unwrap();
+    assert!(bank.render(7, 60, 127, 0.05).iter().any(|v| v.abs() > 1e-6));
+    assert!(bank.render(7, 40, 127, 0.05).iter().all(|v| *v == 0.0));
 }
 
 #[test]
@@ -323,7 +322,6 @@ fn rerun_replaces_and_keeps_provenance() {
     let extraction = Extractor::scan(&path).unwrap();
     let root = f.0.join("Soundfonts");
     let first = extraction.write(&root).unwrap();
-    let key = SoundLibrary::scan_with_soundfonts(&[], &root).banks[0].key.clone();
     let index = std::fs::read_to_string(first.folder.join("index.tsv")).unwrap();
     assert!(index.contains("SOUNDS/SPLIT.VB;1"));
     assert!(std::fs::read_to_string(first.folder.join("README.txt"))
@@ -335,9 +333,7 @@ fn rerun_replaces_and_keeps_provenance() {
     assert!(!second.folder.join("stale.vag").exists());
     assert_eq!(std::fs::read_to_string(second.folder.join("index.tsv")).unwrap(), index);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-    assert!(SoundLibrary::scan_with_soundfonts(&[], &root)
-        .resolve(&key, BankRef::Ps2)
-        .is_some());
+    assert_eq!(load_set(&second.folder).0.len(), 4);
     std::fs::write(second.folder.join("index.tsv"), b"unowned").unwrap();
     assert!(extraction.write(&root).is_err());
 }
@@ -402,9 +398,7 @@ fn malformed_candidates_never_panic_or_escape() {
     let index_path = set.folder.join("index.tsv");
     let index = std::fs::read_to_string(&index_path).unwrap();
     std::fs::write(&index_path, index.replace("bank-0001.vab", "../escape.vab")).unwrap();
-    let library = SoundLibrary::scan_with_soundfonts(&[], set.folder);
-    assert!(library.banks.is_empty());
-    assert!(!library.diagnostics.is_empty());
+    assert!(read_index(&set.folder).is_err(), "an index naming a file outside its set is refused");
 }
 
 #[test]
@@ -491,12 +485,12 @@ fn caller_tekken_europe_and_japan() {
         assert_eq!((counts.validated, counts.rejected, counts.unique), (38, 1, 20));
         let f = Fixture::new();
         let set = extraction.write(f.0.join("Soundfonts")).unwrap();
-        let library = SoundLibrary::scan_with_soundfonts(&[], &set.folder);
-        assert!(library.diagnostics.is_empty(), "{:?}", library.diagnostics);
-        assert_eq!(library.banks.len(), counts.unique);
-        assert!(library.banks.iter().any(|b| b.bench.programs.iter().any(|p| {
+        let (banks, _, diagnostics) = load_set(&set.folder);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(banks.len(), counts.unique);
+        assert!(banks.iter().any(|b| b.programs.iter().any(|p| {
             let key = p.tones.first().map_or(60, |t| t.root);
-            b.bench.render(p.id, key, 127, 0.1).iter().any(|v| v.abs() > 1e-6)
+            b.render(p.id, key, 127, 0.1).iter().any(|v| v.abs() > 1e-6)
         })));
     }
 }
@@ -517,21 +511,10 @@ fn caller_tekken_tag_usa() {
     }
     let f = Fixture::new();
     let set = extraction.write(f.0.join("Soundfonts")).unwrap();
-    let library = SoundLibrary::scan_with_soundfonts(&[], set.folder);
-    assert!(library.diagnostics.is_empty(), "{:?}", library.diagnostics);
-    assert_eq!(library.banks.len(), 1);
-    assert_eq!(library.banks[0].bench.samples.len(), 647);
-    assert_eq!(library.choices().len(), 647);
-    assert_eq!(
-        library
-            .by_style()
-            .iter()
-            .find(|r| r.0 == Style::Samples)
-            .unwrap()
-            .1
-            .len(),
-        647
-    );
+    let (banks, samples, diagnostics) = load_set(&set.folder);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(banks.is_empty());
+    assert_eq!(samples.len(), 647);
 }
 
 #[test]
@@ -540,7 +523,7 @@ fn damaged_native_asset_is_diagnostic_and_other_banks_load() {
     let path = f.iso(&fixtures());
     let set = Extractor::scan(path).unwrap().write(f.0.join("Soundfonts")).unwrap();
     std::fs::remove_file(set.folder.join("bank-0001.vab")).unwrap();
-    let library = SoundLibrary::scan_with_soundfonts(&[], set.folder);
-    assert_eq!(library.banks.len(), 4);
-    assert_eq!(library.diagnostics.len(), 1);
+    let (banks, _, diagnostics) = load_set(&set.folder);
+    assert_eq!(banks.len(), 3);
+    assert_eq!(diagnostics.len(), 1);
 }

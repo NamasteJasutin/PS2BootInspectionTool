@@ -1,6 +1,6 @@
 [package]
 name = "psxbootinspect"
-description = "PSX Boot Inspection Tool: replays PlayStation and PlayStation 2 start-ups from your own BIOS, memory cards and discs, inspects every hand-over, and makes music with the BIOS's own instruments"
+description = "PSX Boot Inspection Tool: replays PlayStation and PlayStation 2 start-ups from your own BIOS, memory cards and discs, inspects every hand-over, and plays every instrument in your BIOS and games"
 version = "1.2.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,6 @@ readme = "../README.md"
 keywords = ["playstation", "ps2", "pcsx2", "bios", "wgpu"]
 categories = ["emulators", "games", "visualization"]
 publish = false
-default-run = "psxbootinspect"
 
 [dependencies]
 ps2kit = { version = "0.3.0", path = "../ps2kit" }
