@@ -1701,7 +1701,7 @@ fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
         let black = matches!(key % 12, 1 | 3 | 6 | 8 | 10);
         painter.rect_filled(Rect::from_min_size(Pos2::new(roll.min.x, y), Vec2::new(roll.width(), row_h - 1.0)), 0.0, if black { Color32::from_white_alpha(6) } else { Color32::from_white_alpha(12) });
         painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(40.0, row_h - 1.0)), 0.0, if black { Color32::from_gray(40) } else { Color32::from_gray(200) });
-        if key % 12 == 0 { painter.text(Pos2::new(rect.min.x + 2.0, y + row_h / 2.0), egui::Align2::LEFT_CENTER, note_name(key as i32), font.clone(), Color32::BLACK); }
+        if key.is_multiple_of(12) { painter.text(Pos2::new(rect.min.x + 2.0, y + row_h / 2.0), egui::Align2::LEFT_CENTER, note_name(key as i32), font.clone(), Color32::BLACK); }
     }
     let beat_steps = (tpb / step).max(1);
     for s in 0..=steps { let x = roll.min.x + s as f32 * col_w; painter.line_segment([Pos2::new(x, roll.min.y), Pos2::new(x, roll.max.y)], Stroke::new(1.0, Color32::from_white_alpha(if s % (beat_steps * 4) == 0 { 70 } else if s % beat_steps == 0 { 36 } else { 12 }))); }
