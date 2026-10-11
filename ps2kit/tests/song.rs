@@ -5,7 +5,10 @@ use ps2kit::ps1::{Ps1Shell, Vab};
 use ps2kit::ps1bios::Ps1Bios;
 use ps2kit::ps1intro::SceIntro;
 use ps2kit::rom::RomDir;
-use ps2kit::song::{BankRef, Channel, Note, Pattern, Song};
+use ps2kit::song::{
+    BankRef, Channel, DrumMetrics, DrumVoice, Instrument, Kit, KitPiece, NoiseLayer, Note, Pattern,
+    SampleRef, Song,
+};
 use ps2kit::sound::{
     write_wav, BootSound, DriverTables, EventKind, SoundBank, SoundSequence, Synth, SAMPLE_RATE,
 };
@@ -111,7 +114,7 @@ fn synthetic_arrangements_lengths_previews_release_and_pan() {
         assert!(left.chunks_exact(2).all(|v| v[1] == 0.0));
         s.channels[0].volume = 0;
         assert!(s.render(&bench).iter().all(|v| *v == 0.0));
-        s.channels[0].program = 100;
+        s.channels[0].instrument = ps2kit::song::Instrument::Program(100);
         assert!(s.render(&bench).iter().all(|v| *v == 0.0));
     }
 }
@@ -243,7 +246,7 @@ fn text_round_trip_unicode_empty_cells_and_good_errors() {
     );
     assert!(!text.contains("SShd") && !text.contains("pBAV"));
     for broken in [
-        text.replace("psxsong 1", "psxsong 2"),
+        text.replace("psxsong 1", "psxsong 3"),
         text.replace("clock 120", "clock 0"),
         text.replace("arrangement 0", "arrangement 99"),
         text.replace("endpattern", "unknown"),
@@ -526,4 +529,143 @@ fn normalize(pcm: &mut [f32]) {
     for v in pcm {
         *v /= peak
     }
+}
+
+#[test]
+fn derived_instruments_round_trip_and_extended_parser_stays_bounded() {
+    let bench = SoundBench::from_bank(bank(), None);
+    let mut s = song(BankRef::Ps2);
+    let mut v = DrumVoice::new(SampleRef::program(BankRef::Ps2, 0, 60));
+    v.pitch = -12.5;
+    v.pitch_drop = 18.0;
+    v.decay_ms = 250.0;
+    v.low_pass_hz = Some(120.0);
+    v.high_pass_hz = Some(20.0);
+    v.retriggers_ms = vec![12.0, 24.0];
+    v.noise_mix = Some(NoiseLayer::new(SampleRef::sample(BankRef::Ps2, 0), 0.2));
+    let mut kit = Kit::default();
+    kit.pieces.push(KitPiece::new(
+        36,
+        "Kick 日本語",
+        v.clone(),
+        "Measured from sample\nNo PCM",
+    ));
+    kit.omissions.push("Hat: no noise sample".into());
+    for (name, instrument) in [
+        ("One drum", Instrument::Drum(v)),
+        ("Effects", Instrument::Effect(0)),
+        ("Kit", Instrument::Kit(kit)),
+    ] {
+        let mut c = Channel::with_instrument(name, instrument);
+        let mut p = Pattern::new(1920);
+        p.notes = vec![Note::new(0, 1, 36, 110), Note::new(960, 1, 42, 100)];
+        c.patterns.push(p);
+        c.arrangement = vec![Some(0), Some(0)];
+        s.channels.push(c);
+    }
+    let text = s.to_text().unwrap();
+    assert!(text.starts_with("psxsong 2\n"));
+    assert_eq!(Song::parse(&text).unwrap(), s);
+    assert_eq!(Song::parse(&text).unwrap().to_text().unwrap(), text);
+    assert_eq!(s.render(&bench), Song::parse(&text).unwrap().render(&bench));
+    assert!(s.to_sssq().is_err());
+    for i in 0..text.len() {
+        if text.is_char_boundary(i) {
+            let _ = Song::parse(&text[..i]);
+        }
+    }
+    let mut state = 7u32;
+    for _ in 0..1000 {
+        let mut d = text.as_bytes().to_vec();
+        for _ in 0..4 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let i = state as usize % d.len();
+            d[i] = (state >> 24) as u8;
+        }
+        if let Ok(s) = Song::parse(&String::from_utf8_lossy(&d)) {
+            s.validate().unwrap();
+            Song::parse(&s.to_text().unwrap()).unwrap();
+        }
+    }
+    assert!(Song::parse(&text.replace("psxsong 2", "psxsong 1")).is_err());
+    for value in ["NaN", "inf", "-1", "100000000000000000000000000000"] {
+        assert!(Song::parse(&text.replace(" 250 ", &format!(" {value} "))).is_err());
+    }
+    let voice = text.lines().find(|l| l.starts_with("voice - ")).unwrap();
+    assert!(Song::parse(&text.replace(voice, "")).is_err());
+    assert!(Song::parse(&text.replacen(voice, &format!("{voice}\n{voice}"), 1)).is_err());
+    for value in [f32::NAN, f32::INFINITY, -1.0, 2000.0] {
+        let mut v = DrumVoice::new(SampleRef::sample(BankRef::Ps2, 0));
+        v.decay_ms = value;
+        assert!(v.render(&bench).is_err());
+    }
+    let missing = DrumVoice::new(SampleRef::sample(BankRef::Ps1, 0));
+    assert!(missing.render(&bench).unwrap().iter().all(|&v| v == 0.0));
+    assert_eq!(
+        DrumVoice::new(SampleRef::sample(BankRef::Ps2, 0))
+            .render(&bench)
+            .unwrap(),
+        DrumVoice::new(SampleRef::program(BankRef::Ps2, 0, 60))
+            .render(&bench)
+            .unwrap()
+    );
+}
+
+#[test]
+fn transport_is_an_exact_tail_including_sustain_limiter_and_release() {
+    for (kind, bench) in [
+        (BankRef::Ps2, SoundBench::from_bank(bank(), None)),
+        (BankRef::Ps1, SoundBench::ps1(&vab())),
+    ] {
+        let mut s = song(kind);
+        s.bpm = 91;
+        s.tail_ticks = 960;
+        s.channels[0].patterns[0]
+            .notes
+            .push(Note::new(0, 1920, 60, 127));
+        s.channels = vec![s.channels[0].clone(); 8];
+        let pcm = s.render(&bench);
+        for tick in [0, 4, 479, 480, 1920, 3839, 4000, 4800, u32::MAX] {
+            let frame = s.frame_at_tick(tick).unwrap();
+            assert_eq!(s.render_from(&bench, tick).unwrap(), pcm[frame * 2..]);
+        }
+        let rendered = s.render_with_positions(&bench, 257).unwrap();
+        assert_eq!(rendered.pcm, pcm);
+        assert!(s.render_with_positions(&bench, 0).is_err());
+        assert_eq!(rendered.positions.first().unwrap().frames.start, 0);
+        assert_eq!(rendered.positions.last().unwrap().frames.end, pcm.len() / 2);
+        for blocks in rendered.positions.windows(2) {
+            assert_eq!(blocks[0].frames.end, blocks[1].frames.start);
+            assert!(blocks[0].position.tick <= blocks[1].position.tick);
+        }
+        for b in &rendered.positions {
+            let p = b.position;
+            assert!(s.frame_at_tick(p.tick).unwrap() <= b.frames.start);
+            if p.tick < 4800 {
+                assert!(s.frame_at_tick(p.tick + 1).unwrap() > b.frames.start);
+            }
+            assert_eq!(p.bar, p.tick / 1920);
+            assert_eq!(u32::from(p.beat), p.tick / 480 % 4);
+            assert_eq!(u32::from(p.tick_in_beat), p.tick % 480);
+        }
+    }
+}
+
+#[test]
+fn numerical_spectrum_checks_have_known_frequency_references() {
+    // Invented sine waves test the measuring code; they never enter kit derivation.
+    for (frequency, low, high) in [(100.0, true, false), (8000.0, false, true)] {
+        let pcm: Vec<_> = (0..24000)
+            .flat_map(|i| {
+                let v = (std::f32::consts::TAU * frequency * i as f32 / 48000.0).sin() * 0.2;
+                [v, v]
+            })
+            .collect();
+        let m = DrumMetrics::measure(&pcm);
+        assert_eq!(m.below_150_hz > 0.95, low);
+        assert_eq!(m.above_5khz > 0.95, high);
+        assert!((m.duration_ms - 500.0).abs() < 0.01);
+    }
+    let m = DrumMetrics::measure(&[]);
+    assert_eq!(m.rms, 0.0);
 }

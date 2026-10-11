@@ -4,7 +4,8 @@
 //! `notes/research/ps1_version_matrix.md` §2.1, `notes/menu_survey.md` §4).
 
 use crate::bytes::Bytes;
-use crate::locate::ProgramImage;
+use crate::locate::{LogoLayout, ProgramImage};
+use crate::song::BankRef;
 use crate::ps1::{NoteEvent, Vab};
 use crate::ps1bios::Ps1Bios;
 use crate::rom::{unpack, RomDir};
@@ -100,10 +101,13 @@ enum SoundBenchBackend {
 pub struct SoundBench {
     /// All programs in the bank, ordered by program ID.
     pub programs: Vec<BenchProgram>,
+    /// Bank addressed by sample/song references.
+    pub bank: BankRef,
     /// All decoded samples referenced by the programs and UI effects. PS1 VAG zero is absent.
     pub samples: Vec<BenchSample>,
     /// All OSD UI effects, when the PS2 image includes the second bank.
     pub effects: Vec<BenchEffect>,
+    sample_data: Vec<(Vec<f32>, Option<usize>)>,
     effect_samples: Vec<(Vec<f32>, Option<usize>)>,
     effect_master: u32,
     backend: SoundBenchBackend,
@@ -267,6 +271,34 @@ impl SoundBench {
         Ok(bench)
     }
 
+    /// Inspects the logo's SShd effect bank, located by content (`notes/ps2logo.md` §5).
+    /// No MIDI programs are invented for this effect-only bank; use `effects`/`render_effect`.
+    pub fn ps2_logo(bios: &RomDir) -> Result<Self> {
+        let image = ProgramImage::from_module(bios.module("PS2LOGO")?, 0x100000)?;
+        let layout = LogoLayout::discover(&image)?;
+        let bad = || Error::Corrupt(Format::SoundBank, "truncated logo sound bank".into());
+        let start = image.at(layout.bank_header).ok_or_else(bad)?;
+        let data = image.data().get(start..).ok_or_else(bad)?;
+        if data.len() < 0x30 { return Err(bad()); }
+        // Effect-only headers can use the unused size word's 0xFFFFFFFF sentinel
+        // (sound.md §3.1). Derive the extent from the SE table rather than that word.
+        let table = data.u32(0x2C) as usize;
+        let count_end = table.checked_add(8).ok_or_else(bad)?;
+        let prefix = data.get(table..count_end).ok_or_else(bad)?;
+        let count = (prefix.u32(4) as usize).checked_add(1).ok_or_else(bad)?;
+        let size = count.checked_mul(0x40).and_then(|n| table.checked_add(0x20)?.checked_add(n)).ok_or_else(bad)?;
+        let header = data.get(..size).ok_or_else(bad)?;
+        // DMA body follows the header on a 64-byte boundary (ps2logo.md §5).
+        let body_start = size.checked_add(63).ok_or_else(bad)? & !63;
+        let body_end = body_start.checked_add(data.u32(4) as usize).ok_or_else(bad)?;
+        let body = data.get(body_start..body_end).ok_or_else(bad)?;
+        let tables = bios.module("OSDSND").ok().and_then(DriverTables::from_driver);
+        let mut bench = Self::from_bank(SoundBank::new(header, Vec::new())?, tables);
+        bench.bank = BankRef::Ps2Logo;
+        bench.add_effects(header, body)?;
+        Ok(bench)
+    }
+
     /// Inspects a PlayStation 1 shell VAB (`notes/research/ps1_shell_scenes.md` §2).
     /// Reflects [`Vab`]'s shell mixer: contiguous program IDs and full key ranges.
     /// These match all supplied shell banks; arbitrary VAB splits need a richer parser.
@@ -299,6 +331,8 @@ impl SoundBench {
             .collect();
         Self {
             programs,
+            bank: BankRef::Ps1,
+            sample_data: vab.samples.iter().skip(1).cloned().collect(),
             samples,
             effects: Vec::new(),
             effect_samples: Vec::new(),
@@ -364,6 +398,8 @@ impl SoundBench {
 
         Self {
             programs,
+            bank: BankRef::Ps2,
+            sample_data: offsets.iter().map(|&o| decode_bank_sample(&bank, o)).collect(),
             samples,
             effects: Vec::new(),
             effect_samples: Vec::new(),
@@ -393,6 +429,7 @@ impl SoundBench {
             }
             let (pcm, lp) = crate::sound::decode_adpcm(body, offset);
             self.samples.push(BenchSample { index: sample_base + i, length: pcm.len(), loop_start: lp });
+            self.sample_data.push((pcm.clone(), lp));
             self.effect_samples.push((pcm, lp));
         }
         self.effect_master = prefix.u32(0);
@@ -475,6 +512,19 @@ impl SoundBench {
         self.samples.get(index)
     }
 
+    /// Decoded mono PCM at the SPU's 44.1 kHz base rate and its optional loop point.
+    /// Data comes only from this caller-supplied bank (sound.md §2.1; scenes §2).
+    pub fn sample_pcm(&self, index: usize) -> Option<(&[f32], Option<usize>)> {
+        self.sample_data.get(index).map(|(pcm, lp)| (pcm.as_slice(), *lp))
+    }
+
+    /// Measures an effect with its stored pitch, pan and ADSR (`notes/ps2logo.md` §5).
+    pub fn effect_character(&self, id: usize) -> Option<Character> {
+        let e = self.effects.iter().find(|e| e.id == id)?;
+        let looped = self.sample(e.sample_index)?.loop_start.is_some();
+        Some(measure(&self.render_effect(id, 4.0), looped))
+    }
+
     // Arrangement rendering shares the sequencer and VAB voice paths, including note-off
     // release (notes/sound.md §2.2; ps1_shell_scenes.md §2). No audition-length heuristic.
     pub(crate) fn render_song(&self, seq: &crate::sound::SoundSequence, channels: &[crate::sound::Channel], frames: usize, ps1: bool) -> Vec<f32> {
@@ -512,16 +562,21 @@ impl SoundBench {
     pub fn character(&self, program_id: i32) -> Option<Character> {
         let p = self.program(program_id)?;
         let t = p.tones.first()?;
+        if t.low > t.high { return None; }
         let note = t.root.clamp(t.low, t.high);
         let looped = p.tones.iter().any(|t| self.samples.get(t.sample_index).is_some_and(|s| s.loop_start.is_some()));
         Some(measure(&self.render(program_id, note, 100, 4.0), looped))
     }
 
     /// Every program grouped by [`Style`], in browsing order; within a style by program id.
+    /// The effect-only logo bank groups effect IDs instead (`notes/ps2logo.md` §5).
     #[must_use]
     pub fn by_style(&self) -> Vec<(Style, Vec<(i32, Character)>)> {
         let mut groups: std::collections::BTreeMap<Style, Vec<(i32, Character)>> = std::collections::BTreeMap::new();
         for p in &self.programs { if let Some(c) = self.character(p.id) { groups.entry(c.style).or_default().push((p.id, c)) } }
+        if self.bank == BankRef::Ps2Logo {
+            for e in &self.effects { if let Some(c) = self.effect_character(e.id) { groups.entry(c.style).or_default().push((e.id as i32, c)) } }
+        }
         groups.into_iter().collect()
     }
 
