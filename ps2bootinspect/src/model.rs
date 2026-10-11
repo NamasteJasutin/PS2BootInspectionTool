@@ -40,7 +40,7 @@ pub fn video_mode_name(video: VideoMode) -> &'static str { if video == VideoMode
 
 /// The sidebar's tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tab { Boot, SaveData, Disc, Bios, Lab, Sound, Fonts }
+pub enum Tab { Boot, SaveData, Disc, Bios, Lab, Sound, Fonts, Music }
 
 /// State of the Sound and Fonts tabs: the bench read from the chosen console's BIOS, what is
 /// being auditioned, and the font page on screen.
@@ -69,6 +69,27 @@ impl Default for AssetInspection {
     }
 }
 
+/// The music maker's state: a song over the user's own BIOS instruments, the bench it plays on,
+/// and what the editor has selected.
+pub struct MusicMaker {
+    pub song: Option<ps2kit::song::Song>,
+    pub bench: Option<(ps2kit::song::BankRef, ps2kit::bench::SoundBench)>,
+    pub channel: usize,
+    pub pattern: usize,
+    /// Lowest key shown in the piano roll.
+    pub low_key: u8,
+    /// Grid step in ticks for placing notes (a sixteenth by default).
+    pub step: u32,
+    pub status: String,
+    /// The bar last clicked in the arrangement.
+    pub selected_bar: usize,
+}
+
+
+impl Default for MusicMaker {
+    fn default() -> Self { Self { song: None, bench: None, channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0 } }
+}
+
 /// Which console's boot the picture plays.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Console { Ps2, Ps1 }
@@ -87,9 +108,9 @@ pub struct ShelfEntry {
 }
 
 impl Tab {
-    pub const ALL: [Self; 7] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios, Self::Lab, Self::Sound, Self::Fonts];
+    pub const ALL: [Self; 8] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios, Self::Lab, Self::Sound, Self::Fonts, Self::Music];
     pub fn name(self) -> &'static str {
-        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS", Self::Lab => "Lab", Self::Sound => "Sound", Self::Fonts => "Fonts" }
+        match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS", Self::Lab => "Lab", Self::Sound => "Sound", Self::Fonts => "Fonts", Self::Music => "Music" }
     }
 }
 
@@ -418,6 +439,8 @@ pub struct Model {
     pub ps3_firmware: Option<String>,
     /// Sound and font inspection (`ps2kit::bench`), built on first use per console.
     pub asset_inspection: AssetInspection,
+    /// The music maker (`ps2kit::song`): the song being edited and the editor's selection.
+    pub music: MusicMaker,
     /// The logo model read from a PlayStation disc's sectors 5–11.
     pub ps1_logo: Option<ps2kit::ps1::Tmd>,
     ps2_logo_chime: Vec<f32>,
@@ -448,7 +471,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), music: MusicMaker::default(), ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }

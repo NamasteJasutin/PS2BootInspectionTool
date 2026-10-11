@@ -114,7 +114,7 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, &mut self.model));
         });
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(root, |ui| {
-            picture(ui, &mut self.model, &self.view);
+            if self.model.tab == Tab::Music { music_editor(ui, &mut self.model) } else { picture(ui, &mut self.model, &self.view) }
         });
         ctx.request_repaint();
     }
@@ -325,6 +325,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         Tab::Lab => lab_tab(ui, m),
         Tab::Sound => sound_tab(ui, m),
         Tab::Fonts => fonts_tab(ui, m),
+        Tab::Music => music_tab(ui, m),
     }
     ui.add_space(12.0);
 }
@@ -1231,3 +1232,217 @@ fn fonts_tab(ui: &mut egui::Ui, m: &mut Model) {
         if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}-page{}.png", font.name(), a.page)).save_file() { let _ = image::save_buffer(p, &rgba, w as u32, h as u32, image::ColorType::Rgba8); }
     }
 }
+
+/// The bench a song's program numbers address, read from the loaded BIOS.
+fn music_bench(m: &Model, bank: ps2kit::song::BankRef) -> Option<ps2kit::bench::SoundBench> {
+    match bank {
+        ps2kit::song::BankRef::Ps2 => m.rom.as_ref().and_then(|r| ps2kit::bench::SoundBench::ps2(r).ok()),
+        _ => m.ps1_shell.as_ref().map(|s| ps2kit::bench::SoundBench::ps1(&s.bank)),
+    }
+}
+
+fn set_song(m: &mut Model, song: ps2kit::Result<ps2kit::song::Song>) {
+    match song {
+        Ok(s) => {
+            m.music.bench = music_bench(m, s.bank).map(|b| (s.bank, b));
+            m.music.status = if m.music.bench.is_none() { "No BIOS loaded for this song's bank.".into() } else { s.import_notes.join(" ") };
+            m.music.step = (s.ticks_per_beat as u32 / 4).max(1);
+            m.music.channel = 0;
+            m.music.pattern = 0;
+            m.music.song = Some(s);
+        }
+        Err(e) => m.music.status = e.to_string(),
+    }
+}
+
+/// Music maker, sidebar: new/import/open/save/export, song settings, channels. The editor itself
+/// (arrangement and piano roll) fills the picture area while this tab is open.
+fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
+    use ps2kit::song::{BankRef, Channel, Pattern, Song};
+    section(ui, "Song", |ui| {
+        ui.small("Patterns on a bar grid (after Bosca Ceoil and BeepBox), played on your BIOS's own instruments. Song files hold notes and program numbers only.");
+        ui.horizontal_wrapped(|ui| {
+            for (label, bank) in [("New on PS2 bank", BankRef::Ps2), ("New on PS1 bank", BankRef::Ps1)] {
+                if ui.button(label).clicked() {
+                    let mut s = Song::new("untitled", bank);
+                    let mut c = Channel::new("lead", 0);
+                    c.patterns.push(Pattern::new(s.ticks_per_bar()));
+                    c.arrangement = vec![Some(0), None, None, None];
+                    s.channels.push(c);
+                    set_song(m, Ok(s));
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(m.rom.is_some(), egui::Button::new("Import PS2 boot music")).clicked() { set_song(m, ps2kit::song::Song::from_ps2_boot(m.rom.as_ref().unwrap())) }
+            if ui.add_enabled(m.ps1_shell.is_some(), egui::Button::new("PS1 licence chime")).clicked() { set_song(m, ps2kit::song::Song::from_ps1_licence(m.ps1_shell.as_ref().unwrap(), m.video)) }
+            if ui.add_enabled(m.sce_intro.is_some(), egui::Button::new("PS1 SCE intro")).clicked() { set_song(m, ps2kit::song::Song::from_ps1_intro(m.sce_intro.as_ref().unwrap(), m.video)) }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Open…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("song", &["psxsong"]).pick_file() {
+                    set_song(m, std::fs::read_to_string(&p).map_err(ps2kit::Error::from).and_then(|t| Song::parse(&t)));
+                }
+            }
+            let has = m.music.song.is_some();
+            if ui.add_enabled(has, egui::Button::new("Save…")).clicked() {
+                if let Some(s) = &m.music.song {
+                    match s.to_text() {
+                        Ok(t) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.psxsong", s.name)).save_file() { let _ = std::fs::write(p, t); },
+                        Err(e) => m.music.status = e.to_string(),
+                    }
+                }
+            }
+            if ui.add_enabled(has && m.music.bench.is_some(), egui::Button::new("Export WAV…")).clicked() {
+                if let (Some(s), Some((_, b))) = (&m.music.song, &m.music.bench) {
+                    if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.wav", s.name)).save_file() { if let Err(e) = s.write_wav(b, p) { m.music.status = e.to_string() } }
+                }
+            }
+            if ui.add_enabled(has, egui::Button::new("Export SSsq…")).on_hover_text("The PS2 BIOS's own sequence format").clicked() {
+                if let Some(s) = &m.music.song {
+                    match s.to_sssq() {
+                        Ok(bytes) => if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}.sq", s.name)).save_file() { let _ = std::fs::write(p, bytes); },
+                        Err(e) => m.music.status = e.to_string(),
+                    }
+                }
+            }
+        });
+        if !m.music.status.is_empty() { ui.small(&m.music.status); }
+    });
+    let programs: Vec<(i32, String)> = m.music.bench.as_ref().map(|(_, b)| b.programs.iter().map(|p| (p.id, format!("{} — {:?}", p.id, p.kind))).collect()).unwrap_or_default();
+    let Some(song) = &mut m.music.song else { return };
+    section(ui, "Settings", |ui| {
+        ui.text_edit_singleline(&mut song.name);
+        ui.add(egui::Slider::new(&mut song.bpm, 30..=300).text("BPM"));
+        ui.add(egui::Slider::new(&mut song.beats_per_bar, 1..=12).text("beats per bar"));
+        ui.small(format!("{} bars, {} ticks per beat, bank {:?}", song.bars(), song.ticks_per_beat, song.bank));
+    });
+    section(ui, "Channels", |ui| {
+        let mut remove = None;
+        for (i, c) in song.channels.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(m.music.channel == i, format!("{}", i + 1)).clicked() { m.music.channel = i; m.music.pattern = 0 }
+                ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(70.0));
+                egui::ComboBox::from_id_salt(("prog", i)).width(110.0).selected_text(format!("prog {}", c.program)).show_ui(ui, |ui| {
+                    for (id, label) in &programs { ui.selectable_value(&mut c.program, *id as u8, label); }
+                });
+                if ui.small_button("✕").clicked() { remove = Some(i) }
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("vol"));
+                ui.add(egui::Slider::new(&mut c.pan, 0..=127).text("pan"));
+            });
+        }
+        if let Some(i) = remove { song.channels.remove(i); m.music.channel = 0 }
+        if ui.button("+ Channel").clicked() {
+            let bars = song.bars().max(4);
+            let mut c = ps2kit::song::Channel::new(format!("ch{}", song.channels.len() + 1), programs.first().map_or(0, |p| p.0 as u8));
+            c.patterns.push(ps2kit::song::Pattern::new(song.ticks_per_bar()));
+            c.arrangement = vec![None; bars];
+            song.channels.push(c);
+        }
+    });
+}
+
+/// Music maker, picture area: the arrangement (channels × bars, each cell a pattern number) and
+/// a piano roll for the selected channel's selected pattern. Left-click places, right-click clears.
+fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
+    let avail = ui.available_rect_before_wrap();
+    let painter = ui.painter_at(avail);
+    painter.rect_filled(avail, 0.0, Color32::from_rgb(18, 20, 28));
+    let font = egui::FontId::monospace(11.0);
+    let Some(song) = &mut m.music.song else {
+        painter.text(avail.center(), egui::Align2::CENTER_CENTER, "Start a song in the Music tab: new, or import your BIOS's own boot music.", egui::FontId::proportional(16.0), Color32::GRAY);
+        return;
+    };
+    // Transport.
+    let mut play: Option<std::ops::Range<usize>> = None;
+    let selected_bar = m.music.selected_bar;
+    let top = Rect::from_min_size(avail.min + Vec2::new(10.0, 8.0), Vec2::new(avail.width() - 20.0, 26.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(top), |ui| {
+        ui.horizontal(|ui| {
+            if ui.button("▶ Song").clicked() { play = Some(0..song.bars().max(1)) }
+            if ui.button("▶ Selected bar").clicked() { play = Some(selected_bar..selected_bar + 1) }
+            ui.label(egui::RichText::new(format!("{} — {} BPM, {}/4", song.name, song.bpm, song.beats_per_bar)).color(Color32::WHITE));
+        });
+    });
+    // Arrangement grid.
+    let bars = song.bars().max(4) + 4;
+    let (gx, gy) = (avail.min.x + 80.0, avail.min.y + 44.0);
+    let cell = Vec2::new(((avail.width() - 100.0) / bars as f32).clamp(14.0, 48.0), 22.0);
+    for (ci, c) in song.channels.iter().enumerate() {
+        let y = gy + ci as f32 * (cell.y + 2.0);
+        painter.text(Pos2::new(avail.min.x + 10.0, y + cell.y / 2.0), egui::Align2::LEFT_CENTER, &c.name, font.clone(), if ci == m.music.channel { Color32::WHITE } else { Color32::GRAY });
+        for b in 0..bars {
+            let r = Rect::from_min_size(Pos2::new(gx + b as f32 * cell.x, y), cell - Vec2::splat(2.0));
+            let p = c.arrangement.get(b).copied().flatten();
+            painter.rect_filled(r, 2.0, match p { Some(_) => Color32::from_rgb(70, 100, 190), None => Color32::from_white_alpha(14) });
+            if let Some(p) = p { painter.text(r.center(), egui::Align2::CENTER_CENTER, format!("{}", p + 1), font.clone(), Color32::WHITE); }
+        }
+    }
+    let grid = Rect::from_min_size(Pos2::new(gx, gy), Vec2::new(bars as f32 * cell.x, song.channels.len() as f32 * (cell.y + 2.0)));
+    let gr = ui.interact(grid, ui.id().with("arrangement"), egui::Sense::click());
+    if let Some(pos) = gr.interact_pointer_pos() {
+        let (b, ci) = (((pos.x - gx) / cell.x) as usize, ((pos.y - gy) / (cell.y + 2.0)) as usize);
+        if let Some(c) = song.channels.get_mut(ci) {
+            if c.arrangement.len() <= b { c.arrangement.resize(b + 1, None) }
+            if gr.secondary_clicked() { c.arrangement[b] = None }
+            else if gr.clicked() {
+                if c.patterns.is_empty() { c.patterns.push(ps2kit::song::Pattern::new(song_ticks_per_bar(song.ticks_per_beat, song.beats_per_bar))) }
+                let pat = c.arrangement[b].unwrap_or(m.music.pattern.min(c.patterns.len() - 1));
+                c.arrangement[b] = Some(pat);
+                m.music.channel = ci;
+                m.music.pattern = pat;
+                m.music.selected_bar = b;
+            }
+        }
+    }
+    // Piano roll of the selected pattern.
+    let roll_top = grid.max.y + 30.0;
+    let Some(c) = song.channels.get_mut(m.music.channel) else { return };
+    let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
+    painter.text(Pos2::new(avail.min.x + 10.0, roll_top - 16.0), egui::Align2::LEFT_CENTER, format!("{} · pattern {} · {} ticks (wheel scrolls keys, click toggles a note)", c.name, m.music.pattern + 1, pattern.length_ticks), font.clone(), Color32::LIGHT_GRAY);
+    let keys = 36u8;
+    let roll = Rect::from_min_max(Pos2::new(gx, roll_top), Pos2::new(avail.max.x - 10.0, avail.max.y - 10.0));
+    let row_h = roll.height() / keys as f32;
+    let step = m.music.step.max(1);
+    let steps = pattern.length_ticks.div_ceil(step).max(1);
+    let col_w = roll.width() / steps as f32;
+    for k in 0..keys {
+        let key = m.music.low_key.saturating_add(keys - 1 - k);
+        let y = roll.min.y + k as f32 * row_h;
+        let black = matches!(key % 12, 1 | 3 | 6 | 8 | 10);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(roll.min.x, y), Vec2::new(roll.width(), row_h - 1.0)), 0.0, if black { Color32::from_white_alpha(6) } else { Color32::from_white_alpha(12) });
+        if key % 12 == 0 { painter.text(Pos2::new(avail.min.x + 10.0, y + row_h / 2.0), egui::Align2::LEFT_CENTER, note_name(key as i32), font.clone(), Color32::GRAY); }
+    }
+    let beat_steps = (song.ticks_per_beat as u32 / step).max(1);
+    for s in 0..=steps { let x = roll.min.x + s as f32 * col_w; painter.line_segment([Pos2::new(x, roll.min.y), Pos2::new(x, roll.max.y)], Stroke::new(1.0, Color32::from_white_alpha(if s % beat_steps == 0 { 40 } else { 12 }))); }
+    for n in &pattern.notes {
+        if n.key < m.music.low_key || n.key >= m.music.low_key.saturating_add(keys) { continue }
+        let row = (m.music.low_key + keys - 1 - n.key) as f32;
+        let r = Rect::from_min_size(Pos2::new(roll.min.x + n.start as f32 / step as f32 * col_w, roll.min.y + row * row_h), Vec2::new((n.length as f32 / step as f32 * col_w - 1.0).max(3.0), row_h - 1.0));
+        painter.rect_filled(r, 2.0, Color32::from_rgb(230, 190, 80));
+    }
+    let rr = ui.interact(roll, ui.id().with("roll"), egui::Sense::click());
+    if rr.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll.abs() > 1.0 { m.music.low_key = (m.music.low_key as i32 + if scroll > 0.0 { 1 } else { -1 }).clamp(0, 127 - keys as i32) as u8 }
+    }
+    if let (true, Some(pos)) = (rr.clicked(), rr.interact_pointer_pos()) {
+        let s = ((pos.x - roll.min.x) / col_w) as u32;
+        let key = m.music.low_key + keys - 1 - ((pos.y - roll.min.y) / row_h) as u8;
+        let start = s * step;
+        if let Some(i) = pattern.notes.iter().position(|n| n.key == key && start >= n.start && start < n.start + n.length) { pattern.notes.remove(i); }
+        else if start < pattern.length_ticks {
+            pattern.notes.push(ps2kit::song::Note::new(start, step.min(pattern.length_ticks - start), key, 100));
+            // Hear the note just placed.
+            if let Some((_, b)) = &m.music.bench { m.audio.preview(b.render(c.program as i32, key as i32, 100, 0.4)); }
+        }
+    }
+    if let (Some(bars), Some((_, b))) = (play, &m.music.bench) {
+        let pcm = song.render_bar_range(b, bars);
+        m.audio.preview(pcm);
+    }
+}
+
+fn song_ticks_per_bar(ticks_per_beat: u16, beats_per_bar: u8) -> u32 { ticks_per_beat as u32 * beats_per_bar as u32 }
