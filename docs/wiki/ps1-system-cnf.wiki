@@ -1,0 +1,36 @@
+== PS1 SYSTEM.CNF parsing and kernel execution ==
+''Suggested page: PS1 → File Formats → SYSTEM.CNF or PS1 Kernel Loader.''
+
+When booting a PlayStation CD-ROM, the ROM bootstrap (POST stage 9 at <code>rom:BFC067E8</code>) attempts to open <code>cdrom:SYSTEM.CNF;1</code>. The kernel's parser (<code>rom:BFC008A0</code>, <code>rom:BFC00944</code>, <code>rom:BFC00B7C</code>) exhibits distinct grammatical quirks and prefix shadowing behaviors:
+
+=== Buffer and fallback ===
+* Up to 2,048 (0x800) bytes are read from the disc into kernel RAM at <code>0xA000B070</code> and NUL-terminated at the byte count.
+* If 0 bytes are read, or the file does not exist, the bootstrap falls back to <code>cdrom:PSX.EXE;1</code> with compiled-in ROM defaults:
+** <code>TCB = 4</code>
+** <code>EVENT = 0x10</code> (16)
+** <code>STACK = 0x801FFF00</code>
+
+=== Grammar and prefix shadowing ===
+* The kernel config words at <code>0xA000B940</code> (TCB), <code>0xA000B944</code> (EVENT), and <code>0xA000B948</code> (STACK) are zeroed before parsing.
+* Keys are parsed case-sensitively line by line as prefixes (<code>strncmp(line, key, strlen(key))</code>).
+* '''The prefix shadowing trap''': at <code>rom:BFC00A64</code> / <code>rom:BFC00C38</code>, the character immediately following the key name must be a whitespace character or an <code>=</code>. If any other character is encountered, the lookup function returns immediately with the field unset and '''never inspects subsequent lines'''.
+** Because <code>BOOT2</code> begins with <code>BOOT</code>, a <code>BOOT2 = ...</code> line placed before <code>BOOT = ...</code> causes the parser to see character <code>'2'</code>, failing the separator check and returning without setting the boot executable. The valid <code>BOOT</code> line that follows is shadowed and ignored.
+** Similarly, <code>TCBX = ...</code> aborts the <code>TCB</code> search.
+* After the key and <code>=</code>, whitespace is skipped (ctype table <code>rom:BFC0DDB1</code> bit 3: space, TAB, LF, CR, VT, FF).
+* Numeric values (<code>TCB</code>, <code>EVENT</code>, <code>STACK</code>) are read as '''hexadecimal digits with no prefix''' (ctype bits 0x44). A configuration line written as <code>TCB = 10</code> evaluates to 16 (0x10), not 10.
+* '''Missing keys evaluate to 0, not ROM defaults''': if <code>SYSTEM.CNF</code> is present and parsed, any omitted numeric key leaves its field at 0. A missing <code>TCB</code> line causes the second <code>SysInitMemory</code> ("KERNEL SETUP!") call at <code>rom:BFC06F28</code> to allocate 0 TCB blocks.
+* Missing or zero <code>STACK</code>: <code>DoExecute</code> sets <code>sp = fp = s_addr + s_size</code> only if <code>s_addr != 0</code>. If <code>STACK = 0</code> or omitted, the kernel leaves its initial stack pointer <code>0x801FFF00</code> intact rather than crashing.
+
+=== The BOOT line and the 0x180 argument parameter ===
+* For <code>BOOT = <filename> [argument]</code> (<code>rom:BFC0DD24</code>), the value runs until newline (a CR is ignored).
+* The first whitespace-delimited token is the executable filename, copied to <code>0xA000B8B0</code>.
+* Any remaining text following the filename token is copied via <code>strncpy</code> into '''RAM <code>0x00000180</code>''' (up to 0x80 bytes) and logged as <code>"argument =\t%s"</code>. Even though the kernel invokes <code>DoExecute</code> with <code>argc = 1, argv = 0</code>, trailing words on the <code>BOOT</code> line survive into the running game's address space at <code>0x180</code>.
+* If <code>SYSTEM.CNF</code> is absent, <code>0x00000180</code> is filled with zeros.
+* No other keys are recognized: <code>VER</code>, comments (<code>#</code> or <code>//</code>), and quotation marks are ignored or rejected as syntax errors.
+
+=== Disc directory and executable validation ===
+* '''Root directory constraint''': the kernel ISO9660 driver (<code>rom:BFC07700</code>) reads only '''one sector''' (2,048 bytes) of the root directory and keeps at most '''40 directory entries''' (0x18 bytes each at <code>0xA00091F0..0xA00095B0</code>). <code>SYSTEM.CNF</code> and the target executable must reside within those first 40 entries.
+* '''Executable header validation''': <code>LoadExeFile</code> (<code>rom:BFC03A18</code>) reads the first 2,048 bytes of the executable into <code>0xA000B070</code>. The magic string <code>"PS-X EXE"</code>, the region text, and the header checksum are '''never validated'''. The loader only verifies that at least 2,048 bytes were read; if fewer bytes are returned, the kernel halts in an infinite loop with error <code>'B' 0x38A</code> and POST byte <code>0xF</code>.
+* Sector alignment: <code>t_size</code> must be an exact multiple of 2,048 (<code>0x800</code>). If <code>t_size % 0x800 != 0</code>, the CD device driver returns <code>EINVAL</code> and nothing is loaded into memory, causing execution to jump into uninitialized RAM.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_kernel_boot.md §1.2, §3.1, §4.1, §4.2.''

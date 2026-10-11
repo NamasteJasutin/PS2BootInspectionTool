@@ -1,0 +1,81 @@
+== PlayStation 3 PUP container (plaintext structure) ==
+''Suggested page: PS3 → File Formats → PUP (PlayStation Update Package).''
+
+A PlayStation Update Package ('''<code>PS3UPDAT.PUP</code>''') is the file format used to distribute system firmware updates for the PlayStation 3. Contrary to the assumption that update packages are entirely opaque, a PUP is fundamentally a '''plaintext table of contents surrounding encrypted packages'''.
+
+''Notice: This specification documents the plaintext container structure only. It implements no decryption algorithms, distributes no Sony keys, and provides no mechanisms to bypass cryptographic security.''
+
+=== Header structure ===
+All multi-byte integers in the outer container header are 64-bit big-endian:
+
+{| class="wikitable"
+! Offset !! Size !! Field !! Example (4.82 retail) !! Description
+|-
+| 0x00 || 8 || Magic || <code>53 43 45 55 46 00 00 00</code> || ASCII <code>"SCEUF\0\0\0"</code>.
+|-
+| 0x08 || 8 || <code>package_version</code> || 1 || Outer format version.
+|-
+| 0x10 || 8 || <code>image_version</code> || <code>0x000105F2</code> (67,058) || Monotonically increasing build counter.
+|-
+| 0x18 || 8 || <code>file_count</code> || 9 || Number of embedded members.
+|-
+| 0x20 || 8 || <code>header_length</code> || 0x290 (656 bytes) || Computed as <code>0x30 + 32*n + 32*n + 32</code>.
+|-
+| 0x28 || 8 || <code>data_length</code> || 206,166,540 bytes || Total payload size; <code>header_length + data_length == file_size</code>.
+|}
+
+=== Tables and member directory ===
+Immediately following the 0x30 header:
+* '''File entry table''' (at <code>0x30</code>, <code>file_count × 32</code> bytes): each entry consists of <code>{u64 id, u64 offset, u64 size, u64 reserved}</code>. Members are contiguous with zero inter-file padding.
+* '''Digest table''' (at <code>0x30 + 32*n</code>, <code>file_count × 32</code> bytes): each entry is <code>{u64 index, u8 digest[20], u8 pad[4]}</code>. These store HMAC-SHA1 digests over each member.
+* '''Header digest''' (at <code>0x30 + 64*n</code>, 32 bytes): stores a 20-byte HMAC-SHA1 digest over the header itself, followed by 12 padding bytes.
+
+=== Plaintext members ===
+Standard retail PUPs contain several unencrypted metadata files:
+
+{| class="wikitable"
+! Member ID !! Standard name !! Size !! Content
+|-
+| <code>0x100</code> || <code>version.txt</code> || 5 bytes || ASCII firmware version string, e.g. <code>4.82\n</code>.
+|-
+| <code>0x101</code> || <code>license.xml</code> || ≈310 KB || XML document containing the system software licence agreement across 20 language locales.
+|-
+| <code>0x103</code> || <code>update_flags.txt</code> || 5 bytes || ASCII flags (<code>0000\n</code> on retail updates).
+|-
+| <code>0x201</code> || <code>vsh.tar</code> || 10 KB || Standard ustar archive containing a single 0-byte placeholder file named <code>a</code> (vestigial launch-era file, mtime 2006-12-18).
+|-
+| <code>0x202</code> || <code>dots.txt</code> || 3 bytes || ASCII progress string <code>"..."</code>.
+|-
+| <code>0x300</code> || <code>update_files.tar</code> || ≈194 MB || Standard ustar archive holding 50 regular files (48 encrypted PKG packages and 2 RVK revocation lists).
+|-
+| <code>0x501</code> || <code>spkg_hdr.tar</code> || 80 KB || Ustar archive holding 48 640-byte alternate SCE headers for the packages in <code>update_files.tar</code>.
+|-
+| <code>0x200</code>, <code>0x601</code> || <code>ps3swu.self</code>, <code>ps3swu2.self</code> || ≈5.7 MB || Updater executables with plaintext SCE, SELF, and ELF64 program headers.
+|}
+
+=== Plaintext package descriptors ===
+Within <code>update_files.tar</code>, every type-3 package (<code>.pkg</code>) begins with a 0x20-byte plaintext SCE container header (magic <code>"SCE\0"</code>, version 2, header length <code>0x280</code>).
+
+Crucially, at offset <code>0x280</code> (between the SCE header and the encrypted payload), every package contains an '''0x80-byte plaintext descriptor''':
+
+{| class="wikitable"
+! Offset !! Type !! Field !! Description
+|-
+| +0x00 || u32 || Constant || Always 3.
+|-
+| +0x04 || u32 || <code>kind</code> || Package classification: 1 = CoreOS, 3 = flash tar (dev_flash), 4 = UPL.xml, 7 = BD drive firmware, 8 = Syscon firmware.
+|-
+| +0x08 || u64 || <code>sequence</code> || Package sequence number (e.g. dev_flash chunk number 0..22).
+|-
+| +0x10 || u64 || <code>version_stamp</code> || CoreOS encodes firmware version (<code>0x0004_0082_0000_0000</code> = 4.82); dev_flash packages encode build timestamps as BCD (e.g. <code>0x2017_0824_1929_04_00</code> for 2017-08-24 19:29:04 JST).
+|-
+| +0x18 || u64 || <code>uncompressed_size</code> || Expected payload size after decompression (equals SCE <code>data_length - 0x80</code>).
+|-
+| +0x20 || u64 || <code>stored_size</code> || Encrypted payload size on disk (equals tar <code>member_size - 0x300</code>).
+|-
+| +0x28 || u64 || <code>flags</code> || Descriptor flags (0x40000000 on CoreOS, Bluetooth, and Multi-Card packages).
+|}
+
+The payload ciphertext begins at offset <code>0x300</code> (entropy 8.0 bits/byte). While the payloads (containing <code>dev_flash</code> files, emulators, and system resources) remain encrypted under Sony's private keys, all package names, build timestamps, compression metrics, and updater ELF structures are fully verifiable from the plaintext container alone.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps3_pup.md §1, §2, §3.''

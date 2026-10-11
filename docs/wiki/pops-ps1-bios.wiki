@@ -1,0 +1,43 @@
+== PSP POPS PS1 BIOS (PSXONPSP660.BIN) vs retail ==
+''Suggested page: PSP → POPS → BIOS Differences (PSXONPSP660.BIN).''
+
+To execute PlayStation 1 titles under official emulation (POPS), Sony's PlayStation Portable (PSP) firmware embeds a 512 KiB PS1 BIOS image commonly known as '''<code>PSXONPSP660.BIN</code>'''. Analysis reveals that this image is an asymmetric hybrid: it keeps Sony's 1995 retail kernel completely untouched, while gutting all anti-piracy and region enforcement from the shell.
+
+=== Kernel provenance: unmodified 1995 K2 ===
+* '''Byte-identical code''': The bootstrap and kernel regions (offsets <code>0x00000..0x17FFF</code>) are byte-for-byte identical to the retail '''K2 kernel''' that first shipped in December 1995 (version 2.2) and remained unchanged through PSone 4.5.
+* The only differences below <code>0x18000</code> are 10,864 bytes of alignment filler:
+** <code>0x0E630..0x10000</code> is filled with <code>0xFF</code> instead of <code>0x00</code>.
+** <code>0x16F60..0x18000</code> is filled with <code>0xFF</code> instead of <code>0x00</code>.
+* The kernel still contains <code>GetSystemInfo</code>, the pre-exec <code>ReadTOC</code>/<code>GetID</code> anti-swap check, and the user-RAM wipe. However, the anti-swap check remains permanently unarmed because the POPS shell never initializes the arming flag at <code>0xA000DFFC</code>.
+* '''Font data''': The Shift-JIS kanji font at <code>0x66000..0x7FE70</code> is byte-identical to retail PS1 KROM and PS2 <code>rom0:KROM</code>.
+
+=== Version string anomaly ===
+The version string at ROM offset <code>0x7FF32</code> reads:
+:<code>System ROM Version 4.5 05/25/00 J</code>
+This is the North American PSone (SCPH-101) version string (<code>4.5 05/25/00 A</code>) with the final letter edited from <code>A</code> to <code>J</code>. No retail hardware ever shipped a 4.5 J BIOS.
+
+=== The gutted shell ===
+The shell in POPS (mapped to <code>0x80030000</code>) is not a retail PS1 shell, but a sibling of the PlayStation 2's '''<code>rom0:LOGO</code>''' executable (compiled from <code>sys.c 1.140 1998/01/12</code>). It is compressed using the standard PS2 OSD LZ algorithm and unpacked by a small stub at <code>0x18000</code>.
+
+A disassembly comparison between retail PS1/PS2 shells and POPS reveals that all hardware gates were removed:
+
+{| class="wikitable"
+! Feature !! Retail PS1 (3.0/4.5) / PS2 LOGO !! PSP POPS (PSXONPSP660.BIN)
+|-
+| '''Region handling''' || Reads tail letter; selects PAL (512 lines) or NTSC (480 lines); sets licence policy || Completely stripped; hardcodes NTSC (480 lines); tail letter <code>'J'</code> is never read
+|-
+| '''Licence text check''' || Compares LBA 4 string against ROM text (when policy flag is active) || LBA 4 is read and displayed, but <code>strcmp</code> is dropped entirely
+|-
+| '''Logo model check''' || Reads disc sectors 5–11 (0x3278 bytes) and compares against ROM reference TMD || Sectors 5–11 are '''not read'''; <code>GetID (0x1A)</code> is not issued; error path <code>0x38D</code> is deleted
+|-
+| '''Displayed logo TMD''' || Renders the 3D logo loaded from the disc buffer || Renders the '''ROM's embedded logo model'''; the disc's logo model is ignored
+|-
+| '''Post-screen hold''' || Returns to ROM bootstrap immediately upon completion || Adds an explicit '''120-field (2.0 second) hold''' (<code>FUN_80030060(0x78)</code>) before returning
+|-
+| '''SCE intro''' || Present in standalone PS1 (procedural diamond + audio) || Completely absent (no intro code, sprites, or sound tables)
+|}
+
+=== Residual build slack ===
+Between file offsets <code>0x2E118</code> and <code>0x38A00</code> (immediately after the compressed shell stream and before the trailing <code>0xFF</code> padding), the ROM contains 43,240 bytes of '''uncompressed shell data'''. 76% of these bytes match the decompressed shell image at a constant offset (including strings like <code>"Library Programs (c) 1993-1997"</code> and UI TIM sprites). Nothing jumps or points to this area; it represents uninitialized build slack left in the image by Sony's linker.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_version_matrix.md §0, §6, §7.''

@@ -1,0 +1,81 @@
+== PS1 memory card undelete and SoundScope BPLAYSTATION format ==
+''Suggested page: PS1 → Memory Card → Undelete Feature and SoundScope Performance Files.''
+
+Two little-known features built into retail PlayStation 1 BIOS shells are the memory card manager's four-shoulder file restoration shortcut and the CD player's SoundScope controller performance recorder.
+
+=== Four-shoulder memory card undelete ===
+Present in every retail PS1 shell from 1.0 J (<code>0x8003B9D4</code>) through PSone 4.5 A (<code>0x8003ADF0</code>), the memory card manager provides an undocumented file recovery mechanism:
+
+==== Trigger combination ====
+* In the Memory Card screen, press '''L1 + L2 + R1 + R2''' simultaneously.
+* The input handler requires:
+** No face buttons pressed (mask <code>0x00F000F0 == 0</code>)
+** No D-pad Up or Down pressed (mask <code>0x50005000 == 0</code>)
+** All four shoulder button bits active (<code>0x00080008</code>, <code>0x00020002</code>, <code>0x00040004</code>, <code>0x00010001</code>)
+* There is no hold timer; pressing the chord restores the file immediately.
+
+==== Kernel mechanism ====
+When a file is deleted through the UI, routine <code>0x8003D548</code> (1.0 J) / <code>0x8003C398</code> (4.5 A) saves the path (e.g. <code>bu00:BASLUS-00000...</code>) in a scratch RAM buffer (<code>0x80086208</code> in 1.0 J; <code>0x80090CF0</code> in 4.5 A).
+# Pressing the four shoulders invokes the wrapper for '''BIOS B0 vector function 0x46''' (<code>0x800593C0</code> in 1.0 J; <code>0x80068EB0</code> in 4.5 A).
+# In the ROM kernel, <code>rom:BFC0AC78</code> scans the card directory for blocks marked as deleted:
+#* Expects deleted header block flag '''<code>0xA1</code>''', and deleted continuation/final blocks '''<code>0xA2</code>''' and '''<code>0xA3</code>'''.
+#* Rewrites them back to live active flags: '''<code>0x51</code>''', '''<code>0x52</code>''', and '''<code>0x53</code>'''.
+# If the blocks have not been overwritten by a subsequent save, the file and its directory entry are completely restored. Refreshing or leaving the manager clears the scratch path in RAM.
+
+==== Surviving PlayStation mouse bug ====
+Early Western shells (2.0 E, 2.2 A/E, 3.0 A/E) supported the PlayStation Mouse (ID <code>0x12</code>): Left click produced Circle (<code>0x0020</code>) and Right click produced Start (<code>0x0800</code>). When both buttons were pressed together, low word <code>0x0820</code> synthesized the four-shoulder mask <code>0x000F</code> to trigger undelete.
+
+In later shells (4.0 J, 4.1 A/E, 4.5 A), Right click was remapped to '''Select (<code>0x0100</code>)'''. However, the decoder retained the old test:
+:<code>if (mouse_buttons == 0x0820) synthesize_shoulders();</code>
+Because mouse clicks can now only produce words <code>0x0000</code>, <code>0x0020</code>, <code>0x0100</code>, or <code>0x0120</code>, mouse-driven undelete is '''permanently unreachable''' in late shells, while gamepad undelete remains fully functional.
+
+=== SoundScope and the BPLAYSTATION performance file ===
+Starting with revision 4.0 J (<code>0x800349F0</code>) and continuing through 4.1 A/E and 4.5 A (<code>0x80034D70</code>), pressing '''Select''' in the CD audio player launches '''SoundScope''', a built-in visualizer featuring 24 selectable presets (navigated with Left/Right).
+
+==== Performance recorder ====
+SoundScope allows recording and replaying interactive visual performances using controller inputs:
+* '''Cross + R1''' (<code>0x0048</code>): arm recording (state 5 → state 6 on button release → state 1 records on first visual input).
+* '''Cross + L1''' (<code>0x0044</code>): arm replay (state 7 → state 2 replays on release).
+* '''Cross + R2''' (<code>0x0042</code>): save performance to memory card (slot 1 then slot 2).
+* '''Cross + L2''' (<code>0x0041</code>): load performance from memory card.
+
+==== File structure (BPLAYSTATION) ====
+SoundScope saves a 1-block file ('''7,808 bytes / 0x1E80 bytes''') named '''<code>BPLAYSTATION</code>''' with title <code>"ＳｏｕｎｄＳｃｏｐｅ"</code>:
+
+{| class="wikitable"
+! Offset !! Size !! Field !! Description
+|-
+| 0x000 || 0x200 || Header / Icon || Standard PS1 <code>SC</code> card save header, title string, and animated icon frames.
+|-
+| 0x200 || 4 || Version || Format version constant: <code>0x00010000</code> (little-endian u32).
+|-
+| 0x204 || 4 || Checksum || 32-bit additive checksum (computed by routine <code>0x8004340C</code>).
+|-
+| 0x208 || 4 || Event count || Number of recorded controller events (up to 900).
+|-
+| 0x20C || 4 || Initial scale || Visualizer zoom parameter at performance start.
+|-
+| 0x210 || 4 || Initial variant || Visualizer variant parameter at performance start.
+|-
+| 0x214 || 0x4C || Padding || Reserved space.
+|-
+| 0x260 || 0x1C20 || Event buffer || Up to 900 8-byte event records (<code>900 * 8 = 7,200 bytes</code>).
+|}
+
+Each event slot (8 bytes) contains:
+* <code>u32 frame</code>: relative display frame timestamp.
+* <code>u16 duration</code>: hold duration in frames.
+* <code>u16 buttons</code>: active visualizer control button bitmask.
+
+==== Checksum algorithm ====
+Routine <code>0x8004340C</code> validates data integrity by summing the 32-bit frame words and the 16-bit button halfwords across all 900 slots:
+<syntaxhighlight lang="c">
+u32 sum = 0;
+for (int i = 0; i < 900; i++) {
+    sum += events[i].frame;
+    sum += (u32)events[i].buttons;
+}
+</syntaxhighlight>
+The duration field is omitted from the sum. On card load (<code>0x800432B0</code>), if the checksum does not match or the version is not <code>0x00010000</code>, the buffer is rejected and zeroed.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/hidden_input.md §6, §7, §8, §9.''
