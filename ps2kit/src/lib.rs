@@ -60,6 +60,7 @@ pub mod pup;
 pub mod rom;
 pub mod romdiff;
 pub mod sectors;
+pub mod sf2;
 pub mod sim;
 pub mod sound;
 pub mod song;
