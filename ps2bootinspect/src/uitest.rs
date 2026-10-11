@@ -3,7 +3,8 @@
 //! user's files loaded the same way, sound muted — feeds it a script of input and renders it to
 //! PNG with egui-wgpu. Script steps, separated by `;`: `click x,y`, `rclick x,y`,
 //! `drag x1,y1 x2,y2`, `wheel x,y dy`, `key space|enter|escape`, `type text`, `frames n`,
-//! `shot path.png` (a PNG of that moment; the final frame always goes to `<out.png>`).
+//! `shot path.png` (a PNG of that moment; the final frame always goes to `<out.png>`),
+//! `save song.psxsong`, `wav song.wav` (the song as the engine renders it).
 
 use crate::model::{Model, Tab};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -133,6 +134,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "type" => h.frame(vec![Event::Text(rest.to_string())]),
             "frames" => for _ in 0..rest.parse::<usize>().map_err(|_| "frames n")? { h.frame(Vec::new()) },
             "shot" => { h.frame(Vec::new()); h.snapshot(rest)? }
+            "save" => { let song = h.model.music.song.as_ref().ok_or("no song")?; std::fs::write(rest, song.to_text().map_err(|e| e.to_string())?).map_err(|e| e.to_string())? }
+            "wav" => {
+                let (song, (_, bench)) = (h.model.music.song.as_ref().ok_or("no song")?, h.model.music.bench.as_ref().ok_or("no bank")?);
+                song.write_wav(bench, rest).map_err(|e| e.to_string())?;
+            }
             other => return Err(format!("unknown step {other:?}")),
         }
     }

@@ -1297,6 +1297,7 @@ fn fonts_tab(ui: &mut egui::Ui, m: &mut Model) {
 fn music_bench(m: &Model, bank: ps2kit::song::BankRef) -> Option<ps2kit::bench::SoundBench> {
     match bank {
         ps2kit::song::BankRef::Ps2 => m.rom.as_ref().and_then(|r| ps2kit::bench::SoundBench::ps2(r).ok()),
+        ps2kit::song::BankRef::Ps2Logo => m.rom.as_ref().and_then(|r| ps2kit::bench::SoundBench::ps2_logo(r).ok()),
         _ => m.ps1_shell.as_ref().map(|s| ps2kit::bench::SoundBench::ps1(&s.bank)),
     }
 }
@@ -1327,9 +1328,34 @@ fn style_word(m: &Model, program: u8) -> &'static str {
     })
 }
 
+/// A short name for a track's instrument ("keys 0", "drums", "fx 3"…).
+fn instrument_name(m: &Model, inst: &ps2kit::song::Instrument) -> String {
+    use ps2kit::song::Instrument;
+    match inst {
+        Instrument::Program(p) => format!("{} {p}", style_word(m, *p)),
+        Instrument::Kit(_) => "drums".into(),
+        Instrument::Drum(_) => "drum".into(),
+        Instrument::Effect(e) => format!("fx {e}"),
+        _ => "track".into(),
+    }
+}
+
+/// One note of any instrument kind, for auditioning: a program note, the kit lane under `key`,
+/// a drum voice or an effect.
+fn audition(bench: &ps2kit::bench::SoundBench, inst: &ps2kit::song::Instrument, key: u8, seconds: f64) -> Vec<f32> {
+    use ps2kit::song::Instrument;
+    match inst {
+        Instrument::Program(p) => bench.render(*p as i32, key as i32, 100, seconds),
+        Instrument::Kit(k) => k.piece(key).and_then(|piece| piece.voice.render(bench).ok()).unwrap_or_default(),
+        Instrument::Drum(v) => v.render(bench).unwrap_or_default(),
+        Instrument::Effect(e) => bench.render_effect(*e, seconds.min(2.0)),
+        _ => Vec::new(),
+    }
+}
+
 /// Imported songs name their tracks after the MIDI channel; name them after the instrument instead.
 fn name_tracks_by_style(m: &mut Model) {
-    let names: Vec<String> = m.music.song.as_ref().map(|s| s.channels.iter().map(|c| format!("{} {}", style_word(m, c.program), c.program)).collect()).unwrap_or_default();
+    let names: Vec<String> = m.music.song.as_ref().map(|s| s.channels.iter().map(|c| instrument_name(m, &c.instrument)).collect()).unwrap_or_default();
     if let Some(song) = &mut m.music.song {
         for (c, n) in song.channels.iter_mut().zip(names) { if c.name.starts_with("MIDI channel") || c.name.starts_with("channel") { c.name = n } }
     }
@@ -1484,7 +1510,32 @@ fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
                 }
             }
             ui.add_space(6.0);
-            ui.small("Drums: a kit derived from your BIOS's samples is being built.");
+            ui.label(egui::RichText::new("Drums (derived from your samples)").small().color(Color32::from_rgb(140, 160, 210)));
+            let kit = m.music.bench.as_ref().map(|(_, b)| ps2kit::song::Kit::derive(b));
+            let mut add_kit = false;
+            if let Some(kit) = &kit {
+                ui.horizontal(|ui| {
+                    if ui.small_button("+").on_hover_text("Add a drum track with this kit").clicked() { add_kit = true }
+                    ui.label(format!("kit · {} pieces", kit.pieces.len())).on_hover_text(kit.explain());
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for piece in &kit.pieces {
+                        if ui.small_button(&piece.name).on_hover_text(&piece.reason).clicked() {
+                            if let Some((_, b)) = &m.music.bench { m.audio.preview(piece.voice.render(b).unwrap_or_default()) }
+                        }
+                    }
+                });
+                for o in &kit.omissions { ui.small(egui::RichText::new(o).color(Color32::GRAY)); }
+            }
+            if let (true, Some(kit), Some(song)) = (add_kit, kit, &mut m.music.song) {
+                let bars = song.bars().max(4);
+                let mut c = ps2kit::song::Channel::with_instrument("drums", ps2kit::song::Instrument::Kit(kit));
+                c.patterns.push(ps2kit::song::Pattern::new(song.ticks_per_bar()));
+                c.arrangement = vec![None; bars];
+                song.channels.push(c);
+                m.music.channel = song.channels.len() - 1;
+                m.music.pattern = 0;
+            }
             if let (Some(id), Some((_, bench))) = (audition, &m.music.bench) {
                 let note = bench.program(id).and_then(|p| p.tones.first()).map_or(60, |t| t.root.clamp(t.low, t.high));
                 m.audio.preview(bench.render(id, note, 100, 1.5));
@@ -1505,15 +1556,22 @@ fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
 /// The inspector: the selected track and pattern.
 fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let programs: Vec<(i32, String)> = m.music.styles.iter().flat_map(|(s, v)| v.iter().map(move |(id, _)| (*id, format!("{id} — {}", s.name())))).collect();
+    let kit = m.music.bench.as_ref().map(|(_, b)| ps2kit::song::Kit::derive(b));
+    let effects: Vec<usize> = m.music.bench.as_ref().map(|(_, b)| b.effects.iter().map(|e| e.id).collect()).unwrap_or_default();
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         let Some(song) = &mut m.music.song else { return };
         let ticks_per_bar = song.ticks_per_bar();
         let Some(c) = song.channels.get_mut(m.music.channel) else { ui.small("Select a track."); return };
         ui.label(egui::RichText::new("Track").strong().color(Color32::WHITE));
         ui.text_edit_singleline(&mut c.name);
-        egui::ComboBox::from_id_salt("insp-prog").width(rect.width() - 8.0).selected_text(format!("program {}", c.program)).show_ui(ui, |ui| {
-            for (id, label) in &programs { ui.selectable_value(&mut c.program, *id as u8, label); }
+        let current = instrument_label(&c.instrument);
+        let mut choice: Option<ps2kit::song::Instrument> = None;
+        egui::ComboBox::from_id_salt("insp-prog").width(rect.width() - 8.0).selected_text(current).show_ui(ui, |ui| {
+            for (id, label) in &programs { if ui.selectable_label(matches!(c.instrument, ps2kit::song::Instrument::Program(p) if p as i32 == *id), label).clicked() { choice = Some(ps2kit::song::Instrument::Program(*id as u8)) } }
+            if let Some(k) = &kit { if ui.selectable_label(matches!(c.instrument, ps2kit::song::Instrument::Kit(_)), "drum kit (derived)").clicked() { choice = Some(ps2kit::song::Instrument::Kit(k.clone())) } }
+            for e in &effects { if ui.selectable_label(matches!(c.instrument, ps2kit::song::Instrument::Effect(x) if x == *e), format!("effect {e}")).clicked() { choice = Some(ps2kit::song::Instrument::Effect(*e)) } }
         });
+        if let Some(inst) = choice { c.instrument = inst }
         ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("vol"));
         ui.add(egui::Slider::new(&mut c.pan, 0..=127).text("pan"));
         ui.add_space(8.0);
@@ -1534,6 +1592,18 @@ fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
         ui.add_space(8.0);
         ui.small("Arranger: click a cell to place the selected pattern, right-click to clear; drag across the ruler to set the loop. Piano roll: click to add or remove a note; wheel scrolls the keys.");
     });
+}
+
+/// The inspector's label for an instrument.
+fn instrument_label(inst: &ps2kit::song::Instrument) -> String {
+    use ps2kit::song::Instrument;
+    match inst {
+        Instrument::Program(p) => format!("program {p}"),
+        Instrument::Kit(k) => format!("drum kit ({} pieces)", k.pieces.len()),
+        Instrument::Drum(_) => "drum voice".into(),
+        Instrument::Effect(e) => format!("effect {e}"),
+        _ => "instrument".into(),
+    }
 }
 
 /// The arranger: a bar ruler (drag to set the loop), one lane per track, pattern cells, playhead.
@@ -1601,7 +1671,12 @@ fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let Some(song) = &mut m.music.song else { return };
     let tpb = song.ticks_per_beat as u32;
     let Some(c) = song.channels.get_mut(m.music.channel) else { return };
-    let program = c.program;
+    let instrument = c.instrument.clone();
+    if let ps2kit::song::Instrument::Kit(kit) = &instrument {
+        let name = c.name.clone();
+        let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
+        return drum_grid(ui, m.music.bench.as_ref().map(|(_, b)| b), &m.audio, kit, pattern, tpb, &name, m.music.pattern, rect);
+    }
     let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
     let keys = 36u8;
     // A newly shown pattern scrolls the roll so its notes are in view.
@@ -1614,7 +1689,7 @@ fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     }
     let painter = ui.painter_at(rect);
     let font = egui::FontId::monospace(10.0);
-    painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{} · pattern {} · program {}", c.name, m.music.pattern + 1, program), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
+    painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{} · pattern {} · {}", c.name, m.music.pattern + 1, instrument_label(&instrument)), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
     let roll = Rect::from_min_max(Pos2::new(rect.min.x + 44.0, rect.min.y + 18.0), rect.max);
     let row_h = roll.height() / keys as f32;
     let step = m.music.step.max(1);
@@ -1645,7 +1720,7 @@ fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let kr = ui.interact(Rect::from_min_max(Pos2::new(rect.min.x, roll.min.y), Pos2::new(roll.min.x, roll.max.y)), ui.id().with("keys"), egui::Sense::click());
     if let (true, Some(p), Some((_, b))) = (kr.clicked(), kr.interact_pointer_pos(), &m.music.bench) {
         let key = m.music.low_key + keys - 1 - ((p.y - roll.min.y) / row_h) as u8;
-        m.audio.preview(b.render(program as i32, key as i32, 100, 0.8));
+        m.audio.preview(audition(b, &instrument, key, 0.8));
     }
     if let (true, Some(pos)) = (rr.clicked(), rr.interact_pointer_pos()) {
         let s = ((pos.x - roll.min.x) / col_w) as u32;
@@ -1654,8 +1729,50 @@ fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
         if let Some(i) = pattern.notes.iter().position(|n| n.key == key && start >= n.start && start < n.start + n.length) { pattern.notes.remove(i); }
         else if start < pattern.length_ticks {
             pattern.notes.push(ps2kit::song::Note::new(start, step.min(pattern.length_ticks - start), key, 100));
-            if let Some((_, b)) = &m.music.bench { m.audio.preview(b.render(program as i32, key as i32, 100, 0.4)); }
+            if let Some((_, b)) = &m.music.bench { m.audio.preview(audition(b, &instrument, key, 0.4)); }
         }
     }
 }
 
+
+/// The drum grid for a kit track: one named lane per kit piece (kick, snare, hats…), sixteenth
+/// steps; click toggles a hit; the lane names audition their piece.
+#[allow(clippy::too_many_arguments)]
+fn drum_grid(ui: &mut egui::Ui, bench: Option<&ps2kit::bench::SoundBench>, audio: &crate::audio::AudioPlayer, kit: &ps2kit::song::Kit, pattern: &mut ps2kit::song::Pattern, tpb: u32, name: &str, index: usize, rect: Rect) {
+    let painter = ui.painter_at(rect);
+    painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{name} · pattern {} · drum grid", index + 1), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
+    if kit.pieces.is_empty() { painter.text(rect.center(), egui::Align2::CENTER_CENTER, "This bank's samples give no drum pieces.", egui::FontId::proportional(14.0), Color32::GRAY); return }
+    let step = (tpb / 4).max(1);
+    let steps = pattern.length_ticks.div_ceil(step).max(1);
+    let lanes = kit.pieces.len();
+    let grid = Rect::from_min_max(Pos2::new(rect.min.x + 90.0, rect.min.y + 22.0), Pos2::new(rect.max.x, (rect.min.y + 22.0 + lanes as f32 * 30.0).min(rect.max.y)));
+    let lane_h = grid.height() / lanes as f32;
+    let col_w = grid.width() / steps as f32;
+    for (li, piece) in kit.pieces.iter().enumerate() {
+        let y = grid.min.y + li as f32 * lane_h;
+        let label = Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(86.0, lane_h - 2.0));
+        painter.rect_filled(label, 2.0, Color32::from_rgb(40, 46, 62));
+        painter.text(label.left_center() + Vec2::new(6.0, 0.0), egui::Align2::LEFT_CENTER, &piece.name, egui::FontId::monospace(11.0), Color32::WHITE);
+        if ui.interact(label, ui.id().with(("lane", li)), egui::Sense::click()).on_hover_text(&piece.reason).clicked() {
+            if let Some(b) = bench { audio.preview(piece.voice.render(b).unwrap_or_default()) }
+        }
+        for s in 0..steps {
+            let r = Rect::from_min_size(Pos2::new(grid.min.x + s as f32 * col_w, y), Vec2::new(col_w - 2.0, lane_h - 2.0));
+            let on = pattern.notes.iter().any(|n| n.key == piece.key && n.start == s * step);
+            let beat = s % 4 == 0;
+            painter.rect_filled(r, 3.0, if on { Color32::from_rgb(255, 120, 90) } else if beat { Color32::from_white_alpha(22) } else { Color32::from_white_alpha(10) });
+        }
+    }
+    let gr = ui.interact(grid, ui.id().with("drumgrid"), egui::Sense::click());
+    if let (true, Some(p)) = (gr.clicked(), gr.interact_pointer_pos()) {
+        let (s, li) = (((p.x - grid.min.x) / col_w) as u32, ((p.y - grid.min.y) / lane_h) as usize);
+        if let (Some(piece), true) = (kit.pieces.get(li), s < steps) {
+            let start = s * step;
+            if let Some(i) = pattern.notes.iter().position(|n| n.key == piece.key && n.start == start) { pattern.notes.remove(i); }
+            else {
+                pattern.notes.push(ps2kit::song::Note::new(start, step.min(pattern.length_ticks - start), piece.key, 110));
+                if let Some(b) = bench { audio.preview(piece.voice.render(b).unwrap_or_default()) }
+            }
+        }
+    }
+}
