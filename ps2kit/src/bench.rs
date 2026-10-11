@@ -601,6 +601,38 @@ impl SoundBench {
         self.sample_data.get(index).map(|(pcm, lp)| (pcm.as_slice(), *lp))
     }
 
+    /// How the console plays `tone` of `program` for MIDI `key` at `velocity`: the sample step per
+    /// 48 kHz output frame (PS2 includes the driver's integer pitch quantisation, `sound.md` §2.2)
+    /// and the left/right gains, with exactly the arithmetic [`SoundBench::render`] uses.
+    pub fn voice_parameters(&self, program: &BenchProgram, tone: &BenchTone, key: u8, velocity: u8) -> (f64, f32, f32) {
+        match &self.backend {
+            SoundBenchBackend::Ps2 { bank, tables } => {
+                let synth = crate::sound::Synth { bank, tables };
+                let pitch = synth.pitch_register(tone.root.clamp(0, 127), i32::from(key), tone.fine.clamp(-128, 127), 64, tone.bend_range.clamp(0, 127));
+                let (pl, pr) = tables.pan.get((tone.pan.clamp(0, 127) >> 2) as usize).copied().unwrap_or((128, 128));
+                let vel = i64::from(bank.velocity.get(usize::from(velocity)).copied().unwrap_or(i32::from(velocity)).clamp(0, 127));
+                let gain = |pan| crate::sound::Synth::volume_register(127, 127, i64::from(program.volume.clamp(0, 127)), vel, i64::from(tone.volume.clamp(0, 127)), pan) as f32 / 16384.0 * (0x3FFF as f32 / 16384.0);
+                (pitch as f64 / 4096.0, gain(pl), gain(pr))
+            }
+            SoundBenchBackend::Ps1 { vab } => {
+                let gain = f32::from(velocity) / 127.0 * tone.volume as f32 / 127.0 * program.volume as f32 / 127.0 * f32::from(vab.master) / 127.0 * (0x3FFF as f32 / 16384.0);
+                let pan = (tone.pan as f32 / 127.0).clamp(0.0, 1.0);
+                let semis = f32::from(key) - tone.root as f32 + tone.fine as f32 / 128.0;
+                (2f64.powf(f64::from(semis) / 12.0) * 44100.0 / SAMPLE_RATE as f64, gain * (1.0 - pan).sqrt(), gain * pan.sqrt())
+            }
+            SoundBenchBackend::Sample { rate } => (f64::from(*rate) / SAMPLE_RATE as f64 * 2f64.powf((f64::from(key) - 60.0) / 12.0), f32::from(velocity) / 127.0, f32::from(velocity) / 127.0),
+        }
+    }
+
+    /// Decoded PCM and loop start of any sample index the bench reports, including the samples of
+    /// one-shot effects (which live in a separate body but keep their public indices).
+    pub fn any_sample_pcm(&self, index: usize) -> Option<(&[f32], Option<usize>)> {
+        self.sample_pcm(index).or_else(|| {
+            let base = self.samples.len().saturating_sub(self.effect_samples.len());
+            self.effect_samples.get(index.checked_sub(base)?).map(|(pcm, lp)| (pcm.as_slice(), *lp))
+        })
+    }
+
     /// Measures a loose sample at its declared rate, using MIDI key 60 as the root.
     pub fn sample_character(&self, index: usize) -> Option<Character> {
         let sample = self.sample(index)?;

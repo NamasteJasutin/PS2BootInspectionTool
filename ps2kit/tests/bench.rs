@@ -673,3 +673,20 @@ fn styles_group_every_program_once() {
     // The shell's chime (program 3) strikes instantly and bright.
     assert!(groups.iter().any(|(s, v)| *s == ps2kit::bench::Style::BellsAndChimes && v.iter().any(|(id, _)| *id == 3)));
 }
+
+#[test]
+fn voice_parameters_follow_key_and_velocity() {
+    let bank = SoundBank::new(&bank_header(), adpcm()).unwrap();
+    let bench = SoundBench::from_bank(bank, Some(DriverTables::computed()));
+    let program = &bench.programs[0];
+    let tone = &program.tones[0];
+    let (step, l, r) = bench.voice_parameters(program, tone, tone.root as u8, 100);
+    assert!(step.is_finite() && step > 0.0 && l.is_finite() && r.is_finite() && l + r > 0.0);
+    let (up, ..) = bench.voice_parameters(program, tone, tone.root as u8 + 12, 100);
+    assert!((up / step - 2.0).abs() < 0.02, "an octave up doubles the step: {step} -> {up}");
+    let (_, quiet_l, quiet_r) = bench.voice_parameters(program, tone, tone.root as u8, 20);
+    assert!(quiet_l + quiet_r < l + r);
+    assert!(bench.any_sample_pcm(0).is_some());
+    assert!(bench.any_sample_pcm(999).is_none());
+}
+
