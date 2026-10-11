@@ -114,7 +114,7 @@ fn synthetic_arrangements_lengths_previews_release_and_pan() {
         assert!(left.chunks_exact(2).all(|v| v[1] == 0.0));
         s.channels[0].volume = 0;
         assert!(s.render(&bench).iter().all(|v| *v == 0.0));
-        s.channels[0].instrument = ps2kit::song::Instrument::Program(100);
+        s.channels[0].instrument = ps2kit::song::Instrument::Program(100).into();
         assert!(s.render(&bench).iter().all(|v| *v == 0.0));
     }
 }
@@ -246,7 +246,7 @@ fn text_round_trip_unicode_empty_cells_and_good_errors() {
     );
     assert!(!text.contains("SShd") && !text.contains("pBAV"));
     for broken in [
-        text.replace("psxsong 1", "psxsong 3"),
+        text.replace("psxsong 1", "psxsong 4"),
         text.replace("clock 120", "clock 0"),
         text.replace("arrangement 0", "arrangement 99"),
         text.replace("endpattern", "unknown"),

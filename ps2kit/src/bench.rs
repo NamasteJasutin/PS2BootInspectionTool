@@ -92,6 +92,7 @@ pub struct BenchEffect {
 enum SoundBenchBackend {
     Ps2 { bank: SoundBank, tables: DriverTables },
     Ps1 { vab: Vab },
+    Sample { rate: u32 },
 }
 
 /// Asset workbench for sound banks: inspect programs, tones, and samples, and render
@@ -103,6 +104,8 @@ pub struct SoundBench {
     pub programs: Vec<BenchProgram>,
     /// Bank addressed by sample/song references.
     pub bank: BankRef,
+    /// Content identity assigned when this bench belongs to a runtime sound library.
+    pub key: Option<crate::library::BankKey>,
     /// All decoded samples referenced by the programs and UI effects. PS1 VAG zero is absent.
     pub samples: Vec<BenchSample>,
     /// All OSD UI effects, when the PS2 image includes the second bank.
@@ -332,6 +335,7 @@ impl SoundBench {
         Self {
             programs,
             bank: BankRef::Ps1,
+            key: None,
             sample_data: vab.samples.iter().skip(1).cloned().collect(),
             samples,
             effects: Vec::new(),
@@ -344,6 +348,47 @@ impl SoundBench {
     /// Constructs a PS2 sound bench directly from an `SShd` [`SoundBank`] and optional driver tables.
     pub fn from_bank(bank: SoundBank, tables: Option<DriverTables>) -> Self {
         Self::from_bank_and_tables(bank, tables.unwrap_or_else(DriverTables::computed))
+    }
+
+    /// Parses one isolated SShd header/body pair, including direct effect entries.
+    /// Extents and sentinel handling: `sound_inventory.md` §"SShd boundaries".
+    pub fn from_parts(header: &[u8], body: &[u8], tables: Option<DriverTables>) -> Result<Self> {
+        let mut bench = Self::from_bank(SoundBank::new(header, body.to_vec())?, tables);
+        if header.len() >= 0x30 && header.u32(0x2C) != u32::MAX {
+            bench.add_effects(header, body)?;
+        }
+        Ok(bench)
+    }
+
+    pub(crate) fn from_sample(pcm: Vec<f32>, loop_start: Option<usize>, rate: u32) -> Self {
+        Self {
+            programs: Vec::new(), bank: BankRef::Ps2, key: None,
+            samples: vec![BenchSample { index: 0, length: pcm.len(), loop_start }],
+            sample_data: vec![(pcm, loop_start)], effects: Vec::new(), effect_samples: Vec::new(),
+            effect_master: 0, backend: SoundBenchBackend::Sample { rate },
+        }
+    }
+
+    /// Recorded rate of decoded sample PCM; ordinary SPU banks use 44.1 kHz.
+    /// TESTSPU's VAG declares 48 kHz (`sound_inventory.md` §"VAB and standalone VAG").
+    pub fn sample_rate(&self) -> u32 {
+        match self.backend { SoundBenchBackend::Sample { rate } => rate, _ => 44100 }
+    }
+
+    /// Auditions a loose sample, tuned around MIDI key 60 using its declared rate.
+    /// A short fade is an editor processing choice; no native program is invented.
+    pub fn render_sample(&self, index: usize, key: u8, velocity: u8, seconds: f64) -> Vec<f32> {
+        let Some((total, on)) = render_length(seconds) else { return Vec::new() };
+        let mut mix = vec![0.0; total * 2];
+        let Some((pcm, lp)) = self.sample_pcm(index) else { return mix };
+        if pcm.len() < 2 || key > 127 || velocity > 127 { return mix }
+        let env: Vec<_> = (0..total).map(|i| if i < on { 32768.0 } else {
+            32768.0 * (total - i) as f32 / (total - on).max(1) as f32
+        }).collect();
+        let step = f64::from(self.sample_rate()) / SAMPLE_RATE as f64 * 2f64.powf((f64::from(key) - 60.0) / 12.0);
+        let gain = f32::from(velocity) / 127.0;
+        mix_voice(&mut mix, 0, pcm, lp, &env, step, gain, gain);
+        mix
     }
 
     fn from_bank_and_tables(bank: SoundBank, tables: DriverTables) -> Self {
@@ -399,6 +444,7 @@ impl SoundBench {
         Self {
             programs,
             bank: BankRef::Ps2,
+            key: None,
             sample_data: offsets.iter().map(|&o| decode_bank_sample(&bank, o)).collect(),
             samples,
             effects: Vec::new(),
@@ -408,7 +454,7 @@ impl SoundBench {
         }
     }
 
-    fn add_effects(&mut self, header: &[u8], body: &[u8]) -> Result<()> {
+    pub(crate) fn add_effects(&mut self, header: &[u8], body: &[u8]) -> Result<()> {
         let bad = || Error::Corrupt(Format::SoundBank, "truncated OSD effect bank".into());
         if header.len() < 0x30 || &header[0xC..0x10] != b"SShd" {
             return Err(bad());
@@ -512,10 +558,16 @@ impl SoundBench {
         self.samples.get(index)
     }
 
-    /// Decoded mono PCM at the SPU's 44.1 kHz base rate and its optional loop point.
+    /// Decoded mono PCM at [`Self::sample_rate`] and its optional loop point.
     /// Data comes only from this caller-supplied bank (sound.md §2.1; scenes §2).
     pub fn sample_pcm(&self, index: usize) -> Option<(&[f32], Option<usize>)> {
         self.sample_data.get(index).map(|(pcm, lp)| (pcm.as_slice(), *lp))
+    }
+
+    /// Measures a loose sample at its declared rate, using MIDI key 60 as the root.
+    pub fn sample_character(&self, index: usize) -> Option<Character> {
+        let sample = self.sample(index)?;
+        Some(measure(&self.render_sample(index, 60, 100, 4.0), sample.loop_start.is_some()))
     }
 
     /// Measures an effect with its stored pitch, pan and ADSR (`notes/ps2logo.md` §5).
@@ -533,7 +585,7 @@ impl SoundBench {
             (SoundBenchBackend::Ps2 { bank, tables }, false) => {
                 let end = seq.events.last().map_or(0, |e| e.update) as f64 / crate::sound::UPDATES_PER_SECOND;
                 let tail = (frames as f64 / SAMPLE_RATE as f64 - end).max(0.0);
-                crate::sound::Synth { bank, tables }.render_channels(channels, seq, seq.volume as i64, 0.0, tail, 120.0, &mut mix);
+                crate::sound::Synth { bank, tables }.render_channels(channels, seq, seq.volume as i64, 0.0, tail, (frames as f64 / SAMPLE_RATE as f64).max(120.0), &mut mix);
             }
             (SoundBenchBackend::Ps1 { vab }, true) => {
                 let keys: Vec<_> = seq.events.iter().filter_map(|e| {
@@ -634,6 +686,7 @@ impl SoundBench {
                     }
                 }
             }
+            SoundBenchBackend::Sample { .. } => {}
             SoundBenchBackend::Ps1 { vab } => {
                 let Ok(prog) = u8::try_from(program_id) else { return mix };
                 let key = NoteEvent { time: 0, prog, note: note as u8, vel: velocity.clamp(0, 127) as u8, pan: 64 };

@@ -44,6 +44,7 @@ pub mod history;
 pub mod icon;
 pub mod hooks;
 pub mod locate;
+pub mod library;
 pub mod logo;
 pub mod memcard;
 pub mod nvm;
