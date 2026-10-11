@@ -23,13 +23,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, edition: crate::Edition) -> Self {
         let rs = cc.wgpu_render_state.as_ref().expect("wgpu");
         let (device, queue) = arc_device(rs);
         let renderer = Renderer::new(device, queue);
-        let view = SceneView::register(rs, &renderer.targets["scene"].1, renderer.size);
+        let view = SceneView::register(rs, &renderer.targets["scene"].1);
         let mut model = Model::new();
         model.load_defaults();
+        model.set_edition(edition);
         Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None, loaded_icons: u32::MAX }
     }
 
@@ -131,6 +132,7 @@ pub fn focus_workspace(m: &mut Model) -> bool {
 /// The window's panels — sidebar and centre — shared by the app and the headless UI harness
 /// (`uitest.rs`); `picture` draws the boot scene in the centre outside the Studio.
 pub fn layout(root: &mut egui::Ui, m: &mut Model, picture: impl FnOnce(&mut egui::Ui, &mut Model)) {
+    m.poll_extract();
     egui::Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(root, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, m));
     });
@@ -333,13 +335,18 @@ fn file_row(ui: &mut egui::Ui, label: &str, status: &str, directories: bool, fil
 fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     ui.add_space(6.0);
     // Workspaces first (Boot · Inspect · Studio), then the open workspace's own tabs.
+    // PSX Studio (the Studio-only edition) shows its own tabs and nothing else.
     let current = Workspace::of(m.tab);
-    ui.horizontal(|ui| {
-        for w in Workspace::ALL {
-            let b = egui::Button::selectable(w == current, egui::RichText::new(w.name()).size(15.0).strong()).min_size(Vec2::new(86.0, 28.0));
-            if ui.add(b).clicked() && w != current { m.tab = w.tabs()[0] }
-        }
-    });
+    if m.edition == crate::Edition::Full {
+        ui.horizontal(|ui| {
+            for w in Workspace::ALL {
+                let b = egui::Button::selectable(w == current, egui::RichText::new(w.name()).size(15.0).strong()).min_size(Vec2::new(86.0, 28.0));
+                if ui.add(b).clicked() && w != current { m.tab = w.tabs()[0] }
+            }
+        });
+    } else {
+        ui.label(egui::RichText::new("PSX Studio").size(17.0).strong());
+    }
     let tabs = Workspace::of(m.tab).tabs();
     if tabs.len() > 1 {
         ui.horizontal_wrapped(|ui| { for t in tabs { ui.selectable_value(&mut m.tab, *t, t.name()); } });
@@ -354,6 +361,7 @@ fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
         Tab::Sound => sound_tab(ui, m),
         Tab::Fonts => fonts_tab(ui, m),
         Tab::Music => music_tab(ui, m),
+        Tab::Soundfonts => soundfonts_tab(ui, m),
     }
     ui.add_space(12.0);
 }
@@ -884,6 +892,22 @@ mod tests {
     }
 
     #[test]
+    fn one_image_per_disc() {
+        use std::path::PathBuf;
+        let p = |s: &str| PathBuf::from(s);
+        let images = [
+            // A renamed multi-track set with a cue sheet naming the original files.
+            p("/d/A/A.cue"), p("/d/A/A (Track 01).bin"), p("/d/A/A (Track 02).bin"),
+            // A multi-track set without one: track 1 only.
+            p("/d/B/B (Track 01).bin"), p("/d/B/B (Track 12).bin"),
+            // A single BIN, and an ISO.
+            p("/d/C/C.bin"), p("/d/D.iso"),
+        ];
+        assert_eq!(crate::model::Model::one_per_disc(&images), [p("/d/A/A.cue"), p("/d/B/B (Track 01).bin"), p("/d/C/C.bin"), p("/d/D.iso")]);
+        assert_eq!(super::disc_name(&p("/d/B/B (Track 01).bin")), "B");
+    }
+
+    #[test]
     fn wav_header_and_clipping() {
         let w = super::wav_bytes(&[0.0, 1.0, -2.0, 0.5]);
         assert_eq!(&w[..4], b"RIFF");
@@ -1291,6 +1315,124 @@ fn fonts_tab(ui: &mut egui::Ui, m: &mut Model) {
         let (w, h, rgba) = font.atlas(start..end);
         if let Some(p) = rfd::FileDialog::new().set_file_name(format!("{}-page{}.png", font.name(), a.page)).save_file() { let _ = image::save_buffer(p, &rgba, w as u32, h as u32, image::ColorType::Rgba8); }
     }
+}
+
+/// The Soundfonts folder: where it is, extracting banks from the user's own discs into it, and
+/// the sets it holds. The Studio's library reads it with the BIOS files.
+fn soundfonts_tab(ui: &mut egui::Ui, m: &mut Model) {
+    if !m.soundfonts.listed { m.soundfonts.list() }
+    section(ui, "Soundfonts folder", |ui| {
+        let sf = &mut m.soundfonts;
+        ui.add(egui::Label::new(egui::RichText::new(sf.dir.display().to_string()).monospace().size(11.0)).wrap());
+        ui.small(if sf.custom { "Chosen by you." } else { "The default location." });
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            if ui.button("Change…").clicked() { chosen = rfd::FileDialog::new().set_directory(&sf.dir).pick_folder().map(Some) }
+            if sf.custom && ui.button("Use the default").clicked() { chosen = Some(None) }
+            if ui.button("Show").clicked() {
+                let _ = std::fs::create_dir_all(&sf.dir);
+                if let Err(e) = crate::settings::reveal(&sf.dir) { sf.log.push(e) }
+            }
+        });
+        if let Some(dir) = chosen {
+            let settings = crate::settings::Settings { soundfonts_dir: dir };
+            if let Err(e) = settings.save() { sf.log.push(format!("could not remember the folder: {e}")) }
+            sf.dir = settings.soundfonts_dir();
+            sf.custom = settings.soundfonts_dir.is_some();
+            sf.listed = false;
+            m.music.forget_library();
+        }
+        ui.small("Banks extracted from your own game discs are kept here for the Studio, in their native formats with an index of where each came from. Nothing in this folder comes with the app.");
+    });
+    section(ui, "Extract from your discs", |ui| {
+        let busy = m.soundfonts.job.is_some();
+        let mut start: Vec<std::path::PathBuf> = Vec::new();
+        ui.add_enabled_ui(!busy, |ui| {
+            if ui.button("Extract from a disc image…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("disc images", &["cue", "iso", "bin", "img"]).pick_file() { start.push(p) }
+            }
+            let discs = &m.soundfonts.discs;
+            if !discs.is_empty() {
+                ui.small(format!("{} disc{} in your disc folder:", discs.len(), if discs.len() == 1 { "" } else { "s" }));
+                for d in discs {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Extract").clicked() { start.push(d.clone()) }
+                        ui.label(disc_name(d));
+                    });
+                }
+                if discs.len() > 1 && ui.button(format!("Extract all {}", discs.len())).clicked() { start = discs.clone() }
+            }
+        });
+        if !start.is_empty() { start_extract(m, start) }
+        if busy { ui.horizontal(|ui| { ui.spinner(); ui.small("Extracting…") }); }
+        let log = &m.soundfonts.log;
+        if !log.is_empty() {
+            egui::ScrollArea::vertical().id_salt("extract-log").max_height(150.0).stick_to_bottom(true).show(ui, |ui| {
+                for l in log { ui.add(egui::Label::new(egui::RichText::new(l).monospace().size(10.5)).wrap()); }
+            });
+        }
+        ui.small("Each disc becomes one set; extracting a disc again replaces its set. The banks are checked by parsing them, so look-alike bytes are left out.");
+    });
+    section(ui, "Sets", |ui| {
+        let sf = &mut m.soundfonts;
+        if sf.sets.is_empty() { ui.small("No sets yet: extract a disc above."); return }
+        let total: u64 = sf.sets.iter().map(|s| s.bytes).sum();
+        ui.small(format!("{} set{}, {:.1} MB", sf.sets.len(), if sf.sets.len() == 1 { "" } else { "s" }, total as f64 / 1e6));
+        let (mut delete, mut reveal) = (None, None);
+        for set in &sf.sets {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&set.name).strong());
+            let counts: Vec<String> = set.counts.iter().map(|(k, n)| format!("{n} {k}")).collect();
+            ui.small(format!("{} — {:.1} MB", if counts.is_empty() { "empty".to_string() } else { counts.join(" · ") }, set.bytes as f64 / 1e6));
+            ui.horizontal(|ui| {
+                if ui.small_button("Show").clicked() { reveal = Some(set.path.clone()) }
+                if sf.confirm_delete.as_ref() == Some(&set.path) {
+                    ui.small("Delete this set?");
+                    if ui.small_button("Delete").clicked() { delete = Some(set.path.clone()) }
+                    if ui.small_button("Keep").clicked() { sf.confirm_delete = None }
+                } else if ui.small_button("Delete…").clicked() { sf.confirm_delete = Some(set.path.clone()) }
+            });
+        }
+        if let Some(p) = reveal { if let Err(e) = crate::settings::reveal(&p) { sf.log.push(e) } }
+        if let Some(p) = delete {
+            // Only a set folder (it has an index) inside the Soundfonts folder.
+            if p.parent() == Some(sf.dir.as_path()) && p.join("index.tsv").is_file() {
+                if let Err(e) = std::fs::remove_dir_all(&p) { sf.log.push(format!("{}: {e}", p.display())) }
+            }
+            sf.confirm_delete = None;
+            sf.listed = false;
+            m.music.forget_library();
+        }
+    });
+}
+
+/// A disc's name for a list: its folder's name for a multi-track set, else the file's.
+fn disc_name(p: &std::path::Path) -> String {
+    let file = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    match file.find(" (Track ") { Some(i) => file[..i].to_string(), None => file }
+}
+
+/// Extracts the discs one after another on a background thread into the Soundfonts folder; the
+/// log and the end arrive through `Model::poll_extract`.
+fn start_extract(m: &mut Model, discs: Vec<std::path::PathBuf>) {
+    use crate::model::ExtractEvent;
+    let dir = m.soundfonts.dir.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    m.soundfonts.job = Some(rx);
+    std::thread::spawn(move || {
+        for d in discs {
+            let _ = tx.send(ExtractEvent::Disc(disc_name(&d)));
+            let line = match extract_disc(&d, &dir) { Ok(s) => s, Err(e) => format!("{}: {e}", disc_name(&d)) };
+            let _ = tx.send(ExtractEvent::Line(line));
+        }
+        let _ = tx.send(ExtractEvent::Done);
+    });
+}
+
+/// One disc into the Soundfonts folder (`ps2kit::extract`): a summary line of what was kept.
+fn extract_disc(image: &std::path::Path, dir: &std::path::Path) -> Result<String, String> {
+    let _ = (image, dir);
+    Err("the extractor is not in this build yet".into())
 }
 
 type Library = std::sync::Arc<ps2kit::library::SoundLibrary>;

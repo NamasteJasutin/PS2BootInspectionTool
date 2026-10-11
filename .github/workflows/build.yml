@@ -45,10 +45,11 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/release/${{ matrix.bin }}" README.md LICENSE dist/
-          # The research command-line tools from ps2kit, next to the app.
+          # PSX Studio (the Studio on its own) and the research command-line tools from ps2kit,
+          # next to the app.
           ext=""
           if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
-          for t in ps2history pupinfo ps3card nvminfo discprobe ps1card hookmap romdiff bench song; do
+          for t in psxstudio ps2history pupinfo ps3card nvminfo discprobe ps1card hookmap romdiff bench song library extract; do
             if [ -f "target/release/$t$ext" ]; then cp "target/release/$t$ext" dist/; fi
           done
           # macOS: the app as a bundle too.

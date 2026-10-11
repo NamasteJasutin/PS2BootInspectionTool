@@ -5,7 +5,8 @@
 //! `drag x1,y1 x2,y2`, `wheel x,y dy`, `key space|enter|escape`, `type text`, `frames n`,
 //! `shot path.png` (a PNG of that moment; the final frame always goes to `<out.png>`),
 //! `save song.psxsong`, `wav song.wav` (the song as the engine renders it), `waitlib` (wait
-//! for the Studio's background library scan).
+//! for the Studio's background library scan), `soundfonts dir` (the Soundfonts folder for this
+//! run, never saved), `waitextract` (wait for a running extraction).
 
 use crate::model::{Model, Tab};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -27,11 +28,11 @@ impl Harness {
         let m = &mut self.model;
         crate::ui::focus_workspace(m);
         m.sync_audio();
-        let out = self.ctx.run_ui(input, |root| {
+        let mut out = self.ctx.run_ui(input, |root| {
             crate::ui::layout(root, m, |ui, _| { ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_rgb(8, 8, 16)); ui.painter().text(ui.max_rect().center(), egui::Align2::CENTER_CENTER, "(boot scene)", egui::FontId::proportional(14.0), egui::Color32::GRAY); });
         });
-        for (id, deltas) in &out.textures_delta.set { for delta in deltas { self.renderer.update_texture(&self.device, &self.queue, *id, delta) } }
-        if let Some(prev) = self.last.replace(out) { for id in &prev.textures_delta.free { self.renderer.free_texture(id) } }
+        for (id, deltas) in std::mem::take(&mut out.textures_delta.set) { for delta in &deltas { self.renderer.update_texture(&self.device, &self.queue, id, delta) } }
+        if let Some(mut prev) = self.last.replace(out) { for id in std::mem::take(&mut prev.textures_delta.free) { self.renderer.free_texture(&id) } }
     }
 
     fn snapshot(&mut self, path: &str) -> Result<(), String> {
@@ -79,13 +80,13 @@ fn point(s: &str) -> Result<Pos2, String> {
 
 fn press(pos: Pos2, button: PointerButton, pressed: bool) -> Event { Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE } }
 
-pub fn run(args: &[String]) -> Result<(), String> {
+pub fn run(args: &[String], edition: crate::Edition) -> Result<(), String> {
     let mut out = None;
     let (mut tab, mut size, mut script) = (Tab::Music, Vec2::new(1400.0, 812.0), String::new());
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--tab" => { i += 1; tab = match args.get(i).map(String::as_str) { Some("boot") => Tab::Boot, Some("save") => Tab::SaveData, Some("disc") => Tab::Disc, Some("bios") => Tab::Bios, Some("lab") => Tab::Lab, Some("sound") => Tab::Sound, Some("fonts") => Tab::Fonts, _ => Tab::Music } }
+            "--tab" => { i += 1; tab = match args.get(i).map(String::as_str) { Some("boot") => Tab::Boot, Some("save") => Tab::SaveData, Some("disc") => Tab::Disc, Some("bios") => Tab::Bios, Some("lab") => Tab::Lab, Some("sound") => Tab::Sound, Some("fonts") => Tab::Fonts, Some("soundfonts") => Tab::Soundfonts, _ => Tab::Music } }
             "--size" => { i += 1; let (w, h) = args.get(i).and_then(|s| s.split_once('x')).ok_or("--size WxH")?; size = Vec2::new(w.parse().map_err(|_| "bad width")?, h.parse().map_err(|_| "bad height")?) }
             "--script" => { i += 1; script = args.get(i).cloned().unwrap_or_default() }
             other => out = Some(other.to_string()),
@@ -100,6 +101,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let renderer = egui_wgpu::Renderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, egui_wgpu::RendererOptions::default());
     let mut model = Model::new();
     model.load_defaults();
+    model.set_edition(edition);
     model.sound_volume = 0.0;
     model.tab = tab;
     let mut h = Harness { ctx: egui::Context::default(), model, size, renderer, device, queue, last: None };
@@ -138,6 +140,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 h.model.tab = Tab::Music;
                 for _ in 0..1200 { h.frame(Vec::new()); if h.model.music.library.is_some() { break } std::thread::sleep(std::time::Duration::from_millis(100)) }
                 if h.model.music.library.is_none() { return Err("the library did not load".into()) }
+                h.frame(Vec::new());
+            }
+            // Points the Soundfonts folder somewhere for this run (never saved).
+            "soundfonts" => { h.model.soundfonts.dir = std::path::PathBuf::from(rest); h.model.soundfonts.listed = false; h.model.music.forget_library() }
+            // Blocks until a running extraction has finished (up to ten minutes).
+            "waitextract" => {
+                for _ in 0..6000 { h.frame(Vec::new()); if h.model.soundfonts.job.is_none() { break } std::thread::sleep(std::time::Duration::from_millis(100)) }
+                if h.model.soundfonts.job.is_some() { return Err("the extraction did not finish".into()) }
                 h.frame(Vec::new());
             }
             "frames" => for _ in 0..rest.parse::<usize>().map_err(|_| "frames n")? { h.frame(Vec::new()) },
