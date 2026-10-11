@@ -376,6 +376,37 @@ impl SoundBench {
         self.samples.get(index)
     }
 
+    // Arrangement rendering shares the sequencer and VAB voice paths, including note-off
+    // release (notes/sound.md §2.2; ps1_shell_scenes.md §2). No audition-length heuristic.
+    pub(crate) fn render_song(&self, seq: &crate::sound::SoundSequence, channels: &[crate::sound::Channel], frames: usize, ps1: bool) -> Vec<f32> {
+        let mut mix = Vec::new();
+        match (&self.backend, ps1) {
+            (SoundBenchBackend::Ps2 { bank, tables }, false) => {
+                let end = seq.events.last().map_or(0, |e| e.update) as f64 / crate::sound::UPDATES_PER_SECOND;
+                let tail = (frames as f64 / SAMPLE_RATE as f64 - end).max(0.0);
+                crate::sound::Synth { bank, tables }.render_channels(channels, seq, seq.volume as i64, 0.0, tail, 120.0, &mut mix);
+            }
+            (SoundBenchBackend::Ps1 { vab }, true) => {
+                let keys: Vec<_> = seq.events.iter().filter_map(|e| {
+                    let c = channels.get(e.channel)?;
+                    let (note, vel) = match e.kind {
+                        crate::sound::EventKind::NoteOn { note, velocity } => (note, velocity),
+                        crate::sound::EventKind::NoteOff { note } => (note, 0),
+                        _ => return None,
+                    };
+                    // Song supplies sample-frame timestamps for the VAB clock.
+                    Some((e.update as usize, NoteEvent { time: 0, prog: c.program as u8, note: note as u8, vel: vel as u8, pan: c.pan as u8 }, e.channel, c.volume as u8))
+                }).collect();
+                mix = vab.render_channel_events(&keys, Some(frames), 0);
+                let gain = seq.volume as f32 / 127.0;
+                for v in &mut mix { *v *= gain }
+            }
+            _ => {}
+        }
+        mix.resize(frames * 2, 0.0);
+        mix
+    }
+
     /// Auditions an instrument: synthesises a note at 48 kHz stereo for `seconds`.
     /// Uses the shared ADPCM/ADSR mixers (`notes/sound.md` §2, scenes §2). The key is
     /// released for the last quarter second (last quarter of short clips). Invalid MIDI
