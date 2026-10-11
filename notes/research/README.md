@@ -277,3 +277,21 @@ Firmware 3.00 removed the historical game-start chime [I].
 
 Also corrected this round: 1.00 J's sound banks sit inline in OSDSYS (`OSDSND` is only the driver);
 the PS2 ASCII font sheets hold 96 cells; FONTM advertises 4 418 slots with two offsets unavailable.
+
+---
+
+## Round five: every sound in every BIOS file (2026-10-11)
+
+`sound_inventory.md` (+ `sound_inventory.tsv`, 608 rows): the whole corpus parsed to true extents
+and deduplicated. **5 byte-distinct banks**: the PS2 boot bank (17 programs), the PS1 shell VAB
+(4 programs — byte-identical in every PS1 shell, every PS2 `LOGO` and POPS), the PS2 menu effects
+(14; a 12-entry header variant in 1.00 J only), the PS2 logo's effect bank (5), plus a TESTSPU sine
+(1.50+). **41 playable choices**: 21 programs, 19 effects, 1 sine. **Music: 9 stored scores + the
+logo chord recipe = 10 pieces**, identical across 1.00 J → 2.00 E: `SNDBOOTS` (boot, 9.2 s),
+`SNDCLOKS` (clock/main menu, 126 notes: a 19 s intro and a 281 s loop held forever by NRPN 127),
+`SNDWARNS` (warning, 126 notes: 19.6 s + 307 s loop), `SNDTNNLS` (opening→menu transition),
+`SNDRCLKS` (CD-media transition), `SNDTM30S` = `SNDLOGOS` and `SNDTM60S` (registered, no play call
+found — the "timer" names are not proof of a timer feature), the PS1 licence table, the SCE intro
+table (standalone PS1 only), and the PS2 logo's five-effect chord. Nothing is exclusive to 2.00;
+the EROM holds no sound. The coordinator's earlier signature sweep over-counted (fixed-window
+fingerprints); this note supersedes it.
