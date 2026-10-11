@@ -119,6 +119,105 @@ impl std::fmt::Debug for SoundBench {
     }
 }
 
+/// An instrument's audible character, measured from one note rendered from the user's bank
+/// ([`SoundBench::character`]). The style is a heuristic grouping for browsing, not a name
+/// the console uses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Character {
+    /// Time to reach 90 % of the peak level, in milliseconds.
+    pub attack_ms: f32,
+    /// How long the note stays above 10 % of its peak within the measured window, in ms.
+    pub ring_ms: f32,
+    /// Zero-crossing rate of the note, in Hz: a coarse brightness measure.
+    pub brightness_hz: f32,
+    /// Energy of the sample-to-sample difference over the signal's energy: high for noise.
+    pub noisiness: f32,
+    /// Level three quarters into the window relative to the peak.
+    pub sustain: f32,
+    /// Any of the program's tones uses a looping sample.
+    pub looped: bool,
+    /// The grouping the measurements put the program in.
+    pub style: Style,
+}
+
+/// Browsing groups for instruments, from fast and percussive to slow and textural.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum Style {
+    /// Instant, bright attack that rings on.
+    BellsAndChimes,
+    /// Fast attack on a held, looping tone.
+    KeysAndBellPads,
+    /// Short-to-medium attack, decays without a loop.
+    MalletsAndPlucks,
+    /// Medium attack, held: usable as a melody voice.
+    SoftLeadsAndStrings,
+    /// Slow swell, bright.
+    BrightPads,
+    /// Slow swell, mid-range.
+    WarmPads,
+    /// Slow swell, dark and low in content.
+    DarkPadsAndDrones,
+    /// Swells in and fades out on its own (no loop).
+    Swells,
+    /// Sustained noise: air, wind, shimmer.
+    AirAndNoise,
+    /// Short noise bursts.
+    PercussiveNoise,
+}
+
+impl Style {
+    /// Every style in browsing order.
+    pub const ALL: [Style; 10] = [Style::BellsAndChimes, Style::KeysAndBellPads, Style::MalletsAndPlucks, Style::SoftLeadsAndStrings, Style::BrightPads, Style::WarmPads, Style::DarkPadsAndDrones, Style::Swells, Style::AirAndNoise, Style::PercussiveNoise];
+    /// A short display name.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Style::BellsAndChimes => "Bells & chimes",
+            Style::KeysAndBellPads => "Keys & bell pads",
+            Style::MalletsAndPlucks => "Mallets & plucks",
+            Style::SoftLeadsAndStrings => "Soft leads & strings",
+            Style::BrightPads => "Bright pads",
+            Style::WarmPads => "Warm pads",
+            Style::DarkPadsAndDrones => "Dark pads & drones",
+            Style::Swells => "Swells",
+            Style::AirAndNoise => "Air & noise",
+            Style::PercussiveNoise => "Percussive noise",
+        }
+    }
+
+    /// The grouping rule over the measured character (thresholds chosen on the PS1 VAB and the
+    /// PS2 banks of the user's dumps; documented, not authoritative).
+    fn classify(attack_ms: f32, ring_ms: f32, brightness_hz: f32, noisiness: f32, looped: bool) -> Style {
+        if noisiness > 0.9 { return if ring_ms < 600.0 { Style::PercussiveNoise } else { Style::AirAndNoise } }
+        if noisiness > 0.5 && attack_ms > 1000.0 { return Style::AirAndNoise }
+        if attack_ms < 100.0 && brightness_hz > 3000.0 { return Style::BellsAndChimes }
+        if !looped && ring_ms < 600.0 { return Style::PercussiveNoise }
+        if !looped { return if attack_ms < 600.0 { Style::MalletsAndPlucks } else { Style::Swells } }
+        if attack_ms < 300.0 { return Style::KeysAndBellPads }
+        if attack_ms < 1200.0 { return if brightness_hz > 3000.0 { Style::BrightPads } else { Style::SoftLeadsAndStrings } }
+        if brightness_hz > 3000.0 { Style::BrightPads } else if brightness_hz < 800.0 { Style::DarkPadsAndDrones } else { Style::WarmPads }
+    }
+}
+
+/// Measures a rendered stereo note (48 kHz) into a [`Character`].
+fn measure(pcm: &[f32], looped: bool) -> Character {
+    let mono: Vec<f32> = pcm.chunks(2).map(|c| (c[0] + c.get(1).copied().unwrap_or(0.0)) * 0.5).collect();
+    let window = (SAMPLE_RATE / 100).max(1);
+    let env: Vec<f32> = mono.chunks(window).map(|c| (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt()).collect();
+    let peak = env.iter().copied().fold(0.0f32, f32::max).max(1e-9);
+    let ms = |frames: usize| frames as f32 * 10.0;
+    let attack_ms = ms(env.iter().position(|&e| e >= peak * 0.9).unwrap_or(0));
+    let ring_ms = ms(env.iter().rposition(|&e| e >= peak * 0.1).unwrap_or(0));
+    let crossings = mono.windows(2).filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0)).count();
+    let brightness_hz = crossings as f32 / mono.len().max(1) as f32 * SAMPLE_RATE as f32 / 2.0;
+    let energy = mono.iter().map(|v| v * v).sum::<f32>().max(1e-12);
+    let noisiness = mono.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>() / energy;
+    let sustain = env.get(env.len() * 3 / 4).copied().unwrap_or(0.0) / peak;
+    Character { attack_ms, ring_ms, brightness_hz, noisiness, sustain, looped, style: Style::classify(attack_ms, ring_ms, brightness_hz, noisiness, looped) }
+}
+
 impl SoundBench {
     /// Inspects the PS2 boot sound bank from a `RomDir` image (`rom0:SNDIMAGE` or 1.00 J `OSDSYS`).
     /// Locations and driver tables are cited in `notes/sound.md` §1.3 and §3.1.
@@ -405,6 +504,25 @@ impl SoundBench {
         }
         mix.resize(frames * 2, 0.0);
         mix
+    }
+
+    /// Measures how `program_id` sounds: one note at its first tone's root (inside the tone's
+    /// key range), velocity 100, four seconds, rendered from the user's bank.
+    #[must_use]
+    pub fn character(&self, program_id: i32) -> Option<Character> {
+        let p = self.program(program_id)?;
+        let t = p.tones.first()?;
+        let note = t.root.clamp(t.low, t.high);
+        let looped = p.tones.iter().any(|t| self.samples.get(t.sample_index).is_some_and(|s| s.loop_start.is_some()));
+        Some(measure(&self.render(program_id, note, 100, 4.0), looped))
+    }
+
+    /// Every program grouped by [`Style`], in browsing order; within a style by program id.
+    #[must_use]
+    pub fn by_style(&self) -> Vec<(Style, Vec<(i32, Character)>)> {
+        let mut groups: std::collections::BTreeMap<Style, Vec<(i32, Character)>> = std::collections::BTreeMap::new();
+        for p in &self.programs { if let Some(c) = self.character(p.id) { groups.entry(c.style).or_default().push((p.id, c)) } }
+        groups.into_iter().collect()
     }
 
     /// Auditions an instrument: synthesises a note at 48 kHz stereo for `seconds`.

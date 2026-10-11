@@ -47,6 +47,8 @@ pub enum Tab { Boot, SaveData, Disc, Bios, Lab, Sound, Fonts, Music }
 pub struct AssetInspection {
     pub sound_console: Console,
     pub sound: Option<(Console, ps2kit::bench::SoundBench)>,
+    /// The bank's programs grouped by measured style (computed once per bank).
+    pub styles: Vec<(ps2kit::bench::Style, Vec<(i32, ps2kit::bench::Character)>)>,
     pub program: i32,
     pub note: i32,
     pub velocity: i32,
@@ -64,7 +66,7 @@ pub struct AssetInspection {
 
 impl Default for AssetInspection {
     fn default() -> Self {
-        Self { sound_console: Console::Ps2, sound: None, program: 0, note: 60, velocity: 100, seconds: 1.5, last: Vec::new(), last_label: String::new(),
+        Self { sound_console: Console::Ps2, sound: None, styles: Vec::new(), program: 0, note: 60, velocity: 100, seconds: 1.5, last: Vec::new(), last_label: String::new(),
             font_console: Console::Ps2, fonts: None, font: 0, page: 0, texture: None, status: String::new() }
     }
 }
@@ -74,6 +76,8 @@ impl Default for AssetInspection {
 pub struct MusicMaker {
     pub song: Option<ps2kit::song::Song>,
     pub bench: Option<(ps2kit::song::BankRef, ps2kit::bench::SoundBench)>,
+    /// The bench's programs grouped by style, for the instrument picker.
+    pub styles: Vec<(ps2kit::bench::Style, Vec<(i32, ps2kit::bench::Character)>)>,
     pub channel: usize,
     pub pattern: usize,
     /// Lowest key shown in the piano roll.
@@ -87,7 +91,7 @@ pub struct MusicMaker {
 
 
 impl Default for MusicMaker {
-    fn default() -> Self { Self { song: None, bench: None, channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0 } }
+    fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0 } }
 }
 
 /// Which console's boot the picture plays.

@@ -635,3 +635,15 @@ fn mutations_of_real_dumps_and_real_font_containers_do_not_panic() {
         }
     }
 }
+
+#[test]
+fn styles_group_every_program_once() {
+    let Ok(d) = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bios/scph5501.bin")) else { return };
+    let shell = ps2kit::ps1::Ps1Shell::load_ps1(&ps2kit::ps1bios::Ps1Bios::new(d).unwrap()).unwrap();
+    let bench = ps2kit::bench::SoundBench::ps1(&shell.bank);
+    let groups = bench.by_style();
+    let ids: usize = groups.iter().map(|(_, v)| v.len()).sum();
+    assert_eq!(ids, bench.programs.len());
+    // The shell's chime (program 3) strikes instantly and bright.
+    assert!(groups.iter().any(|(s, v)| *s == ps2kit::bench::Style::BellsAndChimes && v.iter().any(|(id, _)| *id == 3)));
+}

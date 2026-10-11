@@ -1080,7 +1080,7 @@ fn sound_tab(ui: &mut egui::Ui, m: &mut Model) {
                 Console::Ps1 => Ok(m.ps1_shell.as_ref().map(|s| ps2kit::bench::SoundBench::ps1(&s.bank))),
             };
             match bench {
-                Ok(Some(b)) => { a.program = b.programs.first().map_or(0, |p| p.id); a.sound = Some((a.sound_console, b)); a.status.clear() }
+                Ok(Some(b)) => { a.program = b.programs.first().map_or(0, |p| p.id); a.styles = b.by_style(); a.sound = Some((a.sound_console, b)); a.status.clear() }
                 Ok(None) => { a.sound = None; a.status = "Load a BIOS for this console first.".into() }
                 Err(e) => { a.sound = None; a.status = e }
             }
@@ -1123,6 +1123,29 @@ fn sound_tab(ui: &mut egui::Ui, m: &mut Model) {
         }
         if let Some(p) = bench_programs.iter().find(|p| p.id == a.program) {
             for t in &p.tones { ui.small(format!("tone: keys {}–{}, root {}{:+}, sample #{}, volume {}, pan {}", note_name(t.low), note_name(t.high), note_name(t.root), t.fine, t.sample_index, t.volume, t.pan)); }
+        }
+    });
+    section(ui, "By style", |ui| {
+        ui.small("Each program measured from one note of your bank: attack, ring, brightness, noise, loop. Click to audition at its root.");
+        let a = &mut m.asset_inspection;
+        let mut play = None;
+        for (style, programs) in &a.styles {
+            ui.label(egui::RichText::new(style.name()).strong());
+            ui.horizontal_wrapped(|ui| {
+                for (id, c) in programs {
+                    let tip = format!("attack {:.2} s · rings {:.1} s · {:.0} Hz · noise {:.2}{}", c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, c.noisiness, if c.looped { " · loops" } else { "" });
+                    if ui.small_button(format!("▶ {id}")).on_hover_text(tip).clicked() { play = Some(*id) }
+                }
+            });
+        }
+        if let (Some(id), Some((_, bench))) = (play, &a.sound) {
+            let note = bench.program(id).and_then(|p| p.tones.first()).map_or(60, |t| t.root.clamp(t.low, t.high));
+            a.program = id;
+            a.note = note;
+            let pcm = bench.render(id, note, a.velocity, a.seconds as f64);
+            a.last_label = format!("program {id} {} vel {}", note_name(note), a.velocity);
+            m.audio.preview(pcm.clone());
+            a.last = pcm;
         }
     });
     section(ui, "Sound effects", |ui| {
@@ -1245,6 +1268,7 @@ fn set_song(m: &mut Model, song: ps2kit::Result<ps2kit::song::Song>) {
     match song {
         Ok(s) => {
             m.music.bench = music_bench(m, s.bank).map(|b| (s.bank, b));
+            m.music.styles = m.music.bench.as_ref().map(|(_, b)| b.by_style()).unwrap_or_default();
             m.music.status = if m.music.bench.is_none() { "No BIOS loaded for this song's bank.".into() } else { s.import_notes.join(" ") };
             m.music.step = (s.ticks_per_beat as u32 / 4).max(1);
             m.music.channel = 0;
@@ -1309,7 +1333,7 @@ fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
         });
         if !m.music.status.is_empty() { ui.small(&m.music.status); }
     });
-    let programs: Vec<(i32, String)> = m.music.bench.as_ref().map(|(_, b)| b.programs.iter().map(|p| (p.id, format!("{} — {:?}", p.id, p.kind))).collect()).unwrap_or_default();
+    let programs: Vec<(i32, String)> = m.music.styles.iter().flat_map(|(s, v)| v.iter().map(move |(id, _)| (*id, format!("{id} — {}", s.name())))).collect();
     let Some(song) = &mut m.music.song else { return };
     section(ui, "Settings", |ui| {
         ui.text_edit_singleline(&mut song.name);
