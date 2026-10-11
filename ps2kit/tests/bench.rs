@@ -502,7 +502,7 @@ fn every_local_bank_derives_only_numerically_supported_drum_lanes() {
             assert_eq!(song.render_from(&bench, 480).unwrap(), pcm[at * 2..]);
             if std::env::var_os("PSXKIT_AUDIO_CHECK").is_some() {
                 let stem = path.file_name().unwrap().to_string_lossy().replace(['/', '\\'], "_");
-                kit.write_wavs(&bench, Path::new("/tmp/m2-kit").join(format!("{stem}-{:?}", bench.bank))).unwrap();
+                kit.write_wavs(&bench, std::env::temp_dir().join("m2-kit").join(format!("{stem}-{:?}", bench.bank))).unwrap();
             }
         }
     }
@@ -648,7 +648,7 @@ fn corrupt_present_fonts_are_errors() {
 #[test]
 fn cli_exports_valid_wav_and_pam_and_rejects_unavailable_assets() {
     use std::process::Command;
-    let dir = Path::new("/tmp/b4c-bench").join(format!("cli-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join("b4c-bench").join(format!("cli-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let input = dir.join("synthetic.bin");
     let wav = dir.join("note.wav");

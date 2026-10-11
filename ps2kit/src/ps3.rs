@@ -1042,12 +1042,15 @@ fn folder_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
             if kind.is_dir() {
                 queue.push_back(p);
             } else if kind.is_file() || (kind.is_symlink() && p.is_file()) {
+                // Disc paths are '/'-separated whatever the host's separator (Windows: '\\').
                 let name = p
                     .strip_prefix(root)
                     .map_err(|_| corrupt("file outside PS3 folder"))?
-                    .to_str()
+                    .components()
+                    .map(|c| c.as_os_str().to_str())
+                    .collect::<Option<Vec<_>>>()
                     .ok_or_else(|| corrupt("non-UTF-8 PS3 filename"))?
-                    .to_owned();
+                    .join("/");
                 files.push((name, p));
                 if files.len() > 100000 {
                     return Err(corrupt("too many PS3 files"));

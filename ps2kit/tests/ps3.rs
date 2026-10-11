@@ -12,7 +12,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = PathBuf::from("/tmp/p3a-ps3-disc").join(format!(
+        let path = std::env::temp_dir().join("p3a-ps3-disc").join(format!(
             "test-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

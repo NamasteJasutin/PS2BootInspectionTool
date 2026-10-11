@@ -15,8 +15,10 @@ fn put32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let p = Path::new("/tmp/b3a-hookmap").join(format!("tests-{}-{stamp}", std::process::id()));
+        // A process-wide counter: clock stamps collide (macOS clocks tick in microseconds).
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let stamp = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join("b3a-hookmap").join(format!("tests-{}-{stamp}", std::process::id()));
         std::fs::create_dir_all(&p).unwrap();
         Self(p)
     }

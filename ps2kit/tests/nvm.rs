@@ -237,7 +237,9 @@ fn erom_scan_checks_headers_without_claiming_inflation_or_crc() {
 struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        // A process-wide counter: clock stamps collide (macOS clocks tick in microseconds).
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let stamp = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("ps2kit-nvm-{}-{stamp}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         Self(path)

@@ -131,7 +131,7 @@ fn mutation_fuzz_never_panics() {
 
 #[test]
 fn folder_card_keeps_duplicate_saves_and_skips_corruption() {
-    let root = std::path::Path::new("/tmp/b4a-icons").join(format!("icon-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join("b4a-icons").join(format!("icon-test-{}", std::process::id()));
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
     std::fs::create_dir_all(&root).expect("synthetic card directory");

@@ -390,8 +390,8 @@ fn artifacts(label: &str, song: &Song, rendered: &[f32], driver: &[f32]) {
     if std::env::var_os("PSXSONG_AUDIO_CHECK").is_none() {
         return;
     }
-    let dir = Path::new("/tmp/m1-song");
-    std::fs::create_dir_all(dir).unwrap();
+    let dir = std::env::temp_dir().join("m1-song");
+    std::fs::create_dir_all(&dir).unwrap();
     write_wav(
         dir.join(format!("{label}-song.wav")),
         rendered,
@@ -415,8 +415,8 @@ fn raw_driver(label: &str, pcm: &[f32]) {
     if std::env::var_os("PSXSONG_AUDIO_CHECK").is_none() {
         return;
     }
-    let path = Path::new("/tmp/m1-song");
-    std::fs::create_dir_all(path).unwrap();
+    let path = std::env::temp_dir().join("m1-song");
+    std::fs::create_dir_all(&path).unwrap();
     let bytes: Vec<u8> = pcm.iter().flat_map(|v| v.to_le_bytes()).collect();
     std::fs::write(path.join(format!("{label}-driver.f32")), bytes).unwrap();
 }
