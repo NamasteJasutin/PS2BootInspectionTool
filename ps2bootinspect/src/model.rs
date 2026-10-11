@@ -87,11 +87,20 @@ pub struct MusicMaker {
     pub status: String,
     /// The bar last clicked in the arrangement.
     pub selected_bar: usize,
+    /// Looping bars `[start, end)` on the transport, if set.
+    pub loop_bars: Option<(usize, usize)>,
+    pub loop_anchor: usize,
+    /// The tab currently has the focus (the boot is paused), and whether to resume it on leaving.
+    pub focused: bool,
+    pub resume_boot: bool,
+    /// The song text last rendered for the transport, and when.
+    pub rendered_hash: u64,
+    pub last_render: Option<std::time::Instant>,
 }
 
 
 impl Default for MusicMaker {
-    fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0 } }
+    fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None } }
 }
 
 /// Which console's boot the picture plays.

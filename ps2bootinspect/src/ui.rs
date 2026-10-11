@@ -104,10 +104,18 @@ impl eframe::App for App {
         let dt = (now - self.last).as_secs_f64().min(0.1);
         self.last = now;
         self.model.poll_sound();
+        // The Music tab takes the focus: the boot pauses (and resumes where it was on leaving),
+        // its audio stops and the 3D scene is not rendered.
+        let music = self.model.tab == Tab::Music;
+        if music != self.model.music.focused {
+            self.model.music.focused = music;
+            if music { self.model.music.resume_boot = self.model.playing; self.model.playing = false }
+            else { self.model.playing = self.model.music.resume_boot; self.model.audio.music_play(false) }
+        }
         self.model.tick(dt);
         self.model.sync_audio();
         let t0 = Instant::now();
-        if let Some(rs) = frame.wgpu_render_state() { self.render_frame(rs) }
+        if !music { if let Some(rs) = frame.wgpu_render_state() { self.render_frame(rs) } }
         self.model.cpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         egui::Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(root, |ui| {
@@ -1333,101 +1341,224 @@ fn music_tab(ui: &mut egui::Ui, m: &mut Model) {
         });
         if !m.music.status.is_empty() { ui.small(&m.music.status); }
     });
-    let programs: Vec<(i32, String)> = m.music.styles.iter().flat_map(|(s, v)| v.iter().map(move |(id, _)| (*id, format!("{id} — {}", s.name())))).collect();
+}
+
+/// Music maker, picture area — a DAW's usual layout (as in Bitwig and most others): transport
+/// across the top, an instrument browser on the left, the arranger in the middle with a playhead,
+/// the detail editor (piano roll) below it and an inspector on the right. Space plays/pauses.
+fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
+    let avail = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(avail, 0.0, Color32::from_rgb(18, 20, 28));
+    if m.music.song.is_none() {
+        ui.painter().text(avail.center(), egui::Align2::CENTER_CENTER, "Start a song in the Music tab: new, or import your BIOS's own boot music.", egui::FontId::proportional(16.0), Color32::GRAY);
+        return;
+    }
+    music_sync_audio(ui, m);
+    let transport = Rect::from_min_max(avail.min, Pos2::new(avail.max.x, avail.min.y + 40.0));
+    let browser = Rect::from_min_max(Pos2::new(avail.min.x, transport.max.y), Pos2::new(avail.min.x + 190.0, avail.max.y));
+    let inspector = Rect::from_min_max(Pos2::new(avail.max.x - 210.0, transport.max.y), avail.max);
+    let centre = Rect::from_min_max(Pos2::new(browser.max.x, transport.max.y), Pos2::new(inspector.min.x, avail.max.y));
+    let rows = m.music.song.as_ref().map_or(1, |s| s.channels.len().max(1)) as f32;
+    let arranger = Rect::from_min_max(centre.min + Vec2::new(6.0, 6.0), Pos2::new(centre.max.x - 6.0, centre.min.y + 30.0 + rows * 26.0));
+    let detail = Rect::from_min_max(Pos2::new(centre.min.x + 6.0, arranger.max.y + 8.0), centre.max - Vec2::new(6.0, 6.0));
+    for r in [browser, inspector] { ui.painter().rect_filled(r, 0.0, Color32::from_rgb(24, 27, 37)); }
+    ui.painter().rect_filled(transport, 0.0, Color32::from_rgb(30, 34, 46));
+    music_transport(ui, m, transport);
+    music_browser(ui, m, browser.shrink(8.0));
+    music_inspector(ui, m, inspector.shrink(8.0));
+    music_arranger(ui, m, arranger);
+    music_piano_roll(ui, m, detail);
+}
+
+/// Keeps the transport's audio in step with the song: re-renders (at most every quarter second)
+/// after an edit, applies the loop, and answers Space.
+fn music_sync_audio(ui: &mut egui::Ui, m: &mut Model) {
+    let Some(song) = &m.music.song else { return };
+    let text = song.to_text().unwrap_or_default();
+    let hash = { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); text.hash(&mut h); h.finish() };
+    let now = Instant::now();
+    if hash != m.music.rendered_hash && m.music.last_render.is_none_or(|t| now - t > std::time::Duration::from_millis(250)) {
+        if let Some((_, bench)) = &m.music.bench { m.audio.music_set(song.render(bench)) }
+        m.music.rendered_hash = hash;
+        m.music.last_render = Some(now);
+    }
+    let fpt = music_frames_per_tick(song);
+    m.audio.music_loop(m.music.loop_bars.map(|(a, b)| (a as f64 * song.ticks_per_bar() as f64 * fpt, b as f64 * song.ticks_per_bar() as f64 * fpt)));
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    if !typing && ui.input(|i| i.key_pressed(egui::Key::Space)) { let (_, playing) = m.audio.music_state(); m.audio.music_play(!playing) }
+}
+
+/// 48 kHz frames per song tick at the song's tempo.
+fn music_frames_per_tick(song: &ps2kit::song::Song) -> f64 { 48_000.0 * 60.0 / (song.bpm.max(1) as f64 * song.ticks_per_beat.max(1) as f64) }
+
+fn music_transport(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
+    let (pos, playing) = m.audio.music_state();
     let Some(song) = &mut m.music.song else { return };
-    section(ui, "Settings", |ui| {
-        ui.text_edit_singleline(&mut song.name);
-        ui.add(egui::Slider::new(&mut song.bpm, 30..=300).text("BPM"));
-        ui.add(egui::Slider::new(&mut song.beats_per_bar, 1..=12).text("beats per bar"));
-        ui.small(format!("{} bars, {} ticks per beat, bank {:?}", song.bars(), song.ticks_per_beat, song.bank));
-    });
-    section(ui, "Channels", |ui| {
-        let mut remove = None;
-        for (i, c) in song.channels.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.selectable_label(m.music.channel == i, format!("{}", i + 1)).clicked() { m.music.channel = i; m.music.pattern = 0 }
-                ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(70.0));
-                egui::ComboBox::from_id_salt(("prog", i)).width(110.0).selected_text(format!("prog {}", c.program)).show_ui(ui, |ui| {
-                    for (id, label) in &programs { ui.selectable_value(&mut c.program, *id as u8, label); }
-                });
-                if ui.small_button("✕").clicked() { remove = Some(i) }
-            });
-            ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("vol"));
-                ui.add(egui::Slider::new(&mut c.pan, 0..=127).text("pan"));
-            });
-        }
-        if let Some(i) = remove { song.channels.remove(i); m.music.channel = 0 }
-        if ui.button("+ Channel").clicked() {
-            let bars = song.bars().max(4);
-            let mut c = ps2kit::song::Channel::new(format!("ch{}", song.channels.len() + 1), programs.first().map_or(0, |p| p.0 as u8));
-            c.patterns.push(ps2kit::song::Pattern::new(song.ticks_per_bar()));
-            c.arrangement = vec![None; bars];
-            song.channels.push(c);
-        }
+    let fpt = music_frames_per_tick(song);
+    let tick = (pos / fpt) as u32;
+    let (tpb, bpb) = (song.ticks_per_beat.max(1) as u32, song.beats_per_bar.max(1) as u32);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(10.0, 6.0))), |ui| {
+        ui.horizontal_centered(|ui| {
+            if ui.button("⏮").on_hover_text("To the start").clicked() { m.audio.music_seek(0.0) }
+            if ui.add(egui::Button::new(if playing { "⏸" } else { "▶" }).min_size(Vec2::new(36.0, 24.0))).on_hover_text("Play / pause (Space)").clicked() { m.audio.music_play(!playing) }
+            if ui.button("⏹").on_hover_text("Stop and return to the start").clicked() { m.audio.music_play(false); m.audio.music_seek(0.0) }
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(format!("{:>3}.{}.{:02}", tick / (tpb * bpb) + 1, tick / tpb % bpb + 1, tick % tpb * 16 / tpb)).monospace().size(18.0).color(Color32::WHITE));
+            ui.add_space(10.0);
+            ui.add(egui::DragValue::new(&mut song.bpm).range(30..=300).suffix(" BPM"));
+            ui.add(egui::DragValue::new(&mut song.beats_per_bar).range(1..=12).suffix("/4"));
+            let mut looping = m.music.loop_bars.is_some();
+            if ui.toggle_value(&mut looping, "⟲ loop").on_hover_text("Loop the selected bars (set by dragging over the bar ruler)").changed() {
+                m.music.loop_bars = looping.then(|| { let b = m.music.selected_bar; (b, b + 1) });
+            }
+            if let Some((a, b)) = m.music.loop_bars { ui.small(format!("bars {}–{}", a + 1, b)); }
+            ui.add_space(10.0);
+            ui.small(format!("{} — {:?} bank", song.name, song.bank));
+        });
     });
 }
 
-/// Music maker, picture area: the arrangement (channels × bars, each cell a pattern number) and
-/// a piano roll for the selected channel's selected pattern. Left-click places, right-click clears.
-fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
-    let avail = ui.available_rect_before_wrap();
-    let painter = ui.painter_at(avail);
-    painter.rect_filled(avail, 0.0, Color32::from_rgb(18, 20, 28));
-    let font = egui::FontId::monospace(11.0);
-    let Some(song) = &mut m.music.song else {
-        painter.text(avail.center(), egui::Align2::CENTER_CENTER, "Start a song in the Music tab: new, or import your BIOS's own boot music.", egui::FontId::proportional(16.0), Color32::GRAY);
-        return;
-    };
-    // Transport.
-    let mut play: Option<std::ops::Range<usize>> = None;
-    let selected_bar = m.music.selected_bar;
-    let top = Rect::from_min_size(avail.min + Vec2::new(10.0, 8.0), Vec2::new(avail.width() - 20.0, 26.0));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(top), |ui| {
-        ui.horizontal(|ui| {
-            if ui.button("▶ Song").clicked() { play = Some(0..song.bars().max(1)) }
-            if ui.button("▶ Selected bar").clicked() { play = Some(selected_bar..selected_bar + 1) }
-            ui.label(egui::RichText::new(format!("{} — {} BPM, {}/4", song.name, song.bpm, song.beats_per_bar)).color(Color32::WHITE));
+/// The instrument browser: every program grouped by measured style, then the menu effects.
+/// Click to audition at the instrument's root; + adds it as a new track.
+fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.label(egui::RichText::new("Instruments").strong().color(Color32::WHITE));
+        egui::ScrollArea::vertical().id_salt("browser").show(ui, |ui| {
+            let mut audition = None;
+            let mut add = None;
+            for (style, programs) in &m.music.styles {
+                ui.label(egui::RichText::new(style.name()).small().color(Color32::from_rgb(140, 160, 210)));
+                for (id, c) in programs {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("+").on_hover_text("Add as a track").clicked() { add = Some((*id, style.name())) }
+                        if ui.selectable_label(false, format!("prog {id}")).on_hover_text(format!("attack {:.2} s · rings {:.1} s · {:.0} Hz{}", c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, if c.looped { " · loops" } else { "" })).clicked() { audition = Some(*id) }
+                    });
+                }
+            }
+            ui.add_space(6.0);
+            ui.small("Drums: a kit derived from your BIOS's samples is being built.");
+            if let (Some(id), Some((_, bench))) = (audition, &m.music.bench) {
+                let note = bench.program(id).and_then(|p| p.tones.first()).map_or(60, |t| t.root.clamp(t.low, t.high));
+                m.audio.preview(bench.render(id, note, 100, 1.5));
+            }
+            if let (Some((id, style)), Some(song)) = (add, &mut m.music.song) {
+                let bars = song.bars().max(4);
+                let mut c = ps2kit::song::Channel::new(format!("{} {id}", style.split_whitespace().next().unwrap_or("track").to_lowercase()), id as u8);
+                c.patterns.push(ps2kit::song::Pattern::new(song.ticks_per_bar()));
+                c.arrangement = vec![None; bars];
+                song.channels.push(c);
+                m.music.channel = song.channels.len() - 1;
+                m.music.pattern = 0;
+            }
         });
     });
-    // Arrangement grid.
+}
+
+/// The inspector: the selected track and pattern.
+fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
+    let programs: Vec<(i32, String)> = m.music.styles.iter().flat_map(|(s, v)| v.iter().map(move |(id, _)| (*id, format!("{id} — {}", s.name())))).collect();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        let Some(song) = &mut m.music.song else { return };
+        let ticks_per_bar = song.ticks_per_bar();
+        let Some(c) = song.channels.get_mut(m.music.channel) else { ui.small("Select a track."); return };
+        ui.label(egui::RichText::new("Track").strong().color(Color32::WHITE));
+        ui.text_edit_singleline(&mut c.name);
+        egui::ComboBox::from_id_salt("insp-prog").width(rect.width() - 8.0).selected_text(format!("program {}", c.program)).show_ui(ui, |ui| {
+            for (id, label) in &programs { ui.selectable_value(&mut c.program, *id as u8, label); }
+        });
+        ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("volume"));
+        ui.add(egui::Slider::new(&mut c.pan, 0..=127).text("pan"));
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(format!("Pattern {}", m.music.pattern + 1)).strong().color(Color32::WHITE));
+        if let Some(p) = c.patterns.get_mut(m.music.pattern) {
+            let mut bars = (p.length_ticks / ticks_per_bar.max(1)).max(1);
+            if ui.add(egui::Slider::new(&mut bars, 1..=8).text("bars long")).changed() { p.length_ticks = bars * ticks_per_bar; p.notes.retain(|n| n.start + n.length <= p.length_ticks) }
+            ui.small(format!("{} notes", p.notes.len()));
+            if ui.small_button("Clear notes").clicked() { p.notes.clear() }
+        }
+        if ui.small_button("New pattern").on_hover_text("An empty pattern for this track; place it from the arranger").clicked() {
+            c.patterns.push(ps2kit::song::Pattern::new(ticks_per_bar));
+            m.music.pattern = c.patterns.len() - 1;
+        }
+        ui.horizontal_wrapped(|ui| {
+            for i in 0..c.patterns.len() { if ui.selectable_label(m.music.pattern == i, format!("{}", i + 1)).clicked() { m.music.pattern = i } }
+        });
+        ui.add_space(8.0);
+        ui.small("Arranger: click a cell to place the selected pattern, right-click to clear; drag across the ruler to set the loop. Piano roll: click to add or remove a note; wheel scrolls the keys.");
+    });
+}
+
+/// The arranger: a bar ruler (drag to set the loop), one lane per track, pattern cells, playhead.
+fn music_arranger(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
+    let (pos, _) = m.audio.music_state();
+    let Some(song) = &mut m.music.song else { return };
+    let painter = ui.painter_at(rect);
+    let font = egui::FontId::monospace(11.0);
     let bars = song.bars().max(4) + 4;
-    let (gx, gy) = (avail.min.x + 80.0, avail.min.y + 44.0);
-    let cell = Vec2::new(((avail.width() - 100.0) / bars as f32).clamp(14.0, 48.0), 22.0);
+    let label_w = 90.0;
+    let cell_w = ((rect.width() - label_w) / bars as f32).clamp(14.0, 64.0);
+    let ruler = Rect::from_min_size(Pos2::new(rect.min.x + label_w, rect.min.y), Vec2::new(cell_w * bars as f32, 20.0));
+    painter.rect_filled(ruler, 0.0, Color32::from_rgb(36, 40, 54));
+    if let Some((a, b)) = m.music.loop_bars { painter.rect_filled(Rect::from_min_max(Pos2::new(ruler.min.x + a as f32 * cell_w, ruler.min.y), Pos2::new(ruler.min.x + b as f32 * cell_w, ruler.max.y)), 0.0, Color32::from_rgba_unmultiplied(230, 190, 80, 90)); }
+    for b in 0..bars { painter.text(Pos2::new(ruler.min.x + b as f32 * cell_w + 3.0, ruler.center().y), egui::Align2::LEFT_CENTER, format!("{}", b + 1), font.clone(), Color32::GRAY); }
+    let rr = ui.interact(ruler, ui.id().with("ruler"), egui::Sense::click_and_drag());
+    if let Some(p) = rr.interact_pointer_pos() {
+        let bar = ((p.x - ruler.min.x) / cell_w).floor().max(0.0) as usize;
+        if rr.drag_started() || rr.clicked() { m.music.loop_anchor = bar }
+        if rr.dragged() || rr.drag_stopped() { let (a, b) = (m.music.loop_anchor.min(bar), m.music.loop_anchor.max(bar) + 1); m.music.loop_bars = Some((a, b)) }
+        if rr.clicked() { let t = bar as f64 * song.ticks_per_bar() as f64 * music_frames_per_tick(song); m.audio.music_seek(t) }
+    }
+    let lane_h = 24.0;
     for (ci, c) in song.channels.iter().enumerate() {
-        let y = gy + ci as f32 * (cell.y + 2.0);
-        painter.text(Pos2::new(avail.min.x + 10.0, y + cell.y / 2.0), egui::Align2::LEFT_CENTER, &c.name, font.clone(), if ci == m.music.channel { Color32::WHITE } else { Color32::GRAY });
+        let y = ruler.max.y + 4.0 + ci as f32 * (lane_h + 2.0);
+        let sel = ci == m.music.channel;
+        painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(label_w - 4.0, lane_h)), 2.0, if sel { Color32::from_rgb(55, 70, 110) } else { Color32::from_rgb(32, 36, 48) });
+        painter.text(Pos2::new(rect.min.x + 6.0, y + lane_h / 2.0), egui::Align2::LEFT_CENTER, &c.name, font.clone(), Color32::WHITE);
         for b in 0..bars {
-            let r = Rect::from_min_size(Pos2::new(gx + b as f32 * cell.x, y), cell - Vec2::splat(2.0));
+            let r = Rect::from_min_size(Pos2::new(ruler.min.x + b as f32 * cell_w, y), Vec2::new(cell_w - 2.0, lane_h));
             let p = c.arrangement.get(b).copied().flatten();
-            painter.rect_filled(r, 2.0, match p { Some(_) => Color32::from_rgb(70, 100, 190), None => Color32::from_white_alpha(14) });
+            painter.rect_filled(r, 2.0, match p { Some(_) => Color32::from_rgb(70, 100, 190), None => Color32::from_white_alpha(10) });
             if let Some(p) = p { painter.text(r.center(), egui::Align2::CENTER_CENTER, format!("{}", p + 1), font.clone(), Color32::WHITE); }
         }
     }
-    let grid = Rect::from_min_size(Pos2::new(gx, gy), Vec2::new(bars as f32 * cell.x, song.channels.len() as f32 * (cell.y + 2.0)));
-    let gr = ui.interact(grid, ui.id().with("arrangement"), egui::Sense::click());
-    if let Some(pos) = gr.interact_pointer_pos() {
-        let (b, ci) = (((pos.x - gx) / cell.x) as usize, ((pos.y - gy) / (cell.y + 2.0)) as usize);
+    let lanes = Rect::from_min_size(Pos2::new(rect.min.x, ruler.max.y + 4.0), Vec2::new(label_w + cell_w * bars as f32, song.channels.len() as f32 * (lane_h + 2.0)));
+    let lr = ui.interact(lanes, ui.id().with("lanes"), egui::Sense::click());
+    if let Some(p) = lr.interact_pointer_pos() {
+        let ci = ((p.y - lanes.min.y) / (lane_h + 2.0)) as usize;
+        let tpb = song.ticks_per_bar();
         if let Some(c) = song.channels.get_mut(ci) {
-            if c.arrangement.len() <= b { c.arrangement.resize(b + 1, None) }
-            if gr.secondary_clicked() { c.arrangement[b] = None }
-            else if gr.clicked() {
-                if c.patterns.is_empty() { c.patterns.push(ps2kit::song::Pattern::new(song_ticks_per_bar(song.ticks_per_beat, song.beats_per_bar))) }
-                let pat = c.arrangement[b].unwrap_or(m.music.pattern.min(c.patterns.len() - 1));
-                c.arrangement[b] = Some(pat);
-                m.music.channel = ci;
-                m.music.pattern = pat;
-                m.music.selected_bar = b;
+            if lr.clicked() || lr.secondary_clicked() { if m.music.channel != ci { m.music.pattern = 0 } m.music.channel = ci }
+            if p.x >= ruler.min.x {
+                let b = ((p.x - ruler.min.x) / cell_w) as usize;
+                if c.arrangement.len() <= b { c.arrangement.resize(b + 1, None) }
+                if lr.secondary_clicked() { c.arrangement[b] = None }
+                else if lr.clicked() {
+                    if c.patterns.is_empty() { c.patterns.push(ps2kit::song::Pattern::new(tpb)) }
+                    let pat = c.arrangement[b].unwrap_or(m.music.pattern.min(c.patterns.len() - 1));
+                    c.arrangement[b] = Some(pat);
+                    m.music.pattern = pat;
+                    m.music.selected_bar = b;
+                }
             }
         }
     }
-    // Piano roll of the selected pattern.
-    let roll_top = grid.max.y + 30.0;
+    // Playhead.
+    let x = ruler.min.x + (pos / music_frames_per_tick(song) / song.ticks_per_bar().max(1) as f64) as f32 * cell_w;
+    if x <= rect.max.x { painter.line_segment([Pos2::new(x, ruler.min.y), Pos2::new(x, lanes.max.y)], Stroke::new(2.0, Color32::from_rgb(255, 120, 90))); }
+}
+
+/// The detail editor: a piano roll for the selected track's selected pattern.
+fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
+    let Some(song) = &mut m.music.song else { return };
+    let tpb = song.ticks_per_beat as u32;
     let Some(c) = song.channels.get_mut(m.music.channel) else { return };
+    let program = c.program;
     let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
-    painter.text(Pos2::new(avail.min.x + 10.0, roll_top - 16.0), egui::Align2::LEFT_CENTER, format!("{} · pattern {} · {} ticks (wheel scrolls keys, click toggles a note)", c.name, m.music.pattern + 1, pattern.length_ticks), font.clone(), Color32::LIGHT_GRAY);
+    let painter = ui.painter_at(rect);
+    let font = egui::FontId::monospace(10.0);
+    painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{} · pattern {} · program {}", c.name, m.music.pattern + 1, program), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
     let keys = 36u8;
-    let roll = Rect::from_min_max(Pos2::new(gx, roll_top), Pos2::new(avail.max.x - 10.0, avail.max.y - 10.0));
+    let roll = Rect::from_min_max(Pos2::new(rect.min.x + 44.0, rect.min.y + 18.0), rect.max);
     let row_h = roll.height() / keys as f32;
     let step = m.music.step.max(1);
     let steps = pattern.length_ticks.div_ceil(step).max(1);
@@ -1437,10 +1568,11 @@ fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
         let y = roll.min.y + k as f32 * row_h;
         let black = matches!(key % 12, 1 | 3 | 6 | 8 | 10);
         painter.rect_filled(Rect::from_min_size(Pos2::new(roll.min.x, y), Vec2::new(roll.width(), row_h - 1.0)), 0.0, if black { Color32::from_white_alpha(6) } else { Color32::from_white_alpha(12) });
-        if key % 12 == 0 { painter.text(Pos2::new(avail.min.x + 10.0, y + row_h / 2.0), egui::Align2::LEFT_CENTER, note_name(key as i32), font.clone(), Color32::GRAY); }
+        painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(40.0, row_h - 1.0)), 0.0, if black { Color32::from_gray(40) } else { Color32::from_gray(200) });
+        if key % 12 == 0 { painter.text(Pos2::new(rect.min.x + 2.0, y + row_h / 2.0), egui::Align2::LEFT_CENTER, note_name(key as i32), font.clone(), Color32::BLACK); }
     }
-    let beat_steps = (song.ticks_per_beat as u32 / step).max(1);
-    for s in 0..=steps { let x = roll.min.x + s as f32 * col_w; painter.line_segment([Pos2::new(x, roll.min.y), Pos2::new(x, roll.max.y)], Stroke::new(1.0, Color32::from_white_alpha(if s % beat_steps == 0 { 40 } else { 12 }))); }
+    let beat_steps = (tpb / step).max(1);
+    for s in 0..=steps { let x = roll.min.x + s as f32 * col_w; painter.line_segment([Pos2::new(x, roll.min.y), Pos2::new(x, roll.max.y)], Stroke::new(1.0, Color32::from_white_alpha(if s % (beat_steps * 4) == 0 { 70 } else if s % beat_steps == 0 { 36 } else { 12 }))); }
     for n in &pattern.notes {
         if n.key < m.music.low_key || n.key >= m.music.low_key.saturating_add(keys) { continue }
         let row = (m.music.low_key + keys - 1 - n.key) as f32;
@@ -1452,6 +1584,12 @@ fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll.abs() > 1.0 { m.music.low_key = (m.music.low_key as i32 + if scroll > 0.0 { 1 } else { -1 }).clamp(0, 127 - keys as i32) as u8 }
     }
+    // The piano keys audition.
+    let kr = ui.interact(Rect::from_min_max(Pos2::new(rect.min.x, roll.min.y), Pos2::new(roll.min.x, roll.max.y)), ui.id().with("keys"), egui::Sense::click());
+    if let (true, Some(p), Some((_, b))) = (kr.clicked(), kr.interact_pointer_pos(), &m.music.bench) {
+        let key = m.music.low_key + keys - 1 - ((p.y - roll.min.y) / row_h) as u8;
+        m.audio.preview(b.render(program as i32, key as i32, 100, 0.8));
+    }
     if let (true, Some(pos)) = (rr.clicked(), rr.interact_pointer_pos()) {
         let s = ((pos.x - roll.min.x) / col_w) as u32;
         let key = m.music.low_key + keys - 1 - ((pos.y - roll.min.y) / row_h) as u8;
@@ -1459,14 +1597,8 @@ fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
         if let Some(i) = pattern.notes.iter().position(|n| n.key == key && start >= n.start && start < n.start + n.length) { pattern.notes.remove(i); }
         else if start < pattern.length_ticks {
             pattern.notes.push(ps2kit::song::Note::new(start, step.min(pattern.length_ticks - start), key, 100));
-            // Hear the note just placed.
-            if let Some((_, b)) = &m.music.bench { m.audio.preview(b.render(c.program as i32, key as i32, 100, 0.4)); }
+            if let Some((_, b)) = &m.music.bench { m.audio.preview(b.render(program as i32, key as i32, 100, 0.4)); }
         }
-    }
-    if let (Some(bars), Some((_, b))) = (play, &m.music.bench) {
-        let pcm = song.render_bar_range(b, bars);
-        m.audio.preview(pcm);
     }
 }
 
-fn song_ticks_per_bar(ticks_per_beat: u16, beats_per_bar: u8) -> u32 { ticks_per_beat as u32 * beats_per_bar as u32 }
