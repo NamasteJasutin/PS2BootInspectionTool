@@ -139,14 +139,14 @@ pupinfo --diff firmware_481.pupsnap firmware_482.pupsnap
 pupsnap 1
 header.data_length	206166540
 header.file_count	9
-header.header_digest	34d5362d228f44d57c24f61f7db91baec7419efb
+header.header_digest	0000000000000000000000000000000000000001
 header.header_length	656
 header.image_version	0x105f2
 header.package_version	1
 meta.dots	...
 meta.update_flags	0000
 meta.version	4.82
-entry.000.digest	159449d017b2b8d415b3e944fbbeea7a76c02eb9
+entry.000.digest	0000000000000000000000000000000000000002
 entry.000.id	0x100
 entry.000.offset	656
 entry.000.size	5
