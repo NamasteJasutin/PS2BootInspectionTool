@@ -1,6 +1,6 @@
 //! Standalone PS1 SCE intro, derived from the caller's decoded shell.
 //! Evidence: `notes/research/ps1_shell_scenes.md` §§1a, 2, 4, 5 items 6/8.
-//! [V] Dump corrections: 1.1 shares 1.0's four-field, NTSC-only path (1.1 J
+//! \[V\] Dump corrections: 1.1 shares 1.0's four-field, NTSC-only path (1.1 J
 //! shell +0xEC00/+0xEC6C/+0xEC80); 4.0 J already
 //! uses the small logotypes (shell +0x576D0/+0x58524/+0x59698), at (320,84),
 //! (320,400), (436,417). 4.1 already has 4.5's PAL assets/height adjustment

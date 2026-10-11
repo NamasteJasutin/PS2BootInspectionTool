@@ -1,6 +1,6 @@
 //! The user's PS2 save icons; no geometry, textures or lighting tables are embedded.
 //!
-//! [I] Layout sources: ps2sdk `libmc.h` (`mcIcon`), mymc `ps2save.py`
+//! \[I\] Layout sources: ps2sdk `libmc.h` (`mcIcon`), mymc `ps2save.py`
 //! (`unpack_icon_sys`/`icon_sys_title`), PS2 IconSys `ps2_ps2icon.cpp`/`.hpp`
 //! (`ReadFile`, `Frame_Data`), and HDLGameInstaller `IconLoader.h`/`.c`.
 //! <https://github.com/ticky/ps2iconsys/blob/develop/src/ps2_ps2icon.cpp>
@@ -8,7 +8,7 @@
 //! <https://github.com/ps2dev/mymc/blob/master/ps2save.py>
 //! <https://github.com/ps2homebrew/HDLGameInstaller/blob/main/IconLoader.h>
 //!
-//! [V] Mcd001.ps2: all nine icon.sys files are 964 bytes; model attributes are
+//! \[V\] Mcd001.ps2: all nine icon.sys files are 964 bytes; model attributes are
 //! 3 (no texture), 7 (raw) or 15 (RLE). Animation tracks have an **8-byte**
 //! header, then keys, contrary to the 16-byte header in some ICN descriptions.
 //! E.g. GTA's animation starts at file offset 0x80E4, texture at 0x8108;
@@ -48,7 +48,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Browser metadata from `icon.sys` ([I] ps2sdk `mcIcon`, mymc `unpack_icon_sys`).
+/// Browser metadata from `icon.sys` (\[I\] ps2sdk `mcIcon`, mymc `unpack_icon_sys`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct IconSys {
@@ -116,7 +116,7 @@ impl IconSys {
     }
 }
 
-/// Per-vertex attributes shared by all shapes ([I] PS2 IconSys `Texture_Data`).
+/// Per-vertex attributes shared by all shapes (\[I\] PS2 IconSys `Texture_Data`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct IconVertex {
@@ -124,11 +124,11 @@ pub struct IconVertex {
     pub normal: Vec4,
     /// Signed fixed-point texture coordinates, /4096 (negative UVs occur on real cards).
     pub uv: Vec2,
-    /// Original RGBA bytes; the browser ignores vertex alpha ([I] `IconLoader.h`).
+    /// Original RGBA bytes; the browser ignores vertex alpha (\[I\] `IconLoader.h`).
     pub rgba: [u8; 4],
 }
 
-/// A time and shape weight ([I] PS2 IconSys `Frame_Key`).
+/// A time and shape weight (\[I\] PS2 IconSys `Frame_Key`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct IconKey {
@@ -148,7 +148,7 @@ pub struct IconFrame {
     pub keys: Vec<IconKey>,
 }
 
-/// Geometry, morph tracks and a decoded texture ([I] PS2 IconSys `ReadFile`).
+/// Geometry, morph tracks and a decoded texture (\[I\] PS2 IconSys `ReadFile`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct IconModel {
@@ -156,7 +156,7 @@ pub struct IconModel {
     pub shapes: Vec<Vec<Vec4>>,
     /// Normals, UVs and colours in triangle-list order.
     pub vertices: Vec<IconVertex>,
-    /// Attribute bits: Gouraud 1, antialias 2, texture 4, RLE 8 ([I] `IconLoader.h`).
+    /// Attribute bits: Gouraud 1, antialias 2, texture 4, RLE 8 (\[I\] `IconLoader.h`).
     pub texture_type: u32,
     /// Header float at offset 12; some files use 3.0 instead of 1.0.
     pub back_face: f32,
@@ -249,7 +249,7 @@ impl IconModel {
         Ok(Self { shapes, vertices, texture_type, back_face, frame_length, animation_speed, play_offset, frames, texture })
     }
 
-    /// Evaluates piecewise-linear, looping shape weights ([I] `IconLoader.h` key semantics).
+    /// Evaluates piecewise-linear, looping shape weights (\[I\] `IconLoader.h` key semantics).
     /// Playback is inferred; the supplied card contains only static, single-shape icons.
     #[must_use]
     pub fn shape_weights(&self, frame: f32) -> Vec<f32> {

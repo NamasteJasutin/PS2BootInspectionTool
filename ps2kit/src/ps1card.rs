@@ -2,7 +2,7 @@
 //! shell L1+L2+R1+R2 undelete candidates, and SoundScope performance decoding.
 //!
 //! # Format Specifications
-//! - Public PS1 memory card layout: Martin Korth (nocash), *PSX-SPX / Memory Card Data Format* [I]:
+//! - Public PS1 memory card layout: Martin Korth (nocash), *PSX-SPX / Memory Card Data Format* \[I\]:
 //!   128 KiB total (16 blocks of 8 KiB = 8192 bytes, 1024 frames of 128 bytes).
 //!   Block 0 is the directory block:
 //!   - Frame 0: Header frame (`MC` magic, XOR checksum at byte 127).
@@ -12,12 +12,12 @@
 //!   - Save block 0: Title frame (`SC` magic, icon display flag, Shift-JIS title, 16-color CLUT),
 //!     followed by 1..=3 icon frames of 16×16 4-bit indexed pixels.
 //! - DexDrive `.gme` format: 3904-byte header beginning with `"123-456-STD\0"` before the raw image.
-//! - Memory card undelete: `notes/research/hidden_input.md` §6 [V]:
+//! - Memory card undelete: `notes/research/hidden_input.md` §6 \[V\]:
 //!   PS1 retail shells restore the remembered last-deleted filename via BIOS B0 function 0x46
 //!   upon receiving the four-shoulder chord L1+L2+R1+R2. ROM `0xBFC0AC78` verifies deleted states
 //!   `0xA1`/`0xA2`/`0xA3`, checks for name conflicts and block availability, and restores states
 //!   `0x51`/`0x52`/`0x53`.
-//! - SoundScope performance recordings (`BPLAYSTATION`): `notes/research/hidden_input.md` §8–§9 [V]:
+//! - SoundScope performance recordings (`BPLAYSTATION`): `notes/research/hidden_input.md` §8–§9 \[V\]:
 //!   Visualiser performances saved by the CD player at 0x1E80 payload length with SC header,
 //!   icon/palette, 0x00010000 version constant, 900 8-byte event records (`frame: u32`, `duration: u16`,
 //!   `buttons: u16`), and wrapping 32-bit checksum.
@@ -61,7 +61,7 @@ pub const SOUNDSCOPE_MAX_EVENTS: usize = 900;
 /// Expected SoundScope format version (`0x00010000`, `notes/research/hidden_input.md` §9.2).
 pub const SOUNDSCOPE_VERSION: u32 = 0x0001_0000;
 
-/// Block allocation state byte in a directory frame (`psx-spx` Memory Card Data Format [I]).
+/// Block allocation state byte in a directory frame (`psx-spx` Memory Card Data Format \[I\]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BlockState {

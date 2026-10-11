@@ -1,6 +1,6 @@
 //! PS3 disc and save metadata, without decryption or authentication.
 //!
-//! The scope follows `notes/research/ps3_pup.md` §6. Format facts below are [I],
+//! The scope follows `notes/research/ps3_pup.md` §6. Format facts below are \[I\],
 //! from the PS3 Developer wiki's [PARAM.SFO](https://www.psdevwiki.com/ps3/PARAM.SFO)
 //! §Internal Structure and named-key sections, [PS3_DISC.SFB](https://www.psdevwiki.com/ps3/PS3_DISC.SFB)
 //! §Internal structure/Hybrid Flags, [Bluray disc](https://www.psdevwiki.com/ps3/Bluray_disc)
@@ -9,7 +9,7 @@
 //!
 //! ISO support is ISO 9660 only: UDF-only images are rejected. Sector-zero ranges
 //! describe *plaintext* regions: BE u32 count at 0, reserved u32 at 4, then count
-//! pairs of BE u32 first/last LBAs at 8. Endpoints are treated as inclusive [I];
+//! pairs of BE u32 first/last LBAs at 8. Endpoints are treated as inclusive \[I\];
 //! gaps are encrypted. Every sector of a file must lie in plaintext ranges before
 //! any of its bytes are read. An absent map never grants permission to read files,
 //! even when their names are visible. No key input or decryption path exists.
@@ -54,7 +54,7 @@ fn ctext(bytes: &[u8]) -> Option<&str> {
 }
 
 /// A comparable PS3 firmware version; `04.8200` and `4.82` compare equally.
-/// [I] PARAM.SFO §PS3_SYSTEM_VER; PUP spelling: `ps3_pup.md` §2.
+/// \[I\] PARAM.SFO §PS3_SYSTEM_VER; PUP spelling: `ps3_pup.md` §2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct FirmwareVersion {
@@ -115,7 +115,7 @@ impl fmt::Display for SfoValue {
 pub struct SfoEntry {
     /// NUL-terminated key from the key table.
     pub key: String,
-    /// Format: 0x0004 special/binary, 0x0204 UTF-8, 0x0404 int32 [I].
+    /// Format: 0x0004 special/binary, 0x0204 UTF-8, 0x0404 int32 \[I\].
     pub format: u16,
     /// Used data length, including text's terminator.
     pub length: u32,
@@ -127,7 +127,7 @@ pub struct SfoEntry {
     pub value: SfoValue,
 }
 
-/// A plaintext PARAM.SFO (PSF) key/data table. [I] PARAM.SFO §Internal Structure.
+/// A plaintext PARAM.SFO (PSF) key/data table. \[I\] PARAM.SFO §Internal Structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Sfo {
@@ -235,12 +235,12 @@ impl Sfo {
             _ => None,
         }
     }
-    /// TITLE: the XMB title. [I] PARAM.SFO §TITLE.
+    /// TITLE: the XMB title. \[I\] PARAM.SFO §TITLE.
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.text("TITLE")
     }
-    /// TITLE_ID: the content identifier. [I] PARAM.SFO §TITLE_ID.
+    /// TITLE_ID: the content identifier. \[I\] PARAM.SFO §TITLE_ID.
     #[must_use]
     pub fn title_id(&self) -> Option<&str> {
         self.text("TITLE_ID")
@@ -251,7 +251,7 @@ impl Sfo {
         self.text("CATEGORY").map(Category::decode)
     }
     /// PS3_SYSTEM_VER: minimum system software; absent is unknown, invalid is an error.
-    /// [I] PARAM.SFO §PS3_SYSTEM_VER.
+    /// \[I\] PARAM.SFO §PS3_SYSTEM_VER.
     pub fn ps3_system_ver(&self) -> Result<Option<FirmwareVersion>> {
         match self.entry("PS3_SYSTEM_VER") {
             None => Ok(None),
@@ -262,12 +262,12 @@ impl Sfo {
                 .map(Some),
         }
     }
-    /// APP_VER: application/patch version. [I] PARAM.SFO §APP_VER.
+    /// APP_VER: application/patch version. \[I\] PARAM.SFO §APP_VER.
     #[must_use]
     pub fn app_ver(&self) -> Option<&str> {
         self.text("APP_VER")
     }
-    /// VERSION: content version. [I] PARAM.SFO §VERSION.
+    /// VERSION: content version. \[I\] PARAM.SFO §VERSION.
     #[must_use]
     pub fn version(&self) -> Option<&str> {
         self.text("VERSION")
@@ -278,7 +278,7 @@ impl Sfo {
         self.integer("ATTRIBUTE")
     }
     /// Documented ATTRIBUTE flags, decoded according to CATEGORY; unknown bits are retained.
-    /// [I] PARAM.SFO §ATTRIBUTE. Speculative flags are deliberately left unknown.
+    /// \[I\] PARAM.SFO §ATTRIBUTE. Speculative flags are deliberately left unknown.
     #[must_use]
     pub fn attribute_flags(&self) -> Option<DecodedFlags> {
         let bits = self.attribute()?;
@@ -314,7 +314,7 @@ impl Sfo {
         };
         Some(DecodedFlags::decode(bits, table))
     }
-    /// RESOLUTION bits. [I] PARAM.SFO §RESOLUTION.
+    /// RESOLUTION bits. \[I\] PARAM.SFO §RESOLUTION.
     #[must_use]
     pub fn resolution(&self) -> Option<u32> {
         self.integer("RESOLUTION")
@@ -336,7 +336,7 @@ impl Sfo {
             )
         })
     }
-    /// SOUND_FORMAT bits. [I] PARAM.SFO §SOUND_FORMAT.
+    /// SOUND_FORMAT bits. \[I\] PARAM.SFO §SOUND_FORMAT.
     #[must_use]
     pub fn sound_format(&self) -> Option<u32> {
         self.integer("SOUND_FORMAT")
@@ -351,32 +351,32 @@ impl Sfo {
             )
         })
     }
-    /// PARENTAL_LEVEL: rating gate; console settings are not known. [I] PARAM.SFO §PARENTAL_LEVEL.
+    /// PARENTAL_LEVEL: rating gate; console settings are not known. \[I\] PARAM.SFO §PARENTAL_LEVEL.
     #[must_use]
     pub fn parental_level(&self) -> Option<u32> {
         self.integer("PARENTAL_LEVEL")
     }
-    /// BOOTABLE: stored mode (0 unbootable, 1 game, 2 software). [I] PARAM.SFO §BOOTABLE.
+    /// BOOTABLE: stored mode (0 unbootable, 1 game, 2 software). \[I\] PARAM.SFO §BOOTABLE.
     #[must_use]
     pub fn bootable(&self) -> Option<u32> {
         self.integer("BOOTABLE")
     }
-    /// LICENSE: licence text. [I] PARAM.SFO §LICENSE.
+    /// LICENSE: licence text. \[I\] PARAM.SFO §LICENSE.
     #[must_use]
     pub fn license(&self) -> Option<&str> {
         self.text("LICENSE")
     }
-    /// SAVEDATA_DIRECTORY: declared save folder. [I] PARAM.SFO §SAVEDATA_DIRECTORY.
+    /// SAVEDATA_DIRECTORY: declared save folder. \[I\] PARAM.SFO §SAVEDATA_DIRECTORY.
     #[must_use]
     pub fn savedata_directory(&self) -> Option<&str> {
         self.text("SAVEDATA_DIRECTORY")
     }
-    /// DETAIL: save description. [I] PARAM.SFO §DETAIL.
+    /// DETAIL: save description. \[I\] PARAM.SFO §DETAIL.
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
         self.text("DETAIL")
     }
-    /// SUB_TITLE: save subtitle. [I] PARAM.SFO §SUB_TITLE.
+    /// SUB_TITLE: save subtitle. \[I\] PARAM.SFO §SUB_TITLE.
     #[must_use]
     pub fn sub_title(&self) -> Option<&str> {
         self.text("SUB_TITLE")
@@ -388,7 +388,7 @@ impl Sfo {
     }
 }
 
-/// CATEGORY codes [I], PARAM.SFO §CATEGORY. Game data includes installs, patches and DLC.
+/// CATEGORY codes \[I\], PARAM.SFO §CATEGORY. Game data includes installs, patches and DLC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Category {
@@ -510,7 +510,7 @@ pub struct SfbEntry {
     /// Value bytes, including padding.
     pub value: Vec<u8>,
 }
-/// PS3 disc descriptor. [I] PS3_DISC.SFB §Internal structure.
+/// PS3 disc descriptor. \[I\] PS3_DISC.SFB §Internal structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Sfb {
@@ -580,14 +580,14 @@ impl Sfb {
     pub fn title_id(&self) -> Option<&str> {
         self.text("TITLE_ID")
     }
-    /// HYBRID_FLAG's characters; `g` enables game content and `u` advertises an update [I].
+    /// HYBRID_FLAG's characters; `g` enables game content and `u` advertises an update \[I\].
     #[must_use]
     pub fn hybrid_flags(&self) -> Option<&str> {
         self.text("HYBRID_FLAG")
     }
 }
 
-/// Inclusive sector interval declared plaintext by the disc's region table [I].
+/// Inclusive sector interval declared plaintext by the disc's region table \[I\].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PlainRegion {
@@ -596,7 +596,7 @@ pub struct PlainRegion {
     /// Last plaintext logical sector (inclusive).
     pub last: u32,
 }
-/// Sector-zero region table [I], PS3 Developer wiki Bluray disc §Encryption.
+/// Sector-zero region table \[I\], PS3 Developer wiki Bluray disc §Encryption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Ps3RegionMap {
@@ -903,7 +903,7 @@ impl Ps3Disc {
         Ok(data)
     }
     /// Ordered metadata hand-off, with a firmware gate and explicit authentication/code limits.
-    /// [I] PARAM.SFO named-key sections; plaintext scope: `ps3_pup.md` §6.
+    /// \[I\] PARAM.SFO named-key sections; plaintext scope: `ps3_pup.md` §6.
     #[must_use]
     pub fn handoff(&self, console_firmware: Option<&str>) -> Vec<Ps3HandoffStep> {
         let sfo = self.sfo.as_ref();
@@ -1213,7 +1213,7 @@ impl fmt::Display for Ps3HandoffStep {
 }
 
 /// Only the documented plaintext PARAM.PFD magic/version; encrypted header tables stay opaque.
-/// [I] PS3 Developer wiki PARAM.PFD §PFD Header; scope: `ps3_pup.md` §6.
+/// \[I\] PS3 Developer wiki PARAM.PFD §PFD Header; scope: `ps3_pup.md` §6.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PfdHeader {

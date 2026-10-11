@@ -1040,10 +1040,10 @@ impl FontmFont {
     }
 
     /// Parses the 26x26 glyph sheet in `FNTADD00` using the dump's RGBA palette.
-    /// `menu_survey.md` §4 open question: [V] 2.00 E's asset has a 64-byte header,
+    /// `menu_survey.md` §4 open question: \[V\] 2.00 E's asset has a 64-byte header,
     /// five byte endpoints and a 416-pixel-wide PSMT4 sheet (16 cells per row).
     /// The OSD cache at 0x20C438 copies each glyph row with a 208-byte stride.
-    /// [I] Header endpoints delimit character groups; code mapping remains unknown.
+    /// \[I\] Header endpoints delimit character groups; code mapping remains unknown.
     pub fn additional(data: Vec<u8>, palette: &[[u8; 4]; 16]) -> Result<Self> {
         let bad = || Error::Corrupt(Format::Bios, "invalid FNTADD00 glyph sheet".into());
         if data.len() < 64 || !data.len().saturating_sub(64).is_multiple_of(16 * 338) {

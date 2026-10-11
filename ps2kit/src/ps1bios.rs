@@ -140,7 +140,7 @@ pub(crate) fn region_letter(version: &str) -> Option<char> {
 }
 
 /// Audits size, CR-before-LF density and version placement without repairing any bytes.
-/// `ps1_version_matrix.md` §5: the [h] image first shifts at 0x24A, and has no lone LF.
+/// `ps1_version_matrix.md` §5: the \[h\] image first shifts at 0x24A, and has no lone LF.
 /// The density threshold is a diagnostic heuristic, not a console rule.
 pub fn audit(d: &[u8]) -> Ps1Audit {
     let lf_count = d.iter().filter(|&&b| b == b'\n').count();
