@@ -27,4 +27,4 @@ Rules, as implemented in OSDSYS of ROM 2.00 (the file format is the same in the 
 * Which tower bit a title gets and which empty record it lands in are random, so the same history gives a different skyline on different consoles.
 * PCSX2's fast boot skips OSDSYS, so a card used only with fast boot never gets a history file and shows no towers under full boot.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/osdsys_flow.md §5 and notes/opening.md.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/osdsys_flow.md §5 and notes/opening.md.''

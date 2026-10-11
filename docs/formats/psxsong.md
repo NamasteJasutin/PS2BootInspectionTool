@@ -204,4 +204,4 @@ endpattern
 endchannel
 ```
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], ps2kit/src/song.rs and notes/research/sound_inventory.md §7.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], ps2kit/src/song.rs and notes/research/sound_inventory.md §7.''

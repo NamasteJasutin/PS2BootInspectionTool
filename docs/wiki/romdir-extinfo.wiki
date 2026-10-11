@@ -13,4 +13,4 @@ Each 16-byte ROMDIR entry (name[10], u16 extinfo_size, u32 size) owns ''extinfo_
 
 The ROMDIR entry itself carries a comment naming the build configuration and the path the image was assembled from on Sony's ROM server; on a development-kit ROM this is the "sdex" tree, on retail a "g" tree. Module dates in EXTINFO are repackaging dates: byte-identical modules can carry different dates in different ROMs.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/devkit_survey.md and tools/extinfo.py.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/devkit_survey.md and tools/extinfo.py.''

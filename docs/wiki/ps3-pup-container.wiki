@@ -78,4 +78,4 @@ Crucially, at offset <code>0x280</code> (between the SCE header and the encrypte
 
 The payload ciphertext begins at offset <code>0x300</code> (entropy 8.0 bits/byte). While the payloads (containing <code>dev_flash</code> files, emulators, and system resources) remain encrypted under Sony's private keys, all package names, build timestamps, compression metrics, and updater ELF structures are fully verifiable from the plaintext container alone.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps3_pup.md §1, §2, §3.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/ps3_pup.md §1, §2, §3.''

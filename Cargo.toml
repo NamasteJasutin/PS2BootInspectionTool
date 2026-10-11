@@ -7,7 +7,7 @@ version = "0.3.0"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT"
-repository = "https://github.com/NamasteJasutin/PS2BootInspectionTool"
+repository = "https://github.com/NamasteJasutin/PSXBootInspectionTool"
 
 [profile.release]
 opt-level = 3

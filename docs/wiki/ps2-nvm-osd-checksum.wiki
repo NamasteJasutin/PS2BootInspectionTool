@@ -48,4 +48,4 @@ When an authentic BIOS (1.50, 1.60, or 2.00) boots against this PCSX2 default fi
 
 Thus, the initial configuration values PCSX2 intends to provision are never actually honored by retail BIOS code.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/rom1_erom_nvm.md §3.1, §3.4.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/rom1_erom_nvm.md §3.1, §3.4.''

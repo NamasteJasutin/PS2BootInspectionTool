@@ -16,4 +16,4 @@ Stream layout:
 
 So with n = 0 a match reaches back up to 16 KiB and copies 3–6 bytes; n = 3 trades distance for length (up to 2 KiB back, 3–34 bytes). The decoder is about twenty lines; a reference implementation (Python and Rust) is in the repository below. Streams can also sit at an offset inside an asset (the font and some textures of the OSD are compressed the same way).
 
-''Source: PS2BootInspectionTool notes, [https://github.com/NamasteJasutin/PS2BootInspectionTool notes/opening.md] and [https://github.com/NamasteJasutin/ps2-bios-ghidra ps2-bios-ghidra] (tools/osd_unpack.py).''
+''Source: PSXBootInspectionTool notes, [https://github.com/NamasteJasutin/PSXBootInspectionTool notes/opening.md] and [https://github.com/NamasteJasutin/ps2-bios-ghidra ps2-bios-ghidra] (tools/osd_unpack.py).''

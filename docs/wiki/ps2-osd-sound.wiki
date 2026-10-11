@@ -59,4 +59,4 @@ Neither the clock ambience (<code>SNDCLOKS</code>) nor the warning ambience (<co
 === Game logo chord (R01) vs SNDLOGOS ===
 The sound played when the "PlayStation 2" logo appears on game launch is '''not <code>SNDLOGOS</code>'''. It is an executable-triggered chord (routine <code>0x1075C8</code> in 2.00 <code>PS2LOGO</code>) that issues five simultaneous effect commands (indices 0 through 4) on bank '''B01'''. These play the single 0.452 s source sample across five distinct voices at pitches 3090, 3046, 2298, 4096, and 3068 (SPU units) with stereo panning and reverb.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/sound_inventory.md §1–§4.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/sound_inventory.md §1–§4.''

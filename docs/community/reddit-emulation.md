@@ -9,6 +9,6 @@ Static RE of the PS2 BIOS from reset to the game's first instruction. Short vers
 - The lettering in the "PlayStation 2" logo isn't in the BIOS. PS2LOGO reads sectors 0–11 of the disc with the drive's descrambler on and checksums them per console region. Japan and the US share one logo master; Europe has its own.
 - The red warning screen is only for disc state 0x74 (unreadable media); no disc goes to the clock.
 
-There's a cross-platform tool that replays all of it from your own BIOS and card (https://github.com/NamasteJasutin/PS2BootInspectionTool), a Rust crate with the readers, and a Ghidra kit. No Sony data anywhere.
+There's a cross-platform tool that replays all of it from your own BIOS and card (https://github.com/NamasteJasutin/PSXBootInspectionTool), a Rust crate with the readers, and a Ghidra kit. No Sony data anywhere.
 
 Flair: Discussion

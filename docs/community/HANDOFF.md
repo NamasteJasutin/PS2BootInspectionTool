@@ -9,7 +9,7 @@ Files, all in this directory:
 - psx-place.md, reddit-emulation.md, pcsx2-post.md, hackernews.md, ghidra-links.md — one per venue;
   first line = title, then body, then flair/tags.
 - Replace `<URL>` in each with the canonical article URL. Until a GitHub Pages or blog URL exists,
-  that is https://github.com/NamasteJasutin/PS2BootInspectionTool/blob/main/docs/writeup.md
+  that is https://github.com/NamasteJasutin/PSXBootInspectionTool/blob/main/docs/writeup.md
 
 How to work:
 - Use the desktop app's built-in browser or Claude in Chrome for the forms. Under computer use,

@@ -41,4 +41,4 @@ Furthermore, during cold boot, OSDSYS <code>main</code> (<code>0x209EB8</code>) 
 
 The original purpose of this hidden page is believed to be factory provisioning or MechaCon production testing, rather than an end-user Easter egg.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/hidden_input.md §1, §3.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/hidden_input.md §1, §3.''

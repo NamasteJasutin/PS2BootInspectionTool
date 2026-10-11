@@ -60,4 +60,4 @@ The PlayStation kernel implements errors through <code>A0:A1 SystemErrorBootOrDi
 * Every stage arms a <code>setjmp</code> buffer (<code>0xA000B980</code>) with a specific stage code (e.g., <code>0x385</code> before the shell, <code>0x387</code> before opening <code>SYSTEM.CNF</code>, <code>0x38A</code> on executable load failure, <code>0x38B</code> on pre-exec disc check failure).
 * When an error occurs or an I/O operation aborts, the handler writes POST code '''<code>0xF</code>''' to <code>0x1F802041</code> and enters an infinite loop. Nothing is printed to screen or serial port.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_kernel_boot.md §1.2, §1.3 and notes/research/ps1_version_matrix.md §2.2.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/ps1_kernel_boot.md §1.2, §1.3 and notes/research/ps1_version_matrix.md §2.2.''

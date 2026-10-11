@@ -1,6 +1,6 @@
 # Posting checklist
 
-Canonical URL for every post: https://github.com/NamasteJasutin/PS2BootInspectionTool/blob/main/docs/writeup.md
+Canonical URL for every post: https://github.com/NamasteJasutin/PSXBootInspectionTool/blob/main/docs/writeup.md
 (replace with the GitHub Pages / blog URL once one exists — the same URL in every post).
 
 Order and timing:

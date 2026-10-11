@@ -169,4 +169,4 @@ Omission "Kick: source failed checks (darkest sample 2; low150=42.1%, -30dB=450 
 ```
 This guarantees complete transparency: the user can see exactly why a particular drum voice was omitted rather than hearing a silent note or a poorly synthesized facsimile.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], ps2kit/src/song.rs (`Kit::derive`, `DrumVoice`, `DrumMetrics`).''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], ps2kit/src/song.rs (`Kit::derive`, `DrumVoice`, `DrumMetrics`).''

@@ -7,7 +7,7 @@
 #   docs/community/post.sh <psx-place|reddit|hn|pcsx2|ghidra-ee|ghidra-awesome> [canonical URL]
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-URL="${2:-https://github.com/NamasteJasutin/PS2BootInspectionTool/blob/main/docs/writeup.md}"
+URL="${2:-https://github.com/NamasteJasutin/PSXBootInspectionTool/blob/main/docs/writeup.md}"
 enc() { python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
 title_of() { sed -n '1s/^Title: //p' "$1"; }
 body_of()  { sed '1,2d' "$1" | sed "s#<URL>#$URL#g"; }

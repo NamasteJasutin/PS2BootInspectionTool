@@ -10,8 +10,8 @@ Things PCSX2 users may not know, which the tool makes visible:
 - **Fast boot never writes that file**, so a card that has only ever been used with fast boot shows an empty field under full boot. The tool can stand in a history from the saves on the card so you can see what it would look like.
 - The "PlayStation 2" logo is not in the BIOS: it's read from sectors 0–11 of the disc and checksummed per region (J and US discs share one master, EU has its own; A/C consoles don't check).
 
-Binaries for Windows, Linux and macOS: https://github.com/NamasteJasutin/PS2BootInspectionTool/releases
+Binaries for Windows, Linux and macOS: https://github.com/NamasteJasutin/PSXBootInspectionTool/releases
 Rust crate with the readers (memory card, history, ROMDIR/LZ, ISO/BIN sectors, logo): https://crates.io/crates/ps2kit
-Write-up of the whole boot path: https://github.com/NamasteJasutin/PS2BootInspectionTool/blob/main/docs/writeup.md
+Write-up of the whole boot path: https://github.com/NamasteJasutin/PSXBootInspectionTool/blob/main/docs/writeup.md
 
 Nothing from Sony ships with it — you need your own BIOS, as with PCSX2 itself. Happy to answer questions about any of the formats; the notes in the repository go into the details.

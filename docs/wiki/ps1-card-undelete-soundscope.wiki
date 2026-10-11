@@ -78,4 +78,4 @@ for (int i = 0; i < 900; i++) {
 </syntaxhighlight>
 The duration field is omitted from the sum. On card load (<code>0x800432B0</code>), if the checksum does not match or the version is not <code>0x00010000</code>, the buffer is rejected and zeroed.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/hidden_input.md §6, §7, §8, §9.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/hidden_input.md §6, §7, §8, §9.''

@@ -41,4 +41,4 @@ A tool or emulator cannot rely on the version string at ROM offset <code>0x7FF32
 
 To determine whether a given BIOS verifies licence data, software must either decompile the flag assignment in <code>shell_entry</code> (testing whether <code>lui/ori</code> stores 0 or 1, or branches on the version letter) or inspect the presence of the 12,920-byte reference TMD asset in the ROM.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_kernel_boot.md §3.2, §3.3 and notes/research/ps1_version_matrix.md §3.4.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/ps1_kernel_boot.md §3.2, §3.3 and notes/research/ps1_version_matrix.md §3.4.''

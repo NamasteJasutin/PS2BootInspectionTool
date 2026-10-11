@@ -40,4 +40,4 @@ A disassembly comparison between retail PS1/PS2 shells and POPS reveals that all
 === Residual build slack ===
 Between file offsets <code>0x2E118</code> and <code>0x38A00</code> (immediately after the compressed shell stream and before the trailing <code>0xFF</code> padding), the ROM contains 43,240 bytes of '''uncompressed shell data'''. 76% of these bytes match the decompressed shell image at a constant offset (including strings like <code>"Library Programs (c) 1993-1997"</code> and UI TIM sprites). Nothing jumps or points to this area; it represents uninitialized build slack left in the image by Sony's linker.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_version_matrix.md §0, §6, §7.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/ps1_version_matrix.md §0, §6, §7.''

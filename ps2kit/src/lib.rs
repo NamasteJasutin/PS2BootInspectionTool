@@ -32,7 +32,7 @@
 //! on the BIOS at all.
 //!
 //! The formats are documented in the `notes/` directory of the
-//! [repository](https://github.com/NamasteJasutin/PS2BootInspectionTool).
+//! [repository](https://github.com/NamasteJasutin/PSXBootInspectionTool).
 
 #![warn(missing_docs)]
 

@@ -198,4 +198,4 @@ self.00.phdr.00.type	0x1
 self.00.phdr.00.vaddr	0x10000
 ```
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], ps2kit/src/pup.rs and notes/research/ps3_pup.md.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], ps2kit/src/pup.rs and notes/research/ps3_pup.md.''

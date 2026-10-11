@@ -35,4 +35,4 @@ While TBIN, SBIN, KROM, and KROMG never changed throughout the PS2's life cycle,
 === Regional mismatch anomaly ===
 In the SCPH-39004 BIOS (dated 2002-03-19), the console's main <code>ROMVER</code> identifies as American (<code>0160AC20020319</code>), but its embedded PS1 <code>VERSTR</code> string ends with <code>'E'</code> (<code>5.0 03/19/02 E</code>). Consequently, PS2 titles run under American region rules, but PS1 titles execute under European PAL rules and enforce European licence text checks.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_version_matrix.md §0, §7 and notes/research/kernel_eeload_hooks.md §1.1.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/ps1_version_matrix.md §0, §7 and notes/research/kernel_eeload_hooks.md §1.1.''

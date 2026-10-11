@@ -12,7 +12,7 @@ Things in it that I haven't seen documented elsewhere:
 - The warning scene's trigger is disc state 0x74 only — "no disc" goes to the clock/menu.
 
 Tools (no Sony data in any of them — you bring your own BIOS):
-- PSX Boot Inspection Tool, Windows/Linux/macOS: replays the PS1 and PS2 boots from your BIOS + memory card + disc image, inspects every hand-over, makes music with the BIOS's own instruments; free camera, time control, chime, full hand-off readout. https://github.com/NamasteJasutin/PS2BootInspectionTool/releases
+- PSX Boot Inspection Tool, Windows/Linux/macOS: replays the PS1 and PS2 boots from your BIOS + memory card + disc image, inspects every hand-over, makes music with the BIOS's own instruments; free camera, time control, chime, full hand-off readout. https://github.com/NamasteJasutin/PSXBootInspectionTool/releases
 - ps2kit, a Rust crate with the readers (ROMDIR/LZ, memory cards, history, ISO/BIN sectors, logo, sound bank/sequence). https://crates.io/crates/ps2kit
 - ps2-bios-ghidra: one-command headless Ghidra set-up for RESET/KERNEL/EELOAD/OSDSYS/PS2LOGO with 750+ symbol names for 2.00 E. https://github.com/NamasteJasutin/ps2-bios-ghidra
 

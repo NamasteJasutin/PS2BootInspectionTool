@@ -33,4 +33,4 @@ When booting a PlayStation CD-ROM, the ROM bootstrap (POST stage 9 at <code>rom:
 * '''Executable header validation''': <code>LoadExeFile</code> (<code>rom:BFC03A18</code>) reads the first 2,048 bytes of the executable into <code>0xA000B070</code>. The magic string <code>"PS-X EXE"</code>, the region text, and the header checksum are '''never validated'''. The loader only verifies that at least 2,048 bytes were read; if fewer bytes are returned, the kernel halts in an infinite loop with error <code>'B' 0x38A</code> and POST byte <code>0xF</code>.
 * Sector alignment: <code>t_size</code> must be an exact multiple of 2,048 (<code>0x800</code>). If <code>t_size % 0x800 != 0</code>, the CD device driver returns <code>EINVAL</code> and nothing is loaded into memory, causing execution to jump into uninitialized RAM.
 
-''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_kernel_boot.md §1.2, §3.1, §4.1, §4.2.''
+''Source: [https://github.com/NamasteJasutin/PSXBootInspectionTool PSXBootInspectionTool], notes/research/ps1_kernel_boot.md §1.2, §3.1, §4.1, §4.2.''
