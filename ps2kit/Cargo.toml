@@ -61,3 +61,7 @@ path = "src/bin/song.rs"
 [[bin]]
 name = "library"
 path = "src/bin/library.rs"
+
+[[bin]]
+name = "extract"
+path = "src/bin/extract.rs"

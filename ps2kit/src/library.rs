@@ -103,6 +103,8 @@ pub enum Console {
     Ps1,
     /// PS2 ROMDIR image, including its PS1-mode shell.
     Ps2,
+    /// Locally extracted game-disc bank or sample set.
+    Game,
 }
 
 /// Bank role/format; effect entries remain effects rather than invented MIDI programs.
@@ -119,6 +121,14 @@ pub enum BankKind {
     Ps2Menu,
     /// S01: standalone manufacturing-test VAG.
     TestSine,
+    /// Locally extracted PS1 VAB programs.
+    GameVab,
+    /// Locally extracted SShd programs/effects.
+    GameSShd,
+    /// Inferred HD/BD container, auditioned through its Vagi samples.
+    GameHd,
+    /// Loose VAG/WAVE samples grouped by extracted disc set.
+    GameSamples,
 }
 
 /// Source coordinates in an input module or explicitly labelled decompressed view.
@@ -349,6 +359,7 @@ impl SoundLibrary {
             BankKind::Ps2Menu => 2,
             BankKind::Ps2Logo => 3,
             BankKind::TestSine => 4,
+            BankKind::GameVab | BankKind::GameSShd | BankKind::GameHd | BankKind::GameSamples => 5,
         });
         library.pieces.sort_by(|a, b| a.aliases.first().cmp(&b.aliases.first()));
         for bank in &mut library.banks {
@@ -368,6 +379,106 @@ impl SoundLibrary {
             library.legacy_ps2 = Some(legacy);
         }
         library
+    }
+
+    /// Scans BIOS files plus locally extracted native sets under Soundfonts.
+    /// Individual damaged assets become diagnostics. Game sample/HD sets skip
+    /// spectral measurement and kit derivation; native VAB/SShd programs retain it.
+    pub fn scan_with_soundfonts(files: &[PathBuf], soundfonts_dir: impl AsRef<Path>) -> Self {
+        let mut library = Self::scan(files);
+        let root = soundfonts_dir.as_ref();
+        let folders = if root.join("index.tsv").is_file() {
+            Ok(vec![root.to_path_buf()])
+        } else {
+            std::fs::read_dir(root).map(|entries| {
+                let mut folders: Vec<_> = entries.filter_map(|entry| entry.ok())
+                    .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|entry| entry.path()).filter(|p| p.join("index.tsv").is_file()).collect();
+                folders.sort();
+                folders
+            })
+        };
+        match folders {
+            Ok(folders) => for folder in folders {
+                if let Err(e) = library.scan_game_set(&folder) {
+                    library.diagnostics.push(format!("{}: {e}", folder.display()));
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => library.diagnostics.push(format!("{}: {e}", root.display())),
+        }
+        library
+    }
+
+    fn scan_game_set(&mut self, folder: &Path) -> Result<()> {
+        use crate::extract::{asset_bench, asset_sample, read_index, read_native, AssetKind};
+        let index = read_index(folder)?;
+        let mut files = std::collections::BTreeMap::new();
+        for row in index.rows {
+            files.entry(row.file.clone()).or_insert_with(Vec::new).push(row);
+        }
+        let (mut samples, mut content, mut sources) = (Vec::new(), Vec::new(), Vec::new());
+        let mut bank_number = 0;
+        for (file, rows) in files {
+            let row = &rows[0];
+            let path = folder.join(&file);
+            let result = (|| -> Result<()> {
+                let data = read_native(&path)?;
+                let body = if row.body_file.is_empty() { Vec::new() } else { read_native(&folder.join(&row.body_file))? };
+                if rows.iter().any(|r| r.kind != row.kind || r.body_file != row.body_file) {
+                    return Err(corrupt("conflicting native asset index rows"));
+                }
+                let occurrences: Vec<_> = rows.iter().map(|r| Provenance {
+                    file: path.clone(), module: r.source.file.clone(), offset: r.source.offset,
+                    version: String::new(), decoded: false, body_module: r.source.body_file.clone(),
+                    body_offset: r.source.body_offset,
+                }).collect();
+                match row.kind {
+                    AssetKind::Vab | AssetKind::SShd | AssetKind::Hd => {
+                        let bench = asset_bench(row.kind, &data, &body)?;
+                        bank_number += 1;
+                        let label = format!("{} — bank {bank_number:02}", index.title);
+                        let kind = match row.kind {
+                            AssetKind::Vab => BankKind::GameVab, AssetKind::SShd => BankKind::GameSShd,
+                            _ => BankKind::GameHd,
+                        };
+                        let (header, bank_body) = crate::extract::bank_parts(row.kind, &data, &body)?;
+                        let mut occurrences = occurrences.into_iter();
+                        if let Some(source) = occurrences.next() {
+                            let key = self.add_bank(header, bank_body, bench, kind, &label, source);
+                            if let Some(bank) = self.banks.iter_mut().find(|b| b.key == key) {
+                                bank.sources.extend(occurrences);
+                                if bank.kit.is_none() && kind != BankKind::GameHd {
+                                    let kit = Kit::derive(&bank.bench);
+                                    if !kit.pieces.is_empty() { bank.kit = Some(kit); }
+                                }
+                            }
+                        }
+                    }
+                    AssetKind::Vag | AssetKind::Wave => {
+                        let sample = asset_sample(row.kind, &data)?;
+                        // Length framing fixes sample indices and prevents concatenation ambiguity.
+                        content.extend_from_slice(&(data.len() as u64).to_le_bytes());
+                        content.extend_from_slice(&data);
+                        samples.push(sample);
+                        sources.extend(occurrences);
+                    }
+                    AssetKind::Seq | AssetKind::SSsq => {}
+                }
+                Ok(())
+            })();
+            if let Err(e) = result { self.diagnostics.push(format!("{}: {e}", path.display())); }
+        }
+        if !samples.is_empty() {
+            let bench = SoundBench::from_samples(samples)?;
+            let label = format!("{} — samples", index.title);
+            let mut sources = sources.into_iter();
+            if let Some(source) = sources.next() {
+                let key = self.add_bank(&content, &[], bench, BankKind::GameSamples, &label, source);
+                if let Some(bank) = self.banks.iter_mut().find(|b| b.key == key) { bank.sources.extend(sources); }
+            }
+        }
+        Ok(())
     }
 
     /// Finds a primary bank by exact content key; header variants resolve via `resolve`.
@@ -399,7 +510,7 @@ impl SoundLibrary {
                 choices.extend(
                     b.bench.effects.iter().map(|e| InstrumentRef::new(b.key.clone(), Instrument::Effect(e.id))),
                 );
-                if b.kind == BankKind::TestSine {
+                if matches!(b.kind, BankKind::TestSine | BankKind::GameSamples | BankKind::GameHd) {
                     choices.extend(
                         b.bench.samples.iter().map(|s| InstrumentRef::new(b.key.clone(), Instrument::Sample(s.index))),
                     );
@@ -411,9 +522,23 @@ impl SoundLibrary {
 
     /// Style catalogue across all choices, keeping native IDs scoped to their banks.
     /// The integer is a program ID, effect index or loose sample index, per bank kind.
+    /// GameSamples/GameHd use the Samples group: length and loop are known,
+    /// spectral/attack/sustain fields are unmeasured and represented by zero.
     pub fn by_style(&self) -> LibraryStyles {
         let mut rows: LibraryStyles = Style::ALL.into_iter().map(|style| (style, Vec::new())).collect();
         for bank in &self.banks {
+            if matches!(bank.kind, BankKind::GameSamples | BankKind::GameHd) {
+                if let Some((_, row)) = rows.iter_mut().find(|r| r.0 == Style::Samples) {
+                    for sample in &bank.bench.samples {
+                        row.push((bank.key.clone(), sample.index as i32, Character {
+                            attack_ms: 0.0, ring_ms: sample.length as f32 * 1000.0 / bank.bench.sample_rate() as f32,
+                            brightness_hz: 0.0, noisiness: 0.0, sustain: 0.0,
+                            looped: sample.loop_start.is_some(), style: Style::Samples,
+                        }));
+                    }
+                }
+                continue;
+            }
             let programs = bank.bench.programs.iter().filter_map(|p| bank.bench.character(p.id).map(|c| (p.id, c)));
             let effects =
                 bank.bench.effects.iter().filter_map(|e| bank.bench.effect_character(e.id).map(|c| (e.id as i32, c)));
@@ -659,7 +784,11 @@ impl SoundLibrary {
         label: &str,
         source: Provenance,
     ) -> BankKey {
-        let console = if kind == BankKind::Ps1Shell { Console::Ps1 } else { Console::Ps2 };
+        let console = match kind {
+            BankKind::GameVab | BankKind::GameSShd | BankKind::GameHd | BankKind::GameSamples => Console::Game,
+            BankKind::Ps1Shell => Console::Ps1,
+            _ => Console::Ps2,
+        };
         let key = BankKey::new(fingerprint("bank", &[header, body]), label);
         bench.key = Some(key.clone());
         let content: Vec<_> = header.iter().chain(body).copied().collect();
@@ -926,7 +1055,7 @@ fn provenance(file: &Path, module: &str, version: &str, offset: usize, decoded: 
 fn corrupt(message: &str) -> Error {
     Error::Corrupt(Format::SoundBank, message.into())
 }
-fn fingerprint(domain: &str, parts: &[&[u8]]) -> String {
+pub(crate) fn fingerprint(domain: &str, parts: &[&[u8]]) -> String {
     let mut hash = 0x6c62272e07bb014262b821756295c58d_u128;
     for part in std::iter::once(domain.as_bytes()).chain(parts.iter().copied()) {
         for byte in (part.len() as u64).to_le_bytes().iter().chain(part) {
@@ -945,7 +1074,7 @@ fn effect_count(header: &[u8]) -> Option<usize> {
     let count = (prefix.u32(4) as usize).checked_add(1)?;
     (count <= 8192).then_some(count)
 }
-fn header_extent(data: &[u8]) -> Option<usize> {
+pub(crate) fn header_extent(data: &[u8]) -> Option<usize> {
     if data.len() < 0x30 || &data[12..16] != b"SShd" {
         return None;
     }
@@ -1075,7 +1204,7 @@ fn note_tables(data: &[u8]) -> Vec<(usize, Vec<NoteEvent>, usize)> {
 }
 // SSsq is MIDI-like but has two-byte BPM events, one-byte coarse bends, and no
 // initial delta. Compute the true terminator extent; never hash allocation padding.
-fn sequence_extent(data: &[u8]) -> Option<usize> {
+pub(crate) fn sequence_extent(data: &[u8]) -> Option<usize> {
     if data.len() <= 0x110 || &data[12..16] != b"SSsq" {
         return None;
     }

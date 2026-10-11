@@ -139,6 +139,11 @@ impl SoundBank {
         Ok(Self { programs, velocity, body })
     }
 
+    // Native program records translated by extract.rs; no shipped audio or tables.
+    pub(crate) fn from_native(programs: HashMap<i32, Program>, body: Vec<u8>) -> Self {
+        Self { programs, body, velocity: (0..128).collect() }
+    }
+
     /// Decodes the sample at `offset` in the body; see [`decode_adpcm`].
     #[must_use]
     pub fn decode_sample(&self, offset: usize) -> (Vec<f32>, Option<usize>) { decode_adpcm(&self.body, offset) }

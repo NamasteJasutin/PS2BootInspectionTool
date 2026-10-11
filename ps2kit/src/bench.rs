@@ -172,11 +172,13 @@ pub enum Style {
     AirAndNoise,
     /// Short noise bursts.
     PercussiveNoise,
+    /// Unmeasured game samples, grouped without spectral classification.
+    Samples,
 }
 
 impl Style {
     /// Every style in browsing order.
-    pub const ALL: [Style; 10] = [Style::BellsAndChimes, Style::KeysAndBellPads, Style::MalletsAndPlucks, Style::SoftLeadsAndStrings, Style::BrightPads, Style::WarmPads, Style::DarkPadsAndDrones, Style::Swells, Style::AirAndNoise, Style::PercussiveNoise];
+    pub const ALL: [Style; 11] = [Style::BellsAndChimes, Style::KeysAndBellPads, Style::MalletsAndPlucks, Style::SoftLeadsAndStrings, Style::BrightPads, Style::WarmPads, Style::DarkPadsAndDrones, Style::Swells, Style::AirAndNoise, Style::PercussiveNoise, Style::Samples];
     /// A short display name.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -191,6 +193,7 @@ impl Style {
             Style::Swells => "Swells",
             Style::AirAndNoise => "Air & noise",
             Style::PercussiveNoise => "Percussive noise",
+            Style::Samples => "Samples",
         }
     }
 
@@ -367,6 +370,39 @@ impl SoundBench {
             sample_data: vec![(pcm, loop_start)], effects: Vec::new(), effect_samples: Vec::new(),
             effect_master: 0, backend: SoundBenchBackend::Sample { rate },
         }
+    }
+
+    /// Builds a sample-only bank from caller-owned mono PCM in SPU scale.
+    /// Rates and loop starts are validated; samples are resampled to 44.1 kHz.
+    /// This editor normalization is inferred, not a native bank conversion.
+    pub fn from_samples(samples: Vec<(Vec<f32>, Option<usize>, u32)>) -> Result<Self> {
+        let mut bench = Self::from_sample(Vec::new(), None, 44100);
+        bench.samples.clear();
+        bench.sample_data.clear();
+        for (pcm, loop_start, rate) in samples {
+            if !(1000..=192000).contains(&rate) || pcm.len() < 2
+                || loop_start.is_some_and(|lp| lp >= pcm.len()) || pcm.iter().any(|s| !s.is_finite())
+            {
+                return Err(Error::Corrupt(Format::SoundBank, "invalid sample PCM/rate/loop".into()));
+            }
+            let length = ((pcm.len() as u64 * 44100) / u64::from(rate)) as usize;
+            if !(2..=32_000_000).contains(&length) {
+                return Err(Error::Corrupt(Format::SoundBank, "sample exceeds audition allocation limit".into()));
+            }
+            let pcm = if rate == 44100 { pcm } else {
+                (0..length).map(|i| {
+                    let pos = i as f64 * f64::from(rate) / 44100.0;
+                    let at = (pos as usize).min(pcm.len() - 1);
+                    let next = (at + 1).min(pcm.len() - 1);
+                    pcm[at] + (pcm[next] - pcm[at]) * (pos - at as f64) as f32
+                }).collect()
+            };
+            let loop_start = loop_start.map(|lp| (((lp as u64 * 44100) / u64::from(rate)) as usize).min(length - 1));
+            let index = bench.samples.len();
+            bench.samples.push(BenchSample { index, length, loop_start });
+            bench.sample_data.push((pcm, loop_start));
+        }
+        Ok(bench)
     }
 
     /// Recorded rate of decoded sample PCM; ordinary SPU banks use 44.1 kHz.
