@@ -153,6 +153,18 @@ pub struct MenuFrame {
     pub notes: Vec<String>,
 }
 
+impl MenuFrame {
+    /// Creates an empty menu frame with the given clear colour.
+    pub fn empty(clear_colour: [u8; 3]) -> Self {
+        Self {
+            clear_colour,
+            polygons: Vec::new(),
+            sprites: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
 /// The standalone PS1 shell's no-disc menu state and located assets.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -269,6 +281,10 @@ impl Ps1Menu {
             MenuStyle::ClassicEn
         };
 
+        if style == MenuStyle::Redesigned {
+            return Err(Error::NotFound(Format::Bios, "PS1 menu: redesigned menu not reconstructed yet".into()));
+        }
+
         // 4. Identify textures by revision dimensions and address references.
         let find_size = |w, h| texture_meta.iter().position(|&(_, _, tw, th)| tw == w && th == h);
         let find_size_nth = |w, h, n| texture_meta.iter().enumerate().filter(|(_, &(_, _, tw, th))| tw == w && th == h).nth(n).map(|(i, _)| i);
@@ -373,140 +389,64 @@ impl Ps1Menu {
                 notes.push("\\[V\\] Title plate positioned at centre (540, 67) from static sprite table".into());
                 notes.push("\\[V\\] Button items at (160, 232) and (160, 332), 216x70, from item table".into());
                 notes.push("\\[V\\] GTE FarColour (128, 128, 255) and procedural textures initialized at 0x80030D20".into());
+                notes.push("\\[V\\] Main menu procedural 3-D button icons omitted: generated at run time by shell state machine (ps1_shell_scenes.md §1c)".into());
 
-                if self.style == MenuStyle::Redesigned {
-                    notes.push("\\[V\\] Redesigned menu: side-by-side buttons at (200, 240) and (440, 240) with 48x48 icons".into());
-                    // Button panels: Memory Card (left, x=200, y=240) & CD Player (right, x=440, y=240)
-                    push_button(&mut polygons, 200.0, 240.0, 216.0, 60.0, cursor == 0);
-                    push_button(&mut polygons, 440.0, 240.0, 216.0, 60.0, cursor == 1);
+                // 1. Title plate at top right (540, 67)
+                if let Some(t) = self.title_main {
+                    let tex = &self.textures[t];
+                    sprites.push(MenuSprite {
+                        texture: t,
+                        centre: [540.0, 67.0],
+                        size: [tex.width as f32, tex.height as f32],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [255, 255, 255, 255],
+                    });
+                }
 
-                    // 48x48 icons inside the buttons
-                    let find_size_nth = |w, h, n| self.textures.iter().enumerate().filter(|(_, t)| t.width == w && t.height == h).nth(n).map(|(i, _)| i);
-                    if let Some(card_icon) = find_size_nth(48, 48, 0) {
-                        sprites.push(MenuSprite {
-                            texture: card_icon,
-                            centre: [125.0, 240.0],
-                            size: [48.0, 48.0],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [255, 255, 255, 255],
-                        });
-                    }
-                    if let Some(cd_icon) = find_size_nth(48, 48, 1) {
-                        sprites.push(MenuSprite {
-                            texture: cd_icon,
-                            centre: [365.0, 240.0],
-                            size: [48.0, 48.0],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [255, 255, 255, 255],
-                        });
-                    }
+                // 2. Beveled button backplates for Option 0 (Memory Card) & Option 1 (CD Player)
+                push_button(&mut polygons, 160.0, 232.0, 216.0, 70.0, cursor == 0);
+                push_button(&mut polygons, 160.0, 332.0, 216.0, 70.0, cursor == 1);
 
-                    // Text labels inside the buttons (192x48 textures, top half y=0..24 contains text)
-                    if let Some(lbl_mc) = find_size_nth(192, 48, 0) {
-                        sprites.push(MenuSprite {
-                            texture: lbl_mc,
-                            centre: [225.0, 240.0],
-                            size: [130.0, 24.0],
-                            uv_rect: [0.0, 0.0, 1.0, 0.5],
-                            tint: if cursor == 0 { [255, 240, 120, 255] } else { [220, 220, 220, 255] },
-                        });
-                    }
-                    if let Some(lbl_cd) = find_size_nth(192, 48, 1) {
-                        sprites.push(MenuSprite {
-                            texture: lbl_cd,
-                            centre: [465.0, 240.0],
-                            size: [130.0, 24.0],
-                            uv_rect: [0.0, 0.0, 1.0, 0.5],
-                            tint: if cursor == 1 { [255, 240, 120, 255] } else { [220, 220, 220, 255] },
-                        });
-                    }
+                // 3. Option labels (sliced: Option 0 top half, Option 1 bottom half)
+                if let Some(l) = self.labels_main {
+                    let tex = &self.textures[l];
+                    let label_w = (tex.width as f32).min(200.0);
+                    // Option 0 (Memory Card): top half y=0..0.5
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [160.0, 232.0],
+                        size: [label_w, 24.0],
+                        uv_rect: [0.0, 0.0, 1.0, 0.5],
+                        tint: if cursor == 0 { [255, 240, 120, 255] } else { [220, 220, 220, 255] },
+                    });
+                    // Option 1 (CD Player): bottom half y=0.5..1.0
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [160.0, 332.0],
+                        size: [label_w, 24.0],
+                        uv_rect: [0.0, 0.5, 1.0, 1.0],
+                        tint: if cursor == 1 { [255, 240, 120, 255] } else { [220, 220, 220, 255] },
+                    });
+                }
 
-                    // Cursor pointing at selected option
-                    if let Some(c) = self.cursor {
-                        let cx = if cursor == 0 { 75.0 } else { 315.0 };
-                        let tex = &self.textures[c];
-                        sprites.push(MenuSprite {
-                            texture: c,
-                            centre: [cx, 240.0],
-                            size: [tex.width as f32, tex.height as f32],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [255, 255, 255, 255],
-                        });
-                    }
-                } else {
-                    // Classic Japanese or English menu:
-                    // 1. Title plate at top right (540, 67)
-                    if let Some(t) = self.title_main {
-                        let tex = &self.textures[t];
-                        sprites.push(MenuSprite {
-                            texture: t,
-                            centre: [540.0, 67.0],
-                            size: [tex.width as f32, tex.height as f32],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [255, 255, 255, 255],
-                        });
-                    }
-
-                    // 2. Beveled button backplates for Option 0 (Memory Card) & Option 1 (CD Player)
-                    push_button(&mut polygons, 160.0, 232.0, 216.0, 70.0, cursor == 0);
-                    push_button(&mut polygons, 160.0, 332.0, 216.0, 70.0, cursor == 1);
-
-                    // Shaded CD disc for Option 1
-                    if let Some(disc) = self.procedural.discs.first() {
-                        push_disc(&mut polygons, 85.0, 332.0, 24.0, disc.inner_colour, disc.outer_colour, 24);
-                    }
-                    // Memory card icon block for Option 0
-                    push_card_icon(&mut polygons, 85.0, 232.0, 28.0, 28.0);
-
-                    // 3. Option labels
-                    if let Some(l) = self.labels_main {
-                        let tex = &self.textures[l];
-                        let w = (tex.width / 2) as f32;
-                        let th = tex.height as f32;
-                        // In 4-bit font label TIMs (220x48 English, 160x50 Japanese),
-                        // text lines are 13 pixels high: row 0 (0..13) is "MEMORY CARD" / "メモリーカード",
-                        // row 1 (13..26) is "CD PLAYER" / "CDプレーヤー". Rows 26..H are leftover rows.
-                        let v0_end = 13.0 / th;
-                        let v1_start = 13.0 / th;
-                        let v1_end = 26.0 / th;
-                        // Option 0 (Memory Card): row 0
-                        let u0 = if cursor == 0 { 0.5 } else { 0.0 };
-                        sprites.push(MenuSprite {
-                            texture: l,
-                            centre: [180.0, 232.0],
-                            size: [w, 20.0],
-                            uv_rect: [u0, 0.0, u0 + 0.5, v0_end],
-                            tint: if cursor == 0 { [255, 240, 120, 255] } else { [220, 220, 220, 255] },
-                        });
-                        // Option 1 (CD Player): row 1
-                        let u1 = if cursor == 1 { 0.5 } else { 0.0 };
-                        sprites.push(MenuSprite {
-                            texture: l,
-                            centre: [180.0, 332.0],
-                            size: [w, 20.0],
-                            uv_rect: [u1, v1_start, u1 + 0.5, v1_end],
-                            tint: if cursor == 1 { [255, 240, 120, 255] } else { [220, 220, 220, 255] },
-                        });
-                    }
-
-                    // 4. Cursor pointing at selected option
-                    if let Some(c) = self.cursor {
-                        let cy = if cursor == 0 { 232.0 } else { 332.0 };
-                        let tex = &self.textures[c];
-                        sprites.push(MenuSprite {
-                            texture: c,
-                            centre: [38.0, cy],
-                            size: [tex.width as f32, tex.height as f32],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [255, 255, 255, 255],
-                        });
-                    }
+                // 4. Cursor pointing at selected option
+                if let Some(c) = self.cursor {
+                    let cy = if cursor == 0 { 232.0 } else { 332.0 };
+                    let tex = &self.textures[c];
+                    sprites.push(MenuSprite {
+                        texture: c,
+                        centre: [38.0, cy],
+                        size: [tex.width as f32, tex.height as f32],
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        tint: [255, 255, 255, 255],
+                    });
                 }
             }
             1 => {
                 // Screen 1: Memory Card Manager
                 notes.push("\\[V\\] Screen 1 title plate positioned at centre (320, 85) from static sprite table".into());
-                notes.push("\\[I\\] Card slots 1 and 2 displayed symmetrically at x=160 and x=480".into());
+                notes.push("\\[V\\] Card slots 1 and 2 displayed symmetrically at x=160 and x=480 with 15 save blocks each".into());
+                notes.push("\\[V\\] Sliced memory card labels: CARD 1, CARD 2, and action row EXIT/COPY/COPY ALL/DELETE".into());
                 if let Some(t) = self.title_memcard {
                     let tex = &self.textures[t];
                     sprites.push(MenuSprite {
@@ -521,16 +461,71 @@ impl Ps1Menu {
                 push_panel(&mut polygons, 160.0, 260.0, 240.0, 200.0, cursor == 0);
                 push_panel(&mut polygons, 480.0, 260.0, 240.0, 200.0, cursor == 1);
 
+                // 15-block save grid in each bay (5 cols x 3 rows)
+                for row in 0..3 {
+                    let y = 210.0 + row as f32 * 50.0;
+                    for col in 0..5 {
+                        let x1 = 80.0 + col as f32 * 40.0;
+                        let x2 = 400.0 + col as f32 * 40.0;
+                        push_panel(&mut polygons, x1, y, 32.0, 38.0, false);
+                        push_panel(&mut polygons, x2, y, 32.0, 38.0, false);
+                    }
+                }
+
+                // Sliced Memory Card labels from atlas
                 if let Some(l) = self.labels_memcard {
                     let tex = &self.textures[l];
+                    let (w, h) = (tex.width as f32, tex.height as f32);
+
+                    // CARD 1 header above bay 1 (x=2..84, y=1..23)
                     sprites.push(MenuSprite {
                         texture: l,
-                        centre: [320.0, 390.0],
-                        size: [(tex.width as f32).min(248.0), (tex.height as f32).min(64.0)],
-                        uv_rect: [0.0, 0.0, 1.0, 0.5],
+                        centre: [160.0, 138.0],
+                        size: [82.0, 22.0],
+                        uv_rect: [2.0 / w, 1.0 / h, 84.0 / w, 23.0 / h],
+                        tint: [255, 255, 255, 255],
+                    });
+
+                    // CARD 2 header above bay 2 (x=88..174, y=1..23)
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [480.0, 138.0],
+                        size: [86.0, 22.0],
+                        uv_rect: [88.0 / w, 1.0 / h, 174.0 / w, 23.0 / h],
+                        tint: [255, 255, 255, 255],
+                    });
+
+                    // Action row (EXIT, COPY, COPY ALL, DELETE) along bottom (y=420)
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [110.0, 420.0],
+                        size: [51.0, 19.0],
+                        uv_rect: [1.0 / w, 24.0 / h, 52.0 / w, 43.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [230.0, 420.0],
+                        size: [72.0, 19.0],
+                        uv_rect: [58.0 / w, 24.0 / h, 130.0 / w, 43.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [380.0, 420.0],
+                        size: [114.0, 19.0],
+                        uv_rect: [134.0 / w, 24.0 / h, 248.0 / w, 43.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [530.0, 420.0],
+                        size: [92.0, 17.0],
+                        uv_rect: [2.0 / w, 44.0 / h, 94.0 / w, 61.0 / h],
                         tint: [220, 220, 220, 255],
                     });
                 }
+
                 if let Some(c) = self.cursor {
                     let cx = if cursor == 0 { 160.0 } else { 480.0 };
                     let tex = &self.textures[c];
@@ -546,8 +541,9 @@ impl Ps1Menu {
             3 => {
                 // Screen 3: CD Player
                 notes.push("\\[V\\] Screen 3 title plate positioned at centre (540, 67) from static sprite table".into());
-                notes.push("\\[V\\] Procedural shaded disc Ø120 rendered using 0x800491C4 parameters".into());
+                notes.push("\\[V\\] Procedural shaded disc Ø120 rendered using 0x800491C4 parameters (dark-blue centre [2,2,37] -> light-blue rim [223,187,255])".into());
                 notes.push("\\[V\\] Five procedural control buttons rendered with Ø56 discs (green, blue, red, orange, yellow)".into());
+                notes.push("\\[V\\] Sliced CD labels: track grid, EXIT, and mode labels".into());
                 if let Some(t) = self.title_cd {
                     let tex = &self.textures[t];
                     sprites.push(MenuSprite {
@@ -569,14 +565,49 @@ impl Ps1Menu {
                         push_disc(&mut polygons, bx, 370.0, 20.0, disc.inner_colour, disc.outer_colour, 20);
                     }
                 }
-                // Track labels on right
+                // Sliced track grid and mode labels on right
                 if let Some(l) = self.labels_cd {
                     let tex = &self.textures[l];
+                    let (w, h) = (tex.width as f32, tex.height as f32);
+
+                    // Track row 1 (tracks 1..12)
                     sprites.push(MenuSprite {
                         texture: l,
-                        centre: [470.0, 250.0],
-                        size: [tex.width as f32, tex.height as f32],
-                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        centre: [460.0, 155.0],
+                        size: [244.0, 17.0],
+                        uv_rect: [1.0 / w, 0.0, 245.0 / w, 17.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    // Track row 2 (tracks 13..20)
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [460.0, 185.0],
+                        size: [244.0, 17.0],
+                        uv_rect: [3.0 / w, 18.0 / h, 247.0 / w, 35.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    // EXIT button
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [535.0, 220.0],
+                        size: [74.0, 21.0],
+                        uv_rect: [180.0 / w, 32.0 / h, 254.0 / w, 53.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    // Playback control icons (fast-forward, play, pause, stop, etc.)
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [460.0, 255.0],
+                        size: [248.0, 16.0],
+                        uv_rect: [1.0 / w, 52.0 / h, 249.0 / w, 68.0 / h],
+                        tint: [220, 220, 220, 255],
+                    });
+                    // Mode labels (CONTINUE / SHUFFLE / PROGRAM / REPEAT)
+                    sprites.push(MenuSprite {
+                        texture: l,
+                        centre: [460.0, 300.0],
+                        size: [244.0, 39.0],
+                        uv_rect: [0.0, 69.0 / h, 244.0 / w, 108.0 / h],
                         tint: [220, 220, 220, 255],
                     });
                 }
@@ -591,7 +622,7 @@ impl Ps1Menu {
                     sprites.push(MenuSprite {
                         texture: l,
                         centre: [320.0, 240.0],
-                        size: [tex.width as f32, tex.height as f32],
+                        size: [(tex.width as f32).min(256.0), (tex.height as f32).min(108.0)],
                         uv_rect: [0.0, 0.0, 1.0, 1.0],
                         tint: [255, 255, 255, 255],
                     });
@@ -663,23 +694,5 @@ fn push_panel(polygons: &mut Vec<MenuPolygon>, cx: f32, cy: f32, w: f32, h: f32,
         MenuVertex { xy: [cx + hw - 2.0, cy - hh + 2.0], colour: c_inner },
         MenuVertex { xy: [cx - hw + 2.0, cy + hh - 2.0], colour: c_inner },
         MenuVertex { xy: [cx + hw - 2.0, cy + hh - 2.0], colour: c_inner },
-    ]));
-}
-
-fn push_card_icon(polygons: &mut Vec<MenuPolygon>, cx: f32, cy: f32, w: f32, h: f32) {
-    let (hw, hh) = (w / 2.0, h / 2.0);
-    let body = [80, 95, 140];
-    let notch = [40, 50, 80];
-    polygons.push(MenuPolygon::Quad([
-        MenuVertex { xy: [cx - hw, cy - hh], colour: body },
-        MenuVertex { xy: [cx + hw, cy - hh], colour: body },
-        MenuVertex { xy: [cx - hw, cy + hh], colour: body },
-        MenuVertex { xy: [cx + hw, cy + hh], colour: body },
-    ]));
-    polygons.push(MenuPolygon::Quad([
-        MenuVertex { xy: [cx - hw + 4.0, cy + hh - 8.0], colour: notch },
-        MenuVertex { xy: [cx + hw - 4.0, cy + hh - 8.0], colour: notch },
-        MenuVertex { xy: [cx - hw + 4.0, cy + hh - 2.0], colour: notch },
-        MenuVertex { xy: [cx + hw - 4.0, cy + hh - 2.0], colour: notch },
     ]));
 }

@@ -106,7 +106,10 @@ pub struct Tim {
 }
 
 impl Tim {
-    pub(crate) fn parse_4bit(d: &[u8]) -> Result<Self> {
+    /// Extracts 4-bit pixel indices (0..=15) from a TIM image.
+    /// Standalone PS1 shell label TIMs in ROM use 2-bit packing unpacked by runtime routine
+    /// 0x80031800 (`notes/research/ps1_shell_scenes.md` §1c) \[V\].
+    pub(crate) fn parse_4bit_indices(d: &[u8]) -> Result<(usize, usize, Vec<u8>)> {
         if d.len() < 0x14 || d.u32(0) != 0x10 || d.u32(4) != 8 {
             return Err(Error::Corrupt(Format::Bios, "not a 4-bit TIM with CLUT".into()));
         }
@@ -124,16 +127,76 @@ impl Tim {
             return Err(Error::Corrupt(Format::Bios, "TIM image size is implausible".into()));
         }
         let data = ib + 12;
-        if d.u32(ib) as usize != 12 + iw * ih * 2 || data + iw * ih * 2 > d.len() {
-            return Err(Error::Corrupt(Format::Bios, "TIM pixels are truncated".into()));
+        let is_label_packed = clut.len() >= 3
+            && clut[0] == 0x7fff
+            && (clut[1] == 0x0c63 || clut[1] == 0x0842 || clut[1] == 0x7717)
+            && (clut[2] == 0 || clut[2] == 0x0842);
+
+        let mut indices = vec![0u8; width * height];
+        if is_label_packed && data + iw * ih <= d.len() {
+            for y in 0..height {
+                for x in 0..width {
+                    let byte = d.u8(data + y * iw + x / 4);
+                    let idx = match x % 4 {
+                        0 => (byte & 0x30) >> 4,
+                        1 => (byte & 0xc0) >> 6,
+                        2 => byte & 0x03,
+                        _ => (byte & 0x0c) >> 2,
+                    };
+                    indices[y * width + x] = idx;
+                }
+            }
+        } else {
+            if d.u32(ib) as usize != 12 + iw * ih * 2 || data + iw * ih * 2 > d.len() {
+                return Err(Error::Corrupt(Format::Bios, "TIM pixels are truncated".into()));
+            }
+            for y in 0..height {
+                for x in 0..width {
+                    let byte = d.u8(data + y * iw * 2 + x / 2);
+                    indices[y * width + x] = if x & 1 == 0 { byte & 0xF } else { byte >> 4 };
+                }
+            }
         }
+        Ok((width, height, indices))
+    }
+
+    pub(crate) fn parse_4bit(d: &[u8]) -> Result<Self> {
+        if d.len() < 0x14 || d.u32(0) != 0x10 || d.u32(4) != 8 {
+            return Err(Error::Corrupt(Format::Bios, "not a 4-bit TIM with CLUT".into()));
+        }
+        let clut_len = d.u32(8) as usize;
+        let (cw, ch) = (d.u16(0x10) as usize, d.u16(0x12) as usize);
+        if cw * ch == 0 || cw * ch > 256 || clut_len < 12 + cw * ch * 2 || clut_len > 12 + 512
+            || 8 + clut_len + 12 > d.len() {
+            return Err(Error::Corrupt(Format::Bios, "TIM CLUT is implausible".into()));
+        }
+        let clut: Vec<u16> = (0..cw * ch).map(|i| d.u16(0x14 + i * 2)).collect();
+        let (width, height, indices) = Self::parse_4bit_indices(d)?;
+
+        let is_label_packed = clut.len() >= 3
+            && clut[0] == 0x7fff
+            && (clut[1] == 0x0c63 || clut[1] == 0x0842 || clut[1] == 0x7717)
+            && (clut[2] == 0 || clut[2] == 0x0842);
+
         let mut rgba = vec![0u8; width * height * 4];
-        for y in 0..height {
-            for x in 0..width {
-                let byte = d.u8(data + y * iw * 2 + x / 2);
-                let idx = if x & 1 == 0 { byte & 0xF } else { byte >> 4 } as usize;
-                let c = clut.get(idx).copied().unwrap_or(0);
-                let o = (y * width + x) * 4;
+        if is_label_packed {
+            let is_cd = clut.get(1).copied() == Some(0x7717);
+            for (i, &idx) in indices.iter().enumerate() {
+                let o = i * 4;
+                let color = match (is_cd, idx) {
+                    (true, 0) => [255, 255, 255, 255],
+                    (true, 1) => [255, 240, 120, 255],
+                    (true, 2) => [180, 180, 180, 255],
+                    (false, 0) => [255, 255, 255, 255],
+                    (false, 1) => [180, 180, 180, 255],
+                    _ => [0, 0, 0, 0],
+                };
+                rgba[o..o + 4].copy_from_slice(&color);
+            }
+        } else {
+            for (i, &idx) in indices.iter().enumerate() {
+                let c = clut.get(idx as usize).copied().unwrap_or(0);
+                let o = i * 4;
                 let five = |v: u16| ((v & 31) * 255 / 31) as u8;
                 rgba[o..o + 4].copy_from_slice(&[five(c), five(c >> 5), five(c >> 10), if c == 0 { 0 } else { 255 }]);
             }

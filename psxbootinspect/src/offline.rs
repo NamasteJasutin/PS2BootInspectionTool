@@ -79,10 +79,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let menu_preview = if named.get("scene").map(String::as_str) == Some("ps1menu") {
         let b = m.ps1_bios.as_ref().ok_or("--scene ps1menu requires a PS1 BIOS dump (--bios)")?;
         let shell = b.shell_image().map_err(|e| e.to_string())?;
-        let menu = ps2kit::ps1menu::Ps1Menu::locate(&shell, b.identity()).map_err(|e| e.to_string())?;
         let screen: usize = named.get("menu-screen").and_then(|v| v.parse().ok()).unwrap_or(0);
         let cursor: usize = named.get("menu-cursor").and_then(|v| v.parse().ok()).unwrap_or(0);
-        Some((menu, screen, cursor))
+        match ps2kit::ps1menu::Ps1Menu::locate(&shell, b.identity()) {
+            Ok(menu) => Some((Some(menu), screen, cursor)),
+            Err(ps2kit::Error::NotFound(ps2kit::Format::Bios, ref msg)) if msg.contains("redesigned menu not reconstructed yet") => {
+                Some((None, screen, cursor))
+            }
+            Err(e) => return Err(e.to_string()),
+        }
     } else { None };
     m.rebuild_timeline();
     if named.contains_key("handoff") {
@@ -159,10 +164,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let warning_tex = format!("TEXOPNG{}", m.language);
     if let Some(index) = icon_preview {
         r.render_icon_preview(&mut enc, index, frame, m.video);
-    } else if let Some((menu, screen, cursor)) = &menu_preview {
-        let tex = r.set_ps1_menu_assets(menu);
-        let menu_frame = menu.frame(*screen, *cursor, frame.max(0.0) as usize);
-        r.render_ps1_menu(&mut enc, frame, &menu_frame, &tex, m.video);
+    } else if let Some((menu_opt, screen, cursor)) = &menu_preview {
+        if let Some(menu) = menu_opt {
+            let tex = r.set_ps1_menu_assets(menu);
+            let menu_frame = menu.frame(*screen, *cursor, frame.max(0.0) as usize);
+            r.render_ps1_menu(&mut enc, frame, &menu_frame, &tex, m.video);
+        } else {
+            let mut menu_frame = ps2kit::ps1menu::MenuFrame::empty([10, 14, 28]);
+            menu_frame.notes.push("\\[I\\] PS1 menu: redesigned menu not reconstructed yet".into());
+            let tex = r.set_ps1_menu_assets_empty();
+            r.render_ps1_menu(&mut enc, frame, &menu_frame, &tex, m.video);
+        }
     } else { match m.scene_kind {
         Scene::Boot => r.render_opening(&mut enc, frame, &m.scene, assets.ok_or("no PS2 BIOS")?, &m.timeline, free, &m.options),
         Scene::Warning => r.render_warning(&mut enc, frame, assets.ok_or("no PS2 BIOS")?, &m.timeline, free, &m.options, &warning_tex),

@@ -23,6 +23,11 @@ impl Renderer {
         MenuTextures { names }
     }
 
+    /// Returns an empty texture set for menus not reconstructed yet.
+    pub fn set_ps1_menu_assets_empty(&mut self) -> MenuTextures {
+        MenuTextures { names: Vec::new() }
+    }
+
     /// Draws the supplied menu frame into `scene`.
     /// PS1 drawing coordinates are interlaced 640x480.
     /// PAL displays with x=3/y=27 in 512 lines (scenes §1).
