@@ -2,7 +2,7 @@
 
 use crate::Dialog;
 use crate::audio::{VisualizerMode, BAND_COUNT};
-use crate::model::{outcome_name, video_mode_name, CameraMode, Console, DiscOverride, HistorySource, Model, Scene, Tab, Workspace, LANGUAGES, REGIONS};
+use crate::model::{video_mode_name, CameraMode, Console, DiscOverride, HistorySource, Model, Scene, Tab, Workspace, LANGUAGES, REGIONS};
 use crate::renderer::{Renderer, TowerLayout, TowerTint};
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
@@ -84,7 +84,7 @@ impl App {
                     // A PS1 console with no disc ends in its shell's main menu.
                     Segment::Menu if m.console == Console::Ps1 && m.ps1_menu.is_some() && self.menu_textures.is_some() => {
                         let (menu, tex) = (m.ps1_menu.as_ref().unwrap(), self.menu_textures.as_ref().unwrap());
-                        self.renderer.render_ps1_menu(&mut enc, local as f32, &menu.frame(0, 0, local), tex, m.video)
+                        self.renderer.render_ps1_menu(&mut enc, local as f32, &menu.frame(m.ps1_menu_screen, m.ps1_menu_cursor, local), tex, m.video)
                     }
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
@@ -212,7 +212,7 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     let fps = m.timeline.fps();
     let status = if m.scene_kind == Scene::Full {
         let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
-        let name = if span.segment == Segment::Menu && m.console == Console::Ps1 { "TWO: PS1 shell main menu (no disc)" } else { segment_name(span.segment, m.ps1_active()) };
+        let name = if span.segment == Segment::Menu && m.console == Console::Ps1 { ps1_menu_screen_name(m.ps1_menu_screen) } else { segment_name(span.segment, m.ps1_active()) };
         format!("{name}  {:5.2} s  (segment frame {local})  camera z {:6.1}  roll {:+.2}   cpu {:4.1} ms", m.frame / fps, c.z, c.roll, m.cpu_ms)
     } else if m.frame < 0.0 {
         format!("power-on {:+5.2} s  (opening starts at 0)   cpu {:4.1} ms", m.frame / fps, m.cpu_ms)
@@ -307,6 +307,16 @@ fn handoff_lines(m: &Model) -> Vec<(String, String)> {
     }
 }
 
+/// The PS1 shell's menu screen the boot ends on, for the status line and the picker.
+fn ps1_menu_screen_name(screen: usize) -> &'static str {
+    match screen {
+        1 => "TWO: PS1 shell memory card",
+        3 => "TWO: PS1 shell CD player",
+        4 => "TWO: PS1 shell no-disc message",
+        _ => "TWO: PS1 shell main menu",
+    }
+}
+
 pub fn segment_name(segment: Segment, ps1: bool) -> &'static str {
     match segment {
         Segment::PowerOn => "power-on",
@@ -393,6 +403,22 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
             if let Some(p) = pick { m.load_bios(&p, false) }
         }
         ui.small(match want { Console::Ps2 => m.bios_status.clone(), Console::Ps1 => m.ps1_bios_status.clone() });
+        // Where a PS1 console without a disc ends: any of its shell's menu screens.
+        if m.console == Console::Ps1 && !m.ps1_active() {
+            if let Some(menu) = &m.ps1_menu {
+                ui.horizontal_wrapped(|ui| {
+                    ui.small("Ends in:");
+                    for screen in [0, 1, 3, 4] {
+                        if ui.selectable_label(m.ps1_menu_screen == screen, ps1_menu_screen_name(screen).trim_start_matches("TWO: PS1 shell ")).clicked() {
+                            m.ps1_menu_screen = screen;
+                            m.ps1_menu_cursor = 0;
+                        }
+                    }
+                });
+                let items = menu.cursor_count(m.ps1_menu_screen);
+                if items > 1 { ui.add(egui::Slider::new(&mut m.ps1_menu_cursor, 0..=items - 1).text("highlighted item")); }
+            }
+        }
     });
     section(ui, "Your files", |ui| {
         if let Some(p) = file_row(ui, "BIOS (PS2 or PS1)", "", false, &["bin", "BIN", "rom"]) { m.load_bios(&p, false) }
@@ -416,7 +442,7 @@ fn boot_tab(ui: &mut egui::Ui, m: &mut Model) {
         });
         changed |= ui.checkbox(&mut m.enforce_checks, "Enforce the console's region lock").changed();
         let detected = m.detected_region().map(|r| format!("{r:?}")).unwrap_or_else(|| "unknown".into());
-        ui.small(format!("Detected: {detected} console. Outcome: {}.", outcome_name(m.outcome())));
+        ui.small(format!("Detected: {detected} console. Outcome: {}.", m.outcome_text()));
         if changed { m.rebuild_timeline(); m.logo_version += 1; if m.frame > m.end_frame() { m.frame = m.start_frame() } }
     });
     section(ui, "Scene", |ui| {
@@ -554,7 +580,8 @@ fn segment_strip(ui: &mut egui::Ui, m: &mut Model) {
         let r = Rect::from_min_max(Pos2::new(x0, rect.min.y), Pos2::new(x1, rect.max.y));
         painter.rect_filled(r, 2.0, colour(sp.segment));
         if r.width() > 40.0 {
-            painter.text(r.center(), egui::Align2::CENTER_CENTER, segment_name(sp.segment, m.ps1_active()).split(": ").last().unwrap_or(""), egui::FontId::proportional(10.0), Color32::from_white_alpha(200));
+            let name = if sp.segment == Segment::Menu && m.console == Console::Ps1 { ps1_menu_screen_name(m.ps1_menu_screen).trim_start_matches("TWO: PS1 ") } else { segment_name(sp.segment, m.ps1_active()).split(": ").last().unwrap_or("") };
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(10.0), Color32::from_white_alpha(200));
         }
     }
     let x = rect.min.x + rect.width() * m.frame.max(0.0) / total;
@@ -760,7 +787,7 @@ fn disc_tab(ui: &mut egui::Ui, m: &mut Model) {
         }
     });
     section(ui, "What the console would do next", |ui| {
-        ui.small(format!("Under the scenario: {}.", outcome_name(m.outcome())));
+        ui.small(format!("Under the scenario: {}.", m.outcome_text()));
         for (who, text) in handoff_lines(m) {
             ui.horizontal_wrapped(|ui| {
                 ui.monospace(egui::RichText::new(who).color(Color32::from_rgb(115, 153, 255)).size(11.0));
@@ -907,6 +934,13 @@ mod tests {
                 assert_eq!(hits, 0, "{name} calls {bare} directly");
             }
         }
+    }
+
+    #[test]
+    fn ps1_shelf_labels_show_the_version_number() {
+        assert_eq!(crate::model::Model::ps1_version_number("System ROM Version 4.5 05/25/00 A"), "4.5");
+        assert_eq!(crate::model::Model::ps1_version_number("System ROM Version 3.0 11/18/96 A"), "3.0");
+        assert_eq!(crate::model::Model::ps1_version_number("odd"), "odd");
     }
 
     #[test]

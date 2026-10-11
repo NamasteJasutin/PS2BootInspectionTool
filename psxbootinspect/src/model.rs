@@ -329,6 +329,17 @@ pub fn outcome_name(outcome: BootOutcome) -> &'static str {
     }
 }
 
+impl Model {
+    /// What the scenario ends in, worded for the console that boots: a PS1 without a disc stays in
+    /// its shell's menu rather than the PS2's clock.
+    pub fn outcome_text(&self) -> &'static str {
+        match self.outcome() {
+            BootOutcome::Menu if self.console == Console::Ps1 => "the shell's menu (no disc to start)",
+            o => outcome_name(o),
+        }
+    }
+}
+
 /// The caption shown while the console is busy with a phase (`notes/boot_sequence.md`).
 pub fn phase_caption(phase: BootPhase) -> &'static str {
     match phase {
@@ -485,6 +496,10 @@ pub struct Model {
     pub sce_intro: Option<SceIntro>,
     /// The standalone shell's no-disc menu, where a PS1 console without a disc ends.
     pub ps1_menu: Option<ps2kit::ps1menu::Ps1Menu>,
+    /// Which of the menu's screens the end of the PS1 boot shows (0 main menu, 1 memory card,
+    /// 3 CD player, 4 no disc) and the highlighted item on it.
+    pub ps1_menu_screen: usize,
+    pub ps1_menu_cursor: usize,
     pub ps1_bios_path: Option<PathBuf>,
     pub ps1_bios_status: String,
     /// Every BIOS file in the BIOS folder, PS2 and PS1, for the pickers.
@@ -558,7 +573,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_menu: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), soundfonts: SoundfontShelf::new(&crate::settings::Settings::load()), sound_focus: false, resume_boot: false, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_menu: None, ps1_menu_screen: 0, ps1_menu_cursor: 0, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), soundfonts: SoundfontShelf::new(&crate::settings::Settings::load()), sound_focus: false, resume_boot: false, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -658,7 +673,7 @@ impl Model {
             let Ok(d) = std::fs::read(p) else { continue };
             if Self::looks_ps1(&d) {
                 let label = match Ps1Bios::new(d.clone()) {
-                    Ok(b) => { let id = b.identity(); format!("{} {} — {name}", if id.version.is_empty() { "1.0".into() } else { id.version.split_whitespace().next().unwrap_or("").to_string() }, id.region_letter.map(String::from).unwrap_or_default()) }
+                    Ok(b) => { let id = b.identity(); format!("{} {} — {name}", if id.version.is_empty() { "1.0".into() } else { Self::ps1_version_number(&id.version) }, id.region_letter.map(String::from).unwrap_or_default()) }
                     Err(_) => format!("damaged — {name}"),
                 };
                 self.shelf.push(ShelfEntry { path: p.clone(), console: Console::Ps1, label });
@@ -685,6 +700,14 @@ impl Model {
         }
         out.push("Container structure only: the packages are encrypted and are not read.".into());
         out
+    }
+
+    /// The version number in a PS1 dump's version string ("System ROM Version 4.5 05/25/00 A" →
+    /// "4.5"), or its first word when it has no "Version".
+    pub(crate) fn ps1_version_number(version: &str) -> String {
+        let words = version.split_whitespace();
+        let first = words.clone().next().unwrap_or("");
+        words.skip_while(|w| !w.eq_ignore_ascii_case("version")).nth(1).unwrap_or(first).to_string()
     }
 
     /// A standalone PS1 dump, or something that was meant to be one (a damaged copy).

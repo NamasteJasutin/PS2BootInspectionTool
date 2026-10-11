@@ -189,7 +189,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 Segment::Menu if m.console == crate::model::Console::Ps1 && m.ps1_menu.is_some() => {
                     let menu = m.ps1_menu.as_ref().unwrap();
                     let tex = r.set_ps1_menu_assets(menu);
-                    r.render_ps1_menu(&mut enc, local as f32, &menu.frame(0, 0, local), &tex, m.video)
+                    let screen = named.get("menu-screen").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let cursor = named.get("menu-cursor").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    r.render_ps1_menu(&mut enc, local as f32, &menu.frame(screen, cursor, local), &tex, m.video)
                 }
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }

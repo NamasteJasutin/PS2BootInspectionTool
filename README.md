@@ -95,8 +95,9 @@ leave.
 Load any standalone PS1, PSone or PSP-POPS BIOS dump and the PS1 console boots its own shell:
 the SCE intro (diamond, logotype and its music, rebuilt from the dump), then the licence screen
 with that shell's own licence policy, wordmark (® or ™) and SCEx label — read from its code, not
-from the version number. With no disc it ends where the console does, in the shell's MAIN MENU
-(MEMORY CARD / CD PLAYER) drawn from the dump's own plates and labels; the redesigned menu of
+from the version number. With no disc it ends where the console does, in the shell's MAIN MENU —
+or, as you choose, its memory-card or CD-player screen or the "Please insert PlayStation CD-ROM"
+message — drawn from the dump's own plates, labels and screen tables; the redesigned menu of
 3.0 E and the PSone 4.5 is not reconstructed yet and is captioned instead. The BIOS tab identifies every dump (kernel K1/K2, shell storage, policy)
 and audits the set (duplicates, mislabels, a text-mode-corrupted copy); the Disc tab shows how the
 PS1 kernel reads `SYSTEM.CNF` (the first line starting with a key decides — a `BOOT2` line before
