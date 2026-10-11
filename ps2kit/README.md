@@ -48,5 +48,5 @@ published crate) also checks against a BIOS and discs on the developer's machine
 trivially without them. Breaking changes are listed in `CHANGELOG.md`.
 
 The formats are documented in the `notes/` directory of the
-[PS2 Boot Inspection Tool](https://github.com/NamasteJasutin/PS2BootInspectionTool), the app
+[PSX Boot Inspection Tool](https://github.com/NamasteJasutin/PS2BootInspectionTool), the app
 built on this crate. MIT licence.

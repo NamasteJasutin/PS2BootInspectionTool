@@ -1,4 +1,4 @@
-//! `ps2bootinspect --ui <out.png> [--tab music|sound|bios|…] [--size 1400x812] [--script "…"]`:
+//! `psxbootinspect --ui <out.png> [--tab music|sound|bios|…] [--size 1400x812] [--script "…"]`:
 //! runs the app's real egui interface headless — the same `ui::layout` the window uses, the
 //! user's files loaded the same way, sound muted — feeds it a script of input and renders it to
 //! PNG with egui-wgpu. Script steps, separated by `;`: `click x,y`, `rclick x,y`,

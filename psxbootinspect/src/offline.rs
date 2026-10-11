@@ -1,4 +1,4 @@
-//! `ps2bootinspect --render <frame> <out.png> [--bios f] [--card f | --titles N --launches N]
+//! `psxbootinspect --render <frame> <out.png> [--bios f] [--card f | --titles N --launches N]
 //!  [--scene boot|warning|logo|full] [--pal] [--iso f] [--disc s] [--exit s] [--free x,y,z,yaw,pitch]`
 //! renders one frame without a window (headless wgpu).
 //! `--icons <card.ps2>` tags matching history towers; `--scene icon --icon-index N`

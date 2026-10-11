@@ -272,7 +272,7 @@ The 0x1CB7 (7,351) byte block at `0x64000` in PS1 U/E images (mirrored as `rom0:
 
 ### 1. The Console Family Chronoscope (Timeline Scrubber)
 - **What the user sees**: A horizontal interactive timeline spanning 1994 to 2006 across PlayStation hardware generations (SCPH-1000, 3000, 5000, 7000, PSone, SCPH-10000, 30004, 39001, 39004, 70004, PSP POPS). Owned BIOS dumps illuminate their corresponding nodes. Scrubbing between nodes morphs the boot viewport live: cross-fading the 1994 SCE diamond intro into the 2000 PS2 tower skyline, or flipping the licence screen wordmark from `PlayStation®` to `PlayStation™`. A "Deltas at this Milestone" panel explains changes in audio envelopes, ribbon math, and menu art.
-- **Reuses**: Existing scene renderers (`ps2bootinspect`), SPU sound synth, BIOS ROMVER decode, camera path controllers.
+- **Reuses**: Existing scene renderers (`psxbootinspect`), SPU sound synth, BIOS ROMVER decode, camera path controllers.
 - **New code/data**: Interactive timeline UI widget; milestone metadata graph; multi-BIOS runtime container allowing hot-swapping between active assets.
 - **Effort**: Medium.
 - **Stance check**: 100% compliant. Historical milestone dates are public facts; all audio, textures, and 3D scenes are decoded directly from the user's active dumps.

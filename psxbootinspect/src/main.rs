@@ -1,4 +1,5 @@
-//! PS2 Boot Inspection Tool — cross-platform app (egui + wgpu).
+//! PSX Boot Inspection Tool — cross-platform app (egui + wgpu): PS1, PS2 and PS3 boots from the
+//! user's own files, research instruments, and a studio for the BIOS's own instruments.
 
 mod audio;
 mod director;
@@ -26,14 +27,14 @@ fn main() -> eframe::Result {
         let rgba = i.to_rgba8();
         egui::IconData { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
     });
-    let mut viewport = egui::ViewportBuilder::default().with_inner_size([1400.0, 860.0]).with_min_inner_size([1000.0, 600.0]).with_title("PS2 Boot Inspection Tool");
+    let mut viewport = egui::ViewportBuilder::default().with_inner_size([1400.0, 860.0]).with_min_inner_size([1000.0, 600.0]).with_title("PSX Boot Inspection Tool");
     if let Some(icon) = icon { viewport = viewport.with_icon(std::sync::Arc::new(icon)) }
     let options = eframe::NativeOptions {
         viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native("PS2 Boot Inspection Tool", options, Box::new(|cc| Ok(Box::new(ui::App::new(cc)))))
+    eframe::run_native("PSX Boot Inspection Tool", options, Box::new(|cc| Ok(Box::new(ui::App::new(cc)))))
 }
 
 /// The scene texture shown inside egui, re-registered whenever it is recreated.

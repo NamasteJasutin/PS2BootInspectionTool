@@ -17,15 +17,15 @@ jobs:
         include:
           - os: windows-latest
             name: windows-x64
-            bin: ps2bootinspect.exe
+            bin: psxbootinspect.exe
             history: ps2history.exe
           - os: ubuntu-latest
             name: linux-x64
-            bin: ps2bootinspect
+            bin: psxbootinspect
             history: ps2history
           - os: macos-latest
             name: macos-arm64
-            bin: ps2bootinspect
+            bin: psxbootinspect
             history: ps2history
     runs-on: ${{ matrix.os }}
     steps:
@@ -39,22 +39,29 @@ jobs:
       - run: cargo doc --no-deps -p ps2kit
         env:
           RUSTDOCFLAGS: -D warnings
-      - run: cargo build --release -p ps2bootinspect -p ps2kit
+      - run: cargo build --release -p psxbootinspect -p ps2kit
       - name: Package
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/release/${{ matrix.bin }}" "target/release/${{ matrix.history }}" README.md LICENSE dist/
+          cp "target/release/${{ matrix.bin }}" README.md LICENSE dist/
+          # The research command-line tools from ps2kit, next to the app.
+          ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          for t in ps2history pupinfo ps3card nvminfo discprobe ps1card hookmap romdiff bench song; do
+            [ -f "target/release/$t$ext" ] && cp "target/release/$t$ext" dist/
+          done
+          # macOS: the app as a bundle too.
+          if [ "${{ runner.os }}" = "macOS" ]; then scripts/macos_bundle.sh dist; fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "../ps2bootinspect-${{ matrix.name }}.zip" .
+            7z a "../psxbootinspect-${{ matrix.name }}.zip" .
           else
-            tar czf "../ps2bootinspect-${{ matrix.name }}.tar.gz" .
+            tar czf "../psxbootinspect-${{ matrix.name }}.tar.gz" .
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: ps2bootinspect-${{ matrix.name }}
-          path: ps2bootinspect-${{ matrix.name }}.*
+          name: psxbootinspect-${{ matrix.name }}
+          path: psxbootinspect-${{ matrix.name }}.*
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -70,7 +77,7 @@ jobs:
       # commits is appended after them.
       - uses: softprops/action-gh-release@v2
         with:
-          name: PS2 Boot Inspection Tool ${{ github.ref_name }}
+          name: PSX Boot Inspection Tool ${{ github.ref_name }}
           body_path: docs/releases/${{ github.ref_name }}.md
           files: artifacts/*
           generate_release_notes: true

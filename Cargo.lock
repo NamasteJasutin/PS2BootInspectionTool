@@ -2055,8 +2055,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
-name = "ps2bootinspect"
+name = "ps2kit"
 version = "0.3.0"
+dependencies = [
+ "glam",
+ "png 0.17.16",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "psxbootinspect"
+version = "1.2.0"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -2071,15 +2080,6 @@ dependencies = [
  "rfd",
  "rustfft",
  "wgpu",
-]
-
-[[package]]
-name = "ps2kit"
-version = "0.3.0"
-dependencies = [
- "glam",
- "png 0.17.16",
- "thiserror 2.0.21",
 ]
 
 [[package]]

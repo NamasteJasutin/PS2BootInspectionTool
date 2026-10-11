@@ -1,12 +1,12 @@
 <p align="center"><img src="docs/icon.png" width="160" alt=""></p>
 
-# PS2 Boot Inspection Tool
+# PSX Boot Inspection Tool
 
 A desktop app (Windows, Linux, macOS) that replays the PlayStation 2 and PlayStation start-up from
 **your own** BIOS dumps, memory cards and game discs, and lets you look inside them: what the boot
 screens are built from, how your play history shapes them, what the console does between power-on
 and the moment a game takes over — and a studio that makes music with the instruments your BIOS
-files carry. (Growing into the *PSX Boot Inspection Tool*: PS1, PS2 and an honest PS3 card.)
+files carry. PS1 and PS2 in full, and an honest PS3 card. (Formerly the *PS2 Boot Inspection Tool*.)
 
 ![The opening, built from the play history on a memory card](docs/opening.png)
 
@@ -145,11 +145,11 @@ but nothing that isn't yours.
   disc image (`.iso`, or a raw `.bin`/`.cue` CD rip) for the disc phase and the genuine logo.
 
 ```sh
-cargo run --release -p ps2bootinspect                    # the app (Rust toolchain from rustup.rs)
+cargo run --release -p psxbootinspect                    # the app (Rust toolchain from rustup.rs)
 cargo run --release -p ps2kit --bin ps2history -- <card>  # dump a card's play history
-cargo run --release -p ps2bootinspect -- --render 95 out.png --bios <bios> --titles 21 --launches 60 --pal
+cargo run --release -p psxbootinspect -- --render 95 out.png --bios <bios> --titles 21 --launches 60 --pal
 cargo test -p ps2kit                                     # checks against the Python tools and the Swift app
-cargo run --release -p ps2bootinspect -- --ui out.png --tab music --script "click 1148,154; key space; shot a.png"
+cargo run --release -p psxbootinspect -- --ui out.png --tab music --script "click 1148,154; key space; shot a.png"
                                                          # the real UI, headless: scripted input, rendered to PNG
 ```
 
@@ -190,7 +190,7 @@ For anyone who wants to check the tool's claims or extend it to another BIOS ver
 | `notes/research/` | Four surveys of the hidden hand-overs across five ROMs and four discs — OSDSYS hooks, kernel/EELOAD/IOP probes, what games ask the console, ROM1/EROM/NVM — with a merged, ranked list of research tooling (`notes/research/README.md`). |
 | `notes/hidden_features.md` | What every ROM carries that owners never see: the factory test program, the card update hook, the dormant kernel debugger, and what PCSX2 exposes of it. |
 | `ps2kit/` | The portable core (Rust): every reader and the simulation, with oracle tests. |
-| `ps2bootinspect/` | The app (Rust: egui + wgpu + cpal). |
+| `psxbootinspect/` | The app (Rust: egui + wgpu + cpal). |
 | `tools/`, `analysis/symbols/` | Scripts that derive all of the above from a BIOS image, and symbol tables for the decompilations they produce. |
 | [ps2-bios-ghidra](https://github.com/NamasteJasutin/ps2-bios-ghidra) | The headless Ghidra set-up and symbol tables as a standalone kit, for decompiling your own BIOS. |
 | [ps2kit on crates.io](https://crates.io/crates/ps2kit) | The readers and the simulation as a Rust library. |

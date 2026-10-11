@@ -1,5 +1,5 @@
 [workspace]
-members = ["ps2kit", "ps2bootinspect"]
+members = ["ps2kit", "psxbootinspect"]
 resolver = "2"
 
 [workspace.package]

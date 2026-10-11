@@ -137,9 +137,8 @@ Rules specific to the ridge:
   The only key-shaped input is an optional user-supplied HMAC check of the stored digests.
 - What a ROM + disc image cannot know (the drive's `GetID` verdict, wobble-groove region, the
   controller date) is printed as an assumption, never as a finding.
-- Naming: the app's display name becomes "PSX Boot Inspection Tool"; the repository and the
-  `ps2kit` crate keep their names until the Summit (renames are outward-facing and need a
-  deliberate decision).
+- Naming: the app is the **PSX Boot Inspection Tool** (binary `psxbootinspect`, 2026-10-11); the
+  repository and the `ps2kit` crate keep their names (outward-facing renames, separate decisions).
 
 ## Summit — 2.0
 
