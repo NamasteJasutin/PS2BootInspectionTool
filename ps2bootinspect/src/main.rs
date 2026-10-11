@@ -7,12 +7,17 @@ mod offline;
 mod renderer;
 mod scenes;
 mod ui;
+mod uitest;
 
 use eframe::egui;
 use std::sync::Arc;
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--ui") {
+        if let Err(e) = uitest::run(&args[2..]) { eprintln!("error: {e}"); std::process::exit(1) }
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--render") {
         if let Err(e) = offline::run(&args[2..]) { eprintln!("error: {e}"); std::process::exit(1) }
         return Ok(());

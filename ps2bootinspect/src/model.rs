@@ -95,12 +95,14 @@ pub struct MusicMaker {
     pub resume_boot: bool,
     /// The song text last rendered for the transport, and when.
     pub rendered_hash: u64,
+    /// The (track, pattern) the piano roll last showed, to scroll to a new pattern's notes.
+    pub roll_for: (usize, usize),
     pub last_render: Option<std::time::Instant>,
 }
 
 
 impl Default for MusicMaker {
-    fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None } }
+    fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None, roll_for: (usize::MAX, 0) } }
 }
 
 /// The app's three workspaces, each a set of tabs: watching the boot, inspecting the files, and

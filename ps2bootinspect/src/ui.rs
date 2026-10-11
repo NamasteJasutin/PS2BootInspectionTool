@@ -104,28 +104,39 @@ impl eframe::App for App {
         let dt = (now - self.last).as_secs_f64().min(0.1);
         self.last = now;
         self.model.poll_sound();
-        // The Music tab takes the focus: the boot pauses (and resumes where it was on leaving),
-        // its audio stops and the 3D scene is not rendered.
-        let music = Workspace::of(self.model.tab) == Workspace::Studio;
-        if music != self.model.music.focused {
-            self.model.music.focused = music;
-            if music { self.model.music.resume_boot = self.model.playing; self.model.playing = false }
-            else { self.model.playing = self.model.music.resume_boot; self.model.audio.music_play(false) }
-        }
+        let music = focus_workspace(&mut self.model);
         self.model.tick(dt);
         self.model.sync_audio();
         let t0 = Instant::now();
         if !music { if let Some(rs) = frame.wgpu_render_state() { self.render_frame(rs) } }
         self.model.cpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        egui::Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(root, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, &mut self.model));
-        });
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(root, |ui| {
-            if Workspace::of(self.model.tab) == Workspace::Studio { music_editor(ui, &mut self.model) } else { picture(ui, &mut self.model, &self.view) }
-        });
+        let view = &self.view;
+        layout(root, &mut self.model, |ui, m| picture(ui, m, view));
         ctx.request_repaint();
     }
+}
+
+/// The Studio takes the focus: the boot pauses (and resumes where it was on leaving), its audio
+/// stops and the 3D scene is not rendered. Returns whether the Studio is open.
+pub fn focus_workspace(m: &mut Model) -> bool {
+    let studio = Workspace::of(m.tab) == Workspace::Studio;
+    if studio != m.music.focused {
+        m.music.focused = studio;
+        if studio { m.music.resume_boot = m.playing; m.playing = false } else { m.playing = m.music.resume_boot; m.audio.music_play(false) }
+    }
+    studio
+}
+
+/// The window's panels — sidebar and centre — shared by the app and the headless UI harness
+/// (`uitest.rs`); `picture` draws the boot scene in the centre outside the Studio.
+pub fn layout(root: &mut egui::Ui, m: &mut Model, picture: impl FnOnce(&mut egui::Ui, &mut Model)) {
+    egui::Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(root, |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, m));
+    });
+    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(root, |ui| {
+        if Workspace::of(m.tab) == Workspace::Studio { music_editor(ui, m) } else { picture(ui, m) }
+    });
 }
 
 fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
@@ -1300,8 +1311,27 @@ fn set_song(m: &mut Model, song: ps2kit::Result<ps2kit::song::Song>) {
             m.music.channel = 0;
             m.music.pattern = 0;
             m.music.song = Some(s);
+            name_tracks_by_style(m);
         }
         Err(e) => m.music.status = e.to_string(),
+    }
+}
+
+/// The short style word for a program ("keys", "drone", "air"…), from the measured styles.
+fn style_word(m: &Model, program: u8) -> &'static str {
+    m.music.styles.iter().find(|(_, v)| v.iter().any(|(id, _)| *id == program as i32)).map_or("prog", |(s, _)| match s {
+        ps2kit::bench::Style::BellsAndChimes => "bell", ps2kit::bench::Style::KeysAndBellPads => "keys", ps2kit::bench::Style::MalletsAndPlucks => "mallet",
+        ps2kit::bench::Style::SoftLeadsAndStrings => "lead", ps2kit::bench::Style::BrightPads => "bright", ps2kit::bench::Style::WarmPads => "pad",
+        ps2kit::bench::Style::DarkPadsAndDrones => "drone", ps2kit::bench::Style::Swells => "swell", ps2kit::bench::Style::AirAndNoise => "air",
+        ps2kit::bench::Style::PercussiveNoise => "perc", _ => "prog",
+    })
+}
+
+/// Imported songs name their tracks after the MIDI channel; name them after the instrument instead.
+fn name_tracks_by_style(m: &mut Model) {
+    let names: Vec<String> = m.music.song.as_ref().map(|s| s.channels.iter().map(|c| format!("{} {}", style_word(m, c.program), c.program)).collect()).unwrap_or_default();
+    if let Some(song) = &mut m.music.song {
+        for (c, n) in song.channels.iter_mut().zip(names) { if c.name.starts_with("MIDI channel") || c.name.starts_with("channel") { c.name = n } }
     }
 }
 
@@ -1374,7 +1404,7 @@ fn music_editor(ui: &mut egui::Ui, m: &mut Model) {
     music_sync_audio(ui, m);
     let transport = Rect::from_min_max(avail.min, Pos2::new(avail.max.x, avail.min.y + 40.0));
     let browser = Rect::from_min_max(Pos2::new(avail.min.x, transport.max.y), Pos2::new(avail.min.x + 190.0, avail.max.y));
-    let inspector = Rect::from_min_max(Pos2::new(avail.max.x - 210.0, transport.max.y), avail.max);
+    let inspector = Rect::from_min_max(Pos2::new(avail.max.x - 236.0, transport.max.y), avail.max);
     let centre = Rect::from_min_max(Pos2::new(browser.max.x, transport.max.y), Pos2::new(inspector.min.x, avail.max.y));
     let rows = m.music.song.as_ref().map_or(1, |s| s.channels.len().max(1)) as f32;
     let arranger = Rect::from_min_max(centre.min + Vec2::new(6.0, 6.0), Pos2::new(centre.max.x - 6.0, centre.min.y + 30.0 + rows * 26.0));
@@ -1449,7 +1479,7 @@ fn music_browser(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
                 for (id, c) in programs {
                     ui.horizontal(|ui| {
                         if ui.small_button("+").on_hover_text("Add as a track").clicked() { add = Some((*id, style.name())) }
-                        if ui.selectable_label(false, format!("prog {id}")).on_hover_text(format!("attack {:.2} s · rings {:.1} s · {:.0} Hz{}", c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, if c.looped { " · loops" } else { "" })).clicked() { audition = Some(*id) }
+                        if ui.selectable_label(false, format!("{} {id}", style.name().split([' ', '&']).next().unwrap_or("prog").to_lowercase())).on_hover_text(format!("attack {:.2} s · rings {:.1} s · {:.0} Hz{}", c.attack_ms / 1000.0, c.ring_ms / 1000.0, c.brightness_hz, if c.looped { " · loops" } else { "" })).clicked() { audition = Some(*id) }
                     });
                 }
             }
@@ -1484,13 +1514,13 @@ fn music_inspector(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
         egui::ComboBox::from_id_salt("insp-prog").width(rect.width() - 8.0).selected_text(format!("program {}", c.program)).show_ui(ui, |ui| {
             for (id, label) in &programs { ui.selectable_value(&mut c.program, *id as u8, label); }
         });
-        ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("volume"));
+        ui.add(egui::Slider::new(&mut c.volume, 0..=127).text("vol"));
         ui.add(egui::Slider::new(&mut c.pan, 0..=127).text("pan"));
         ui.add_space(8.0);
         ui.label(egui::RichText::new(format!("Pattern {}", m.music.pattern + 1)).strong().color(Color32::WHITE));
         if let Some(p) = c.patterns.get_mut(m.music.pattern) {
             let mut bars = (p.length_ticks / ticks_per_bar.max(1)).max(1);
-            if ui.add(egui::Slider::new(&mut bars, 1..=8).text("bars long")).changed() { p.length_ticks = bars * ticks_per_bar; p.notes.retain(|n| n.start + n.length <= p.length_ticks) }
+            if ui.add(egui::Slider::new(&mut bars, 1..=8).text("bars")).changed() { p.length_ticks = bars * ticks_per_bar; p.notes.retain(|n| n.start + n.length <= p.length_ticks) }
             ui.small(format!("{} notes", p.notes.len()));
             if ui.small_button("Clear notes").clicked() { p.notes.clear() }
         }
@@ -1513,7 +1543,7 @@ fn music_arranger(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let painter = ui.painter_at(rect);
     let font = egui::FontId::monospace(11.0);
     let bars = song.bars().max(4) + 4;
-    let label_w = 90.0;
+    let label_w = 112.0;
     let cell_w = ((rect.width() - label_w) / bars as f32).clamp(14.0, 64.0);
     let ruler = Rect::from_min_size(Pos2::new(rect.min.x + label_w, rect.min.y), Vec2::new(cell_w * bars as f32, 20.0));
     painter.rect_filled(ruler, 0.0, Color32::from_rgb(36, 40, 54));
@@ -1531,7 +1561,8 @@ fn music_arranger(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
         let y = ruler.max.y + 4.0 + ci as f32 * (lane_h + 2.0);
         let sel = ci == m.music.channel;
         painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(label_w - 4.0, lane_h)), 2.0, if sel { Color32::from_rgb(55, 70, 110) } else { Color32::from_rgb(32, 36, 48) });
-        painter.text(Pos2::new(rect.min.x + 6.0, y + lane_h / 2.0), egui::Align2::LEFT_CENTER, &c.name, font.clone(), Color32::WHITE);
+        let name: String = if c.name.chars().count() > 14 { c.name.chars().take(13).chain(['…']).collect() } else { c.name.clone() };
+        painter.text(Pos2::new(rect.min.x + 6.0, y + lane_h / 2.0), egui::Align2::LEFT_CENTER, name, font.clone(), Color32::WHITE);
         for b in 0..bars {
             let r = Rect::from_min_size(Pos2::new(ruler.min.x + b as f32 * cell_w, y), Vec2::new(cell_w - 2.0, lane_h));
             let p = c.arrangement.get(b).copied().flatten();
@@ -1572,10 +1603,18 @@ fn music_piano_roll(ui: &mut egui::Ui, m: &mut Model, rect: Rect) {
     let Some(c) = song.channels.get_mut(m.music.channel) else { return };
     let program = c.program;
     let Some(pattern) = c.patterns.get_mut(m.music.pattern) else { return };
+    let keys = 36u8;
+    // A newly shown pattern scrolls the roll so its notes are in view.
+    if m.music.roll_for != (m.music.channel, m.music.pattern) {
+        m.music.roll_for = (m.music.channel, m.music.pattern);
+        if let (Some(lo), Some(hi)) = (pattern.notes.iter().map(|n| n.key).min(), pattern.notes.iter().map(|n| n.key).max()) {
+            let span = hi.saturating_sub(lo);
+            m.music.low_key = if span < keys { lo.saturating_sub((keys - span) / 2) } else { lo }.min(127 - keys);
+        }
+    }
     let painter = ui.painter_at(rect);
     let font = egui::FontId::monospace(10.0);
     painter.text(rect.min, egui::Align2::LEFT_TOP, format!("{} · pattern {} · program {}", c.name, m.music.pattern + 1, program), egui::FontId::monospace(11.0), Color32::LIGHT_GRAY);
-    let keys = 36u8;
     let roll = Rect::from_min_max(Pos2::new(rect.min.x + 44.0, rect.min.y + 18.0), rect.max);
     let row_h = roll.height() / keys as f32;
     let step = m.music.step.max(1);
