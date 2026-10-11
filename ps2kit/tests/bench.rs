@@ -5,6 +5,7 @@ use ps2kit::ps1::Vab;
 use ps2kit::ps1bios::{audit, Ps1Bios};
 use ps2kit::rom::{unpack, RomDir};
 use ps2kit::sound::{DriverTables, ProgramKind, SoundBank};
+use ps2kit::song::{BankRef, Channel, DrumMetrics, Instrument, Kit, Note, Pattern, Song};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 
@@ -184,6 +185,19 @@ fn synthetic_nested_effect_bank_is_audible_and_panned() {
     assert_pcm(&pcm, 9600);
     assert!(pcm.chunks_exact(2).all(|f| f[1] == 0.0));
     assert!(bench.render_effect(999, 0.1).iter().all(|&s| s == 0.0));
+    let mut song = Song::new("One shot", BankRef::Ps2);
+    let mut c = Channel::with_instrument("UI effect", Instrument::Effect(0));
+    let mut p = Pattern::new(1920);
+    p.notes.push(Note::new(480, 1, 60, 127));
+    c.patterns.push(p); c.arrangement.push(Some(0)); song.channels.push(c);
+    let rendered = song.render(&bench);
+    let at = song.frame_at_tick(480).unwrap() * 2;
+    assert!(rendered[..at].iter().all(|&v| v == 0.0));
+    assert!(rendered[at + 200..at + 4000].iter().any(|v| v.abs() > 1e-5));
+    assert!(rendered.chunks_exact(2).all(|f| f[1] == 0.0));
+    assert_eq!(Song::parse(&song.to_text().unwrap()).unwrap().render(&bench), rendered);
+    let first = song.frame_at_tick(481).unwrap();
+    assert_eq!(song.render_from(&bench, 481).unwrap(), rendered[first * 2..]);
 }
 
 #[test]
@@ -446,6 +460,80 @@ fn named_ps2_100j_and_200e_banks_match() {
 }
 
 #[test]
+fn every_local_bank_derives_only_numerically_supported_drum_lanes() {
+    for path in dump_paths(&root().join("bios")) {
+        let Ok(data) = std::fs::read(&path) else { continue; };
+        if audit(&data).first_shifted_offset.is_some() && data.len() < 0x90000 { continue; }
+        let mut benches = Vec::new();
+        if Ps1Bios::detect(&data) {
+            benches.push(SoundBench::from_bytes(&data).unwrap());
+        } else if let Ok(rom) = RomDir::new(data) {
+            if rom.module("OSDSYS").is_err() { continue; }
+            benches.push(SoundBench::ps2(&rom).unwrap());
+            if rom.module("PS2LOGO").is_ok() { benches.push(SoundBench::ps2_logo(&rom).unwrap()); }
+            if let Ok(shell) = ps2kit::ps1::Ps1Shell::load(&rom) { benches.push(SoundBench::ps1(&shell.bank)); }
+        }
+        for bench in benches {
+            let kit = Kit::derive(&bench);
+            assert!(!kit.pieces.is_empty(), "{} {:?}: {}", path.display(), bench.bank, kit.explain());
+            eprintln!("{} {:?}\n{}", path.display(), bench.bank, kit.explain());
+            for p in &kit.pieces {
+                let pcm = p.voice.render(&bench).unwrap();
+                assert!(pcm.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+                let m = DrumMetrics::measure(&pcm);
+                match p.key {
+                    36 => assert!(m.below_150_hz > 0.5 && m.decay_30db_ms <= 400.0),
+                    42 => assert!(m.above_5khz > 0.5 && m.duration_ms < 80.0),
+                    38 => assert!((150.0..=300.0).contains(&m.body_peak_hz) && m.above_2khz > 0.05 && m.duration_ms < 300.0),
+                    46 => assert!(m.decay_30db_ms >= 80.0 && m.duration_ms <= 300.0),
+                    _ => {},
+                }
+                assert!(m.rms > 1e-5);
+            }
+            let mut song = Song::new("Derived kit", bench.bank);
+            let mut c = Channel::with_instrument("Drums", Instrument::Kit(kit.clone()));
+            let mut p = Pattern::new(1920);
+            for (i, piece) in kit.pieces.iter().enumerate() { p.notes.push(Note::new(i as u32 * 120, 1, piece.key, 100)); }
+            c.patterns.push(p); c.arrangement.push(Some(0)); song.channels.push(c);
+            let text = song.to_text().unwrap();
+            assert_eq!(Song::parse(&text).unwrap(), song);
+            let pcm = song.render(&bench);
+            let at = song.frame_at_tick(480).unwrap();
+            assert_eq!(song.render_from(&bench, 480).unwrap(), pcm[at * 2..]);
+            if std::env::var_os("PSXKIT_AUDIO_CHECK").is_some() {
+                let stem = path.file_name().unwrap().to_string_lossy().replace(['/', '\\'], "_");
+                kit.write_wavs(&bench, Path::new("/tmp/m2-kit").join(format!("{stem}-{:?}", bench.bank))).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn logo_effect_bank_matches_the_existing_chime_voices() {
+    for file in ["scph10000.bin", "scph39001.bin", "SCPH-70004_BIOS_V12_PAL_200.BIN"] {
+        let Ok(data) = std::fs::read(root().join("bios").join(file)) else { continue; };
+        let rom = RomDir::new(data).unwrap();
+        let assets = ps2kit::logo::LogoAssets::load(&rom).unwrap();
+        let bench = SoundBench::ps2_logo(&rom).unwrap();
+        assert_eq!(bench.bank, BankRef::Ps2Logo);
+        assert!(bench.programs.is_empty());
+        assert_eq!(bench.samples.len(), 1);
+        assert_eq!(bench.effects.len(), assets.effects.len());
+        assert_eq!(bench.samples[0].length, 19936);
+        assert_eq!(bench.samples[0].loop_start, None);
+        let (pcm, lp) = ps2kit::sound::decode_adpcm(assets.sample_body(), 0);
+        assert_eq!(bench.sample_pcm(0), Some((pcm.as_slice(), lp)));
+        for (effect, existing) in bench.effects.iter().zip(&assets.effects) {
+            assert_eq!(i64::from(effect.pitch), existing.pitch);
+            assert_eq!(effect.adsr, (existing.adsr1, existing.adsr2));
+            assert_eq!((i64::from(effect.volume.0), i64::from(effect.volume.1)), (existing.vol_l, existing.vol_r));
+            assert_pcm(&bench.render_effect(effect.id, 0.5), 24000);
+        }
+        assert_eq!(bench.by_style().iter().map(|(_, entries)| entries.len()).sum::<usize>(), bench.effects.len());
+    }
+}
+
+#[test]
 fn font_palette_matches_the_users_extracted_oracle() {
     let Ok(data) = std::fs::read(root().join("bios/SCPH-70004_BIOS_V12_PAL_200.BIN")) else { return };
     let fonts = FontBench::from_bytes(&data).unwrap();
@@ -500,12 +588,14 @@ fn malformed_and_mutated_inputs_never_panic() {
             let bench = SoundBench::ps1(&vab);
             let pcm = bench.render(0, 60, 127, 0.01);
             assert!(pcm.iter().all(|s| s.is_finite()));
+            let _ = Kit::derive(&bench);
         }
     });
     mutate(&bank_header(), |d| {
         if let Ok(bank) = SoundBank::new(d, adpcm()) {
             let bench = SoundBench::from_bank(bank, None);
             assert!(bench.render(0, 60, 127, 0.01).iter().all(|s| s.is_finite()));
+            let _ = Kit::derive(&bench);
         }
     });
     mutate(&fontm_bytes(), |d| {
@@ -533,6 +623,7 @@ fn malformed_and_mutated_inputs_never_panic() {
     mutate(&bios, |d| {
         if let Ok(s) = SoundBench::from_bytes(d) {
             let _ = s.render_effect(0, 0.01);
+            let _ = Kit::derive(&s);
         }
         let _ = FontBench::from_bytes(d);
     });

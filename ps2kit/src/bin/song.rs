@@ -4,10 +4,10 @@ use ps2kit::ps1::Ps1Shell;
 use ps2kit::ps1bios::Ps1Bios;
 use ps2kit::ps1intro::SceIntro;
 use ps2kit::rom::RomDir;
-use ps2kit::song::{BankRef, Song};
+use ps2kit::song::{BankRef, Kit, Song};
 use ps2kit::{Error, Format, Result, VideoMode};
 
-const USAGE: &str = "usage: song <bios> --import boot|licence|intro --out x.psxsong\n       song <bios> --render x.psxsong out.wav";
+const USAGE: &str = "usage: song <bios> --import boot|licence|intro --out x.psxsong\n       song <bios> --render x.psxsong out.wav\n       song <bios> --kit [--bank boot|logo|ps1] --out <directory>";
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -43,6 +43,50 @@ fn shell(data: &[u8]) -> Result<(Ps1Shell, VideoMode)> {
 
 fn run(args: &[String]) -> Result<()> {
     match args {
+        [bios, option, rest @ ..] if option == "--kit" => {
+            let (bank, out) = match rest {
+                [out_option, out] if out_option == "--out" => (None, out),
+                [bank_option, bank, out_option, out]
+                    if bank_option == "--bank" && out_option == "--out" =>
+                {
+                    (Some(bank.as_str()), out)
+                }
+                [out] => (None, out),
+                _ => return Err(Error::Corrupt(Format::Sequence, USAGE.into())),
+            };
+            let data = std::fs::read(bios)?;
+            let bench = match bank {
+                None => SoundBench::from_bytes(&data)?,
+                Some("boot") => SoundBench::ps2(&RomDir::new(data)?)?,
+                Some("logo") => SoundBench::ps2_logo(&RomDir::new(data)?)?,
+                Some("ps1") => SoundBench::ps1(&shell(&data)?.0.bank),
+                _ => return Err(Error::Corrupt(Format::Sequence, USAGE.into())),
+            };
+            println!(
+                "{:?}: {} programs, {} samples, {} effects",
+                bench.bank,
+                bench.programs.len(),
+                bench.samples.len(),
+                bench.effects.len()
+            );
+            for sample in &bench.samples {
+                println!(
+                    "Sample {}: {} frames at 44.1 kHz, loop {:?}",
+                    sample.index, sample.length, sample.loop_start
+                );
+            }
+            for (style, members) in bench.by_style() {
+                println!(
+                    "{}: {:?}",
+                    style.name(),
+                    members.iter().map(|(id, _)| id).collect::<Vec<_>>()
+                );
+            }
+            let kit = Kit::derive(&bench);
+            print!("{}", kit.explain());
+            kit.write_wavs(&bench, out)?;
+            Ok(())
+        }
         [bios, option, kind, out_option, out] if option == "--import" && out_option == "--out" => {
             let data = std::fs::read(bios)?;
             let song = match kind.as_str() {
@@ -76,6 +120,7 @@ fn run(args: &[String]) -> Result<()> {
             let data = std::fs::read(bios)?;
             let bench = match song.bank {
                 BankRef::Ps2 => SoundBench::ps2(&RomDir::new(data)?)?,
+                BankRef::Ps2Logo => SoundBench::ps2_logo(&RomDir::new(data)?)?,
                 BankRef::Ps1 => SoundBench::ps1(&shell(&data)?.0.bank),
                 _ => {
                     return Err(Error::Corrupt(
