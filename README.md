@@ -2,9 +2,11 @@
 
 # PS2 Boot Inspection Tool
 
-A desktop app (Windows, Linux, macOS) that replays the PlayStation 2 start-up from **your own** BIOS dump, memory
-card and game disc, and lets you look inside it: what the boot screen is built from, how your
-play history shapes it, what the console does between power-on and the moment a game takes over.
+A desktop app (Windows, Linux, macOS) that replays the PlayStation 2 and PlayStation start-up from
+**your own** BIOS dumps, memory cards and game discs, and lets you look inside them: what the boot
+screens are built from, how your play history shapes them, what the console does between power-on
+and the moment a game takes over — and a studio that makes music with the instruments your BIOS
+files carry. (Growing into the *PSX Boot Inspection Tool*: PS1, PS2 and an honest PS3 card.)
 
 ![The opening, built from the play history on a memory card](docs/opening.png)
 
@@ -81,9 +83,47 @@ the game. The game is never run.
 - The red "Please insert a PlayStation or PlayStation 2 format disc" screen is included as its
   own scene.
 
+### Three workspaces
+
+**Boot** (the scene: console, files, scenario, cameras, director, save data and towers),
+**Inspect** (BIOS, Disc, Lab, Fonts — every console in one place) and **Studio** (music). The
+Studio takes the focus: the boot pauses and resumes where it was when you leave.
+
+### The PlayStation, too
+
+Load any standalone PS1, PSone or PSP-POPS BIOS dump and the PS1 console boots its own shell:
+the SCE intro (diamond, logotype and its music, rebuilt from the dump), then the licence screen
+with that shell's own licence policy, wordmark (® or ™) and SCEx label — read from its code, not
+from the version number. The BIOS tab identifies every dump (kernel K1/K2, shell storage, policy)
+and audits the set (duplicates, mislabels, a text-mode-corrupted copy); the Disc tab shows how the
+PS1 kernel reads `SYSTEM.CNF` (the first line starting with a key decides — a `BOOT2` line before
+`BOOT` hides the PS1 boot file) and its boot steps.
+
+### Research instruments (Inspect)
+
+The **Lab** shows, for your BIOS + card + NVM + disc, which hidden hand-overs the console looks for
+and whether they would fire (card system update, card DVD player, HDD boot, TESTMODE, the illegal-
+disc verdict, the 2.00 hidden Remote Control page…), each with its ROM address; what the game asks
+of the console (SDK libraries, IOP modules, version gates, syscalls — Tekken Tag asks nothing); the
+PS1 kernel's POST stages and the TTY log it would have printed; PS1 memory cards (undelete
+candidates, SoundScope performances); PS3 update snapshots and a PS3 disc/save metadata card. The
+BIOS tab adds the companion files (NVM decoded and checksum-validated, MEC, ROM1/2, EROM); **Fonts**
+browses every glyph in the BIOS. Command-line tools: `nvminfo`, `hookmap`, `discprobe`, `romdiff`
+(which modules changed between your dumps), `bench`, `ps1card`, `pupinfo`, `ps3card`, `song`.
+
+### Studio: music from your BIOS's own instruments
+
+Every program in the PS2 boot bank and the PS1 shell's bank, grouped by measured style (keys,
+mallets, leads, pads, drones, swells, air…), plus drum kits derived from your samples (kick,
+snare, hats, clap, toms — built by processing your BIOS's own samples, with the measurements that
+justify each). A DAW-style layout: transport (Space plays/pauses), instrument browser, arranger
+with playhead and loop, piano roll, drum grid, inspector. Import the PS2 boot music, the PS1
+licence chime or the SCE intro as a starting song; save `.psxsong` (notes and recipes only, never
+audio), export WAV or the PS2 BIOS's own SSsq sequence format.
+
 ### Beyond the PS2 (the Save data tab)
 
-The sidebar has four tabs: **Boot**, **Save data**, **Disc**, **BIOS**. The Save-data tab reads
+The Save-data tab reads
 the history file as data: a launch histogram, the records with their last-launch dates, and an
 **alternate history** — launch any title (known or new) the way the console's `HistoryUpdate`
 would record it today, watch a tower bit get planted at the 14th launch, or a 22nd title evict
@@ -98,10 +138,9 @@ but nothing that isn't yours.
 ## Requirements and set-up
 
 - Windows, Linux or macOS (the app is Rust on wgpu, so the three builds come from one code base).
-- A PS2 BIOS dump. Supported so far: ROM 2.00 E (SCPH-70004), 1.60 E (SCPH-30004R),
-  1.60 A (SCPH-39001) and the DTL-H30101 development kit (1.50 A) — the data tables are
-  located by content, so other builds of the same OSD generation should load too. ROM 1.00
-  (SCPH-10000) is a different OSD generation and is rejected with a message.
+- A PS2 and/or PS1 BIOS dump. PS2: ROM 1.00 J (SCPH-10000), the 1.50 devkit, 1.60 E/A and 2.00 E
+  are verified — tables are located by content, so other builds should load too. PS1: every
+  revision from SCPH-1000 to the PSone 4.5, and the PSP's POPS BIOS.
 - A PCSX2 memory card (`.ps2` image, with or without ECC, or a folder card). Optional: a game
   disc image (`.iso`, or a raw `.bin`/`.cue` CD rip) for the disc phase and the genuine logo.
 
@@ -110,6 +149,8 @@ cargo run --release -p ps2bootinspect                    # the app (Rust toolcha
 cargo run --release -p ps2kit --bin ps2history -- <card>  # dump a card's play history
 cargo run --release -p ps2bootinspect -- --render 95 out.png --bios <bios> --titles 21 --launches 60 --pal
 cargo test -p ps2kit                                     # checks against the Python tools and the Swift app
+cargo run --release -p ps2bootinspect -- --ui out.png --tab music --script "click 1148,154; key space; shot a.png"
+                                                         # the real UI, headless: scripted input, rendered to PNG
 ```
 
 Pre-built binaries for Windows, Linux and macOS come out of the GitHub Actions workflow
