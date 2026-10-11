@@ -526,6 +526,8 @@ pub struct Model {
     standalone_ps1_shell: Option<Ps1Shell>,
     /// The standalone shell's SCE intro (absent in POPS and the PS2's LOGO).
     pub sce_intro: Option<SceIntro>,
+    /// The standalone shell's no-disc menu, where a PS1 console without a disc ends.
+    pub ps1_menu: Option<ps2kit::ps1menu::Ps1Menu>,
     pub ps1_bios_path: Option<PathBuf>,
     pub ps1_bios_status: String,
     /// Every BIOS file in the BIOS folder, PS2 and PS1, for the pickers.
@@ -600,7 +602,7 @@ impl Model {
             options: RenderOptions::default(), free_camera_enabled: false, hovered_record: None, camera_mode: CameraMode::Scripted, path_params: CameraMode::ALL.map(CameraMode::default_params), free_zoom: 0.39, free_camera: FreeCamera { pivot: Vec3::new(0.0, 0.0, 120.0), distance: 100.0, yaw: 0.0, pitch: 0.0 },
             sound_enabled: true, sound_volume: 0.8, sound_status: "No sound loaded".into(), visualizer: VisualizerMode::Equalizer, snapshot: Snapshot::default(),
             timeline: Timeline::boot(0, video), sequence: BootSequence::new(video, 3.0, 0.0, 1.2, 6.0),
-            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), music: MusicMaker::default(), soundfonts: SoundfontShelf::new(&crate::settings::Settings::load()), edition: crate::Edition::Full, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
+            assets: None, rom: None, scene: OpeningScene::default(), logo_assets: None, ps1_shell: None, console: Console::Ps2, ps2_ps1_shell: None, ps1_bios: None, standalone_ps1_shell: None, sce_intro: None, ps1_menu: None, ps1_bios_path: None, ps1_bios_status: "No PS1 BIOS loaded".into(), shelf: Vec::new(), ps1_set_issues: Vec::new(), pup_summary: Vec::new(), bios_set_lines: Vec::new(), hook_map: None, disc_probe: None, ps1_narration: (Vec::new(), Vec::new()), ps1_card: None, pup_path: None, pup_diff: Vec::new(), card_icons: Vec::new(), icons_version: 0, director: None, director_seed: 1, ps3_lines: Vec::new(), ps3_firmware: None, asset_inspection: AssetInspection::default(), music: MusicMaker::default(), soundfonts: SoundfontShelf::new(&crate::settings::Settings::load()), edition: crate::Edition::Full, ps1_logo: None, ps2_logo_chime: Vec::new(), disc: None, disc_logo: None,
             audio: AudioPlayer::new(), assets_version: 0, logo_version: 0, cpu_ms: 0.0,
             analysis: Analysis::new(), card: None, card_history: None, sound_rx: None,
         }
@@ -791,7 +793,11 @@ impl Model {
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         match Ps1Bios::new(data).and_then(|b| Ps1Shell::load_ps1(&b).map(|s| (b, s))) {
             Ok((bios, shell)) => {
-                self.sce_intro = bios.shell_image().ok().and_then(|img| SceIntro::locate(&img, bios.identity()).map_err(|e| eprintln!("SCE intro: {e}")).ok());
+                let image = bios.shell_image().ok();
+                self.sce_intro = image.as_ref().and_then(|img| SceIntro::locate(img, bios.identity()).map_err(|e| eprintln!("SCE intro: {e}")).ok());
+                // The no-disc menu (`ps2kit::ps1menu`); the redesigned 3.0 E / 4.5 menu is not
+                // reconstructed yet and keeps the caption.
+                self.ps1_menu = image.as_ref().and_then(|img| ps2kit::ps1menu::Ps1Menu::locate(img, bios.identity()).ok());
                 let id = bios.identity();
                 self.ps1_bios_status = format!("{name} — {}", if id.version.is_empty() { "no version string (1.0)".to_string() } else { id.version.clone() });
                 self.standalone_ps1_shell = Some(shell);

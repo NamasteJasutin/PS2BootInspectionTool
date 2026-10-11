@@ -20,6 +20,7 @@ pub struct App {
     loaded_logo: u32,
     ps1_layout: Option<crate::scenes::ps1::Ps1Layout>,
     sce_textures: Option<crate::scenes::sce_intro::SceTextures>,
+    menu_textures: Option<crate::scenes::ps1_menu::MenuTextures>,
     loaded_icons: u32,
 }
 
@@ -32,7 +33,7 @@ impl App {
         let mut model = Model::new();
         model.load_defaults();
         model.set_edition(edition);
-        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None, loaded_icons: u32::MAX }
+        Self { model, renderer, view, last: Instant::now(), loaded_assets: u32::MAX, loaded_logo: u32::MAX, ps1_layout: None, sce_textures: None, menu_textures: None, loaded_icons: u32::MAX }
     }
 
     fn render_frame(&mut self, rs: &eframe::egui_wgpu::RenderState) {
@@ -46,6 +47,7 @@ impl App {
             self.renderer.set_logo_bitmap(bitmap.as_ref());
             self.ps1_layout = m.ps1_shell.as_ref().filter(|_| m.ps1_active()).map(|s| self.renderer.set_ps1_assets(s, &m.ps1_licence_text()));
             self.sce_textures = m.sce_intro.as_ref().filter(|_| m.console == Console::Ps1).map(|i| self.renderer.set_sce_assets(i));
+            self.menu_textures = m.ps1_menu.as_ref().filter(|_| m.console == Console::Ps1).map(|menu| self.renderer.set_ps1_menu_assets(menu));
             self.loaded_logo = m.logo_version;
         }
         // The card's own save icons over their games' towers (Camp 5): re-tagged when the card
@@ -80,6 +82,11 @@ impl App {
                         let f = intro.frame_for_video(local, m.video);
                         self.renderer.render_sce_intro(&mut enc, local as f32, &f, tex, m.video)
                     },
+                    // A PS1 console with no disc ends in its shell's main menu.
+                    Segment::Menu if m.console == Console::Ps1 && m.ps1_menu.is_some() && self.menu_textures.is_some() => {
+                        let (menu, tex) = (m.ps1_menu.as_ref().unwrap(), self.menu_textures.as_ref().unwrap());
+                        self.renderer.render_ps1_menu(&mut enc, local as f32, &menu.frame(0, 0, local), tex, m.video)
+                    }
                     _ => { self.renderer.logo_cached_field = None; self.renderer.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}) }
                 }
             }
@@ -206,7 +213,7 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
     let fps = m.timeline.fps();
     let status = if m.scene_kind == Scene::Full {
         let (span, local) = m.sequence.span_at(m.frame.max(0.0) as usize);
-        let name = segment_name(span.segment, m.ps1_active());
+        let name = if span.segment == Segment::Menu && m.console == Console::Ps1 { "TWO: PS1 shell main menu (no disc)" } else { segment_name(span.segment, m.ps1_active()) };
         format!("{name}  {:5.2} s  (segment frame {local})  camera z {:6.1}  roll {:+.2}   cpu {:4.1} ms", m.frame / fps, c.z, c.roll, m.cpu_ms)
     } else if m.frame < 0.0 {
         format!("power-on {:+5.2} s  (opening starts at 0)   cpu {:4.1} ms", m.frame / fps, m.cpu_ms)
@@ -266,6 +273,11 @@ fn picture(ui: &mut egui::Ui, m: &mut Model, view: &SceneView) {
             }
             VisualizerMode::Off => {}
         }
+    }
+
+    // A PS1 shell whose menu is not reconstructed (the redesigned 3.0 E / 4.5 one) says so.
+    if m.current_segment() == Some(Segment::Menu) && m.console == Console::Ps1 && m.ps1_menu.is_none() {
+        painter.text(avail.center(), egui::Align2::CENTER_CENTER, "This shell's redesigned main menu is not reconstructed yet:\nthe console would show it here (MEMORY CARD / CD PLAYER).", egui::FontId::proportional(15.0), Color32::GRAY);
     }
 
     // Hand-off card at the end of the full sequence.

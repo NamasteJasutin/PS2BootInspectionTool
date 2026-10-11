@@ -186,6 +186,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 Segment::Logo => if !ps1(&mut r, &mut enc, local as f32) { let anim = m.logo_animation().ok_or("no PS2LOGO")?; r.render_logo(&mut enc, local as f32, &anim, &m.options); if let Some(v) = &free { r.picture_plane(&mut enc, "copy", v) } },
                 Segment::Warning => r.render_warning(&mut enc, local as f32, assets.ok_or("no PS2 BIOS")?, &m.sequence.warning, free, &m.options, &warning_tex),
                 Segment::Intro => if let (Some(intro), Some(tex)) = (&m.sce_intro, &sce_tex) { r.render_sce_intro(&mut enc, local as f32, &intro.frame_for_video(local, m.video), tex, m.video) },
+                Segment::Menu if m.console == crate::model::Console::Ps1 && m.ps1_menu.is_some() => {
+                    let menu = m.ps1_menu.as_ref().unwrap();
+                    let tex = r.set_ps1_menu_assets(menu);
+                    r.render_ps1_menu(&mut enc, local as f32, &menu.frame(0, 0, local), &tex, m.video)
+                }
                 _ => r.pass(&mut enc, "scene", true, crate::renderer::DepthAction::None, |_, _| {}),
             }
         }
