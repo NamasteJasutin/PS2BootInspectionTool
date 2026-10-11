@@ -1,7 +1,7 @@
 //! The egui application: sidebar, the picture with camera input, visualiser, hand-off card.
 
 use crate::audio::{VisualizerMode, BAND_COUNT};
-use crate::model::{outcome_name, video_mode_name, CameraMode, Console, DiscOverride, HistorySource, Model, Scene, Tab, LANGUAGES, REGIONS};
+use crate::model::{outcome_name, video_mode_name, CameraMode, Console, DiscOverride, HistorySource, Model, Scene, Tab, Workspace, LANGUAGES, REGIONS};
 use crate::renderer::{Renderer, TowerLayout, TowerTint};
 use crate::{arc_device, SceneView};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
@@ -106,7 +106,7 @@ impl eframe::App for App {
         self.model.poll_sound();
         // The Music tab takes the focus: the boot pauses (and resumes where it was on leaving),
         // its audio stops and the 3D scene is not rendered.
-        let music = self.model.tab == Tab::Music;
+        let music = Workspace::of(self.model.tab) == Workspace::Studio;
         if music != self.model.music.focused {
             self.model.music.focused = music;
             if music { self.model.music.resume_boot = self.model.playing; self.model.playing = false }
@@ -122,7 +122,7 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| sidebar(ui, &mut self.model));
         });
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(root, |ui| {
-            if self.model.tab == Tab::Music { music_editor(ui, &mut self.model) } else { picture(ui, &mut self.model, &self.view) }
+            if Workspace::of(self.model.tab) == Workspace::Studio { music_editor(ui, &mut self.model) } else { picture(ui, &mut self.model, &self.view) }
         });
         ctx.request_repaint();
     }
@@ -321,9 +321,18 @@ fn file_row(ui: &mut egui::Ui, label: &str, status: &str, directories: bool, fil
 
 fn sidebar(ui: &mut egui::Ui, m: &mut Model) {
     ui.add_space(6.0);
-    ui.horizontal_wrapped(|ui| {
-        for t in Tab::ALL { ui.selectable_value(&mut m.tab, t, t.name()); }
+    // Workspaces first (Boot · Inspect · Studio), then the open workspace's own tabs.
+    let current = Workspace::of(m.tab);
+    ui.horizontal(|ui| {
+        for w in Workspace::ALL {
+            let b = egui::Button::selectable(w == current, egui::RichText::new(w.name()).size(15.0).strong()).min_size(Vec2::new(86.0, 28.0));
+            if ui.add(b).clicked() && w != current { m.tab = w.tabs()[0] }
+        }
     });
+    let tabs = Workspace::of(m.tab).tabs();
+    if tabs.len() > 1 {
+        ui.horizontal_wrapped(|ui| { for t in tabs { ui.selectable_value(&mut m.tab, *t, t.name()); } });
+    }
     ui.separator();
     match m.tab {
         Tab::Boot => boot_tab(ui, m),
@@ -853,6 +862,15 @@ fn history_svg(records: &[ps2kit::history::Record]) -> String {
 mod tests {
     use super::{history_svg, pareto};
     use ps2kit::history::PlayHistory;
+
+    #[test]
+    fn every_tab_lives_in_exactly_one_workspace() {
+        use crate::model::{Tab, Workspace};
+        for t in Tab::ALL {
+            let homes = Workspace::ALL.iter().filter(|w| w.tabs().contains(&t)).count();
+            assert_eq!(homes, 1, "{t:?} must belong to exactly one workspace");
+        }
+    }
 
     #[test]
     fn wav_header_and_clipping() {

@@ -103,6 +103,26 @@ impl Default for MusicMaker {
     fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None } }
 }
 
+/// The app's three workspaces, each a set of tabs: watching the boot, inspecting the files, and
+/// making music with everything the BIOS files hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Workspace { Boot, Inspect, Studio }
+
+impl Workspace {
+    pub const ALL: [Self; 3] = [Self::Boot, Self::Inspect, Self::Studio];
+    pub fn name(self) -> &'static str { match self { Self::Boot => "Boot", Self::Inspect => "Inspect", Self::Studio => "Studio" } }
+    /// The tabs this workspace shows, first one the default.
+    pub fn tabs(self) -> &'static [Tab] {
+        match self {
+            Self::Boot => &[Tab::Boot, Tab::SaveData],
+            Self::Inspect => &[Tab::Bios, Tab::Disc, Tab::Lab, Tab::Fonts],
+            Self::Studio => &[Tab::Music, Tab::Sound],
+        }
+    }
+    /// The workspace a tab belongs to.
+    pub fn of(tab: Tab) -> Self { Self::ALL.into_iter().find(|w| w.tabs().contains(&tab)).unwrap_or(Self::Boot) }
+}
+
 /// Which console's boot the picture plays.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Console { Ps2, Ps1 }
@@ -121,6 +141,8 @@ pub struct ShelfEntry {
 }
 
 impl Tab {
+    /// Every tab (the workspaces' test checks each lives in exactly one).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: [Self; 8] = [Self::Boot, Self::SaveData, Self::Disc, Self::Bios, Self::Lab, Self::Sound, Self::Fonts, Self::Music];
     pub fn name(self) -> &'static str {
         match self { Self::Boot => "Boot", Self::SaveData => "Save data", Self::Disc => "Disc", Self::Bios => "BIOS", Self::Lab => "Lab", Self::Sound => "Sound", Self::Fonts => "Fonts", Self::Music => "Music" }
