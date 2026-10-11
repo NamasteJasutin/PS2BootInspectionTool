@@ -86,8 +86,8 @@ the game. The game is never run.
 ### Three workspaces
 
 **Boot** (the scene: console, files, scenario, cameras, director, save data and towers),
-**Inspect** (BIOS, Disc, Lab, Fonts — every console in one place) and **Studio** (music). The
-Studio takes the focus: the boot pauses and resumes where it was when you leave.
+**Inspect** (BIOS, Disc, Lab, Fonts — every console in one place) and **Studio** (Music, Sound,
+Soundfonts). The Studio takes the focus: the boot pauses and resumes where it was when you leave.
 
 ### The PlayStation, too
 
@@ -121,6 +121,18 @@ with playhead and loop, piano roll, drum grid, inspector. Import the PS2 boot mu
 licence chime or the SCE intro as a starting song; save `.psxsong` (notes and recipes only, never
 audio), export WAV or the PS2 BIOS's own SSsq sequence format.
 
+**Soundfonts from your games.** Games carry far more instruments than the BIOS. The Studio's
+*Soundfonts* tab extracts the sound banks from your own disc images — PS1 VAB (and split VH/VB),
+SEQ and VAG; PS2 SShd/SSsq, HD/BD and VAG; RIFF WAVE — checking each by parsing it, into a
+Soundfonts folder (the platform's data folder by default, or one you choose): one set per disc,
+in the native formats, with an index of where each bank came from. The Studio's library reads
+the folder with your BIOS files, so a song can mix the PS2 boot pads with a game's drums. Nothing
+in that folder comes with the app; `extract <disc>` / `extract --all <folder>` do the same from
+the command line.
+
+**PSX Studio** is the Studio on its own: `psxstudio` (on macOS *PSX Studio.app*) opens straight
+into Music, Sound and Soundfonts, without the boot scenes.
+
 ### Beyond the PS2 (the Save data tab)
 
 The Save-data tab reads
@@ -146,6 +158,7 @@ but nothing that isn't yours.
 
 ```sh
 cargo run --release -p psxbootinspect                    # the app (Rust toolchain from rustup.rs)
+cargo run --release -p psxbootinspect --bin psxstudio    # PSX Studio: the Studio on its own
 cargo run --release -p ps2kit --bin ps2history -- <card>  # dump a card's play history
 cargo run --release -p psxbootinspect -- --render 95 out.png --bios <bios> --titles 21 --launches 60 --pal
 cargo test -p ps2kit                                     # checks against the Python tools and the Swift app

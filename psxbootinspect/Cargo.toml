@@ -10,6 +10,7 @@ readme = "../README.md"
 keywords = ["playstation", "ps2", "pcsx2", "bios", "wgpu"]
 categories = ["emulators", "games", "visualization"]
 publish = false
+default-run = "psxbootinspect"
 
 [dependencies]
 ps2kit = { version = "0.3.0", path = "../ps2kit" }
