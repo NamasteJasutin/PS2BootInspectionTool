@@ -1,0 +1,63 @@
+== PS1 POST byte sequence (0x1F802041) ==
+''Suggested page: PS1 → Hardware Registers → POST Byte (0x1F802041) or Kernel Initialization Stages.''
+
+During power-on and kernel initialization, the PlayStation ROM writes a diagnostic progress byte to expansion register '''<code>0x1F802041</code>''' (via routine <code>rom:BFC01A60</code>: <code>sb a0, 0x2041(0x1F800000)</code>). Emulators or hardware logic analyzers monitoring this single byte can observe the boot sequence and diagnose failures.
+
+The exact stage sequence depends on the console's kernel generation:
+* '''K1 kernel''' (SCPH-1000 1.0 J, SCPH-3000 1.1 J, SCPH-1002 2.0 E):
+:<code>F → E → 1 → 2 → 3 → 4 → 5 → 6 → 7 → [0 → 1 → 2 → 5] → 8 → 9</code>
+* '''K2 kernel''' (2.2 J/A/E from Dec 1995 through PSone 4.5 and PSP POPS):
+:<code>F → E → 1 → 2 → 3 → 4 → [1 → 3 → 4 → 5 → 6 → 2] → 5 → 6 → 7 → [0 → 1 → 2 → 5] → 8 → 9</code>
+
+On any boot failure, the kernel writes byte '''<code>0xF</code>''' and halts in an infinite loop.
+
+=== Breakdown of stages ===
+
+{| class="wikitable"
+! POST byte !! Subsystem !! Address !! Description
+|-
+| '''F''' || Bootstrap || <code>rom:BFC06EC4</code> || Reset vector reached. Cache invalidated, registers zeroed. Pre-boot expansion ROM check.
+|-
+| '''E''' || Bootstrap || <code>rom:BFC06EC4</code> || Pre-boot expansion check finished (at <code>0x1F000084</code>); <code>ttyflag</code> set to 0.
+|-
+| '''1''' || Bootstrap || <code>rom:BFC067E8</code> || CPU interrupts disabled (Status Register & ~0x401), SPU volume zeroed.
+|-
+| '''2''' || Bootstrap || <code>rom:BFC00420</code> || Kernel copied from ROM <code>0xBFC10000</code> to RAM <code>0xA0000500</code> (0x8BF0 bytes); kernel .bss zeroed.
+|-
+| '''3''' || Bootstrap || <code>rom:BFC042D0</code> || A0 vector table copied from ROM to <code>0x00000200</code>; B0/C0 vector handlers initialized.
+|-
+| '''4''' || Bootstrap || <code>rom:BFC0686C</code> || Written immediately before invoking the kernel's device installation (<code>C0:12 InstallDevices</code>).
+|-
+| ''[1]'' || Kernel (K2) || <code>k:27C0</code> / <code>k:4360</code> || Inside <code>InstallDevices</code>: entry.
+|-
+| ''[3]'' || Kernel (K2) || <code>k:4360</code> || Before adding the kernel's built-in device handler (<code>k:6DC0</code>).
+|-
+| ''[4]'' || Kernel (K2) || <code>k:4360</code> || After built-in device added; before installing TTY device (dummy or DUART).
+|-
+| ''[5]'' || Kernel (K2) || <code>k:4360</code> || Before <code>C0:13 FlushStdInOutPut</code>.
+|-
+| ''[6]'' || Kernel (K2) || <code>k:4360</code> || After stdio flush.
+|-
+| ''[2]'' || Kernel (K2) || <code>k:4360</code> || Before <code>A0:96 AddCDROMDevice</code> and <code>A0:97 AddMemCardDevice</code>.
+|-
+| '''5''' || Bootstrap || <code>rom:BFC068AC</code> || Device installation complete; bootstrap prints initial banner <code>"PS-X Realtime Kernel Ver.2.5"</code> (to dummy TTY).
+|-
+| '''6''' || Bootstrap || <code>rom:BFC04610</code> || Initial kernel setup: default config applied (<code>{TCB: 4, EVENT: 0x10, STACK: 0x801FFF00}</code>); <code>SysInitMemory</code> allocates heap, EvCB, and TCB structures.
+|-
+| '''7''' || Bootstrap || <code>rom:BFC06FF0</code> || Shell image copied (<code>0xBFC18000</code> → <code>0x80030000</code>, 0x67FF0 bytes); cache flushed; jump to <code>0x80030000</code> with register <code>a0 = 7</code>.
+|-
+| ''[0]'' || Shell || <code>sh:80030798</code> || Shell reads disc system area (LBA 4 text, LBA 5–11 logo TMD).
+|-
+| ''[1, 2, 5]'' || Shell || <code>sh:80030798</code> || Shell completes licence verification / visual presentation and prepares to return to the ROM bootstrap.
+|-
+| '''8''' || Bootstrap || <code>rom:BFC073A0</code> || Shell returns. Bootstrap re-initializes CD driver (<code>CdInit</code>); reads PVD at LBA 16; XORs path table into disc identity; post-boot expansion ROM hook (<code>0x1F000004</code>).
+|-
+| '''9''' || Bootstrap || <code>rom:BFC06784</code> || Opens <code>cdrom:SYSTEM.CNF;1</code>; parses configuration; user RAM wiped; loads executable (<code>LoadExeFile</code>); pre-exec ReadTOC/GetID re-check; jumps to game entry.
+|}
+
+=== Error behavior ===
+The PlayStation kernel implements errors through <code>A0:A1 SystemErrorBootOrDiskFailure</code>:
+* Every stage arms a <code>setjmp</code> buffer (<code>0xA000B980</code>) with a specific stage code (e.g., <code>0x385</code> before the shell, <code>0x387</code> before opening <code>SYSTEM.CNF</code>, <code>0x38A</code> on executable load failure, <code>0x38B</code> on pre-exec disc check failure).
+* When an error occurs or an I/O operation aborts, the handler writes POST code '''<code>0xF</code>''' to <code>0x1F802041</code> and enters an infinite loop. Nothing is printed to screen or serial port.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_kernel_boot.md §1.2, §1.3 and notes/research/ps1_version_matrix.md §2.2.''

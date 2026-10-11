@@ -1,0 +1,44 @@
+== PS1 shell licence policy per revision ==
+''Suggested page: PS1 → Copy Protection → Licence Verification and Shell Revision Differences.''
+
+The PlayStation boot screen displays a "Licensed by Sony Computer Entertainment..." notice and the 3D PlayStation diamond logo below the SCE intro. Contrary to popular belief, whether these elements are verified against reference data in the BIOS is '''a property of the shell's executable code, not of the version number'''.
+
+=== The drive-side gate vs the shell check ===
+The true anti-piracy gate on the PlayStation happens in the CD controller's sub-CPU hardware:
+# The drive examines the physical wobble-groove during track lead-in and returns its verdict via CD command <code>GetID (0x1A)</code>.
+# A licensed PlayStation disc returns <code>INT2</code> with bit 7 of the flags byte clear (<code>flags & 0x80 == 0</code>).
+# The four regional letters ("SCEA", "SCEE", "SCEI") returned by <code>GetID</code> are stored by the shell and drawn off-screen (at coordinates 320, 400, beyond the visible 240/256-line display). They are '''never compared with the console's region'''.
+# If <code>GetID</code> passes, the shell reads the disc's system area: 1 sector at '''LBA 4''' (licence text line, up to 72 bytes) and 7 sectors starting at '''LBA 5''' (0x3800 bytes containing the 3D logo TMD model).
+
+=== Policy matrix by revision ===
+Whether the shell compares the disc's LBA 4 string and the first 12,920 (0x3278) bytes of the LBA 5 model data against reference copies inside the BIOS depends on an internal flag:
+
+{| class="wikitable"
+! Shell revision !! Exemplar models !! Licence string in ROM !! Reference TMD in ROM !! Check flag !! Effective verification
+|-
+| 1.0 J, 1.1 J || SCPH-1000, SCPH-3000 || <code>…Inc.</code> (64 chars) || Yes (<code>0x80077744</code>) || None (unconditional) || '''Enforced''': mismatch or read error hangs at <code>'B' 0x38D</code>
+|-
+| 2.0 E || SCPH-1002 || None || None || None || '''Disabled''': no comparison
+|-
+| 2.2 J, 3.0 J, 4.0 J || SCPH-5000, SCPH-5500, SCPH-7000 || <code>…Inc.</code> (64 chars) || Yes (<code>0x800599B0</code>) || Constant <code>1</code> (<code>0x8007CBFC</code>) || '''Enforced''': disc text and logo must match ROM
+|-
+| 2.2 A, 2.2 E, 3.0 A, 3.0 E, 4.1 A/E || SCPH-1001, DTL-H3002, SCPH-5501, SCPH-5502, SCPH-7001 || <code>…Inc.</code> (dead data) || None || Constant <code>0</code> (<code>0x80079E2C</code>) || '''Disabled''': disc text and logo drawn unchecked
+|-
+| 4.5 A (PSone) || SCPH-101 || Three strings || Yes (<code>0x80069360</code>) || Initialized 1; cleared if letter == 'A' || '''Disabled on SCPH-101''' (flag cleared by 'A')
+|-
+| 4.5 E (PSone) || SCPH-102 [I] || Three strings || Yes || Letter != 'A' || '''Enforced''': checked against Europe strings
+|-
+| PS2 rom0:LOGO || All PS2 models || Three strings (1.60+) || Yes (<code>0x8003F540</code>) || Letter-driven (1.00 J: constant 1) || '''Disabled on A, enforced on E/J'''
+|-
+| PSP POPS || PSXONPSP660.BIN || None || Yes (drawn, not compared) || None || '''Disabled''': disc logo not read; draws ROM TMD
+|}
+
+=== Why the version number is not enough ===
+A tool or emulator cannot rely on the version string at ROM offset <code>0x7FF32</code> alone:
+* '''Version 2.2''': <code>2.2 12/04/95 J</code> (SCPH-5000) strictly enforces the licence text and logo TMD comparison. However, <code>2.2 12/04/95 A</code> (SCPH-1001) and <code>2.2 12/04/95 E</code> (DTL-H3002) hard-code the check flag to 0, completely omitting the check. They share the same kernel build date and version number.
+* '''PSone 4.5''': The shell routine at <code>sh:80030A6C</code> initializes the flag to 1, but tests the last character of the tail version string. If the letter is <code>'A'</code> (as in the North American SCPH-101), the flag is cleared to 0. If the letter is <code>'E'</code>, it selects the European licence strings (<code>"…Entertainment Euro pe   "</code> or <code>"…Entertainment(Europe)"</code>) and enforces the comparison.
+* On American consoles (2.2 A, 3.0 A, 4.1 A, 4.5 A) and Western European consoles (2.0 E, 2.2 E, 3.0 E, 4.1 E), the PlayStation logo shown on screen is read from sectors 5–11 of the disc and displayed verbatim without any integrity check. If an inserted disc has a modified logo model, Western consoles happily render it, whereas Japanese consoles hang with error <code>0x38D</code> and POST byte 7.
+
+To determine whether a given BIOS verifies licence data, software must either decompile the flag assignment in <code>shell_entry</code> (testing whether <code>lui/ori</code> stores 0 or 1, or branches on the version letter) or inspect the presence of the 12,920-byte reference TMD asset in the ROM.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_kernel_boot.md §3.2, §3.3 and notes/research/ps1_version_matrix.md §3.4.''

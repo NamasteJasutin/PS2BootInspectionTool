@@ -1,0 +1,38 @@
+== PlayStation 2's PS1 backwards compatibility mode (TBIN, SBIN, LOGO, KROM) ==
+''Suggested page: PS2 → Backwards Compatibility → PS1 Mode Architecture.''
+
+Unlike software emulators or the PSP's POPS, the PlayStation 2 does '''not embed a standalone 512 KiB PS1 BIOS'''. Instead, when booting a PlayStation 1 disc, the PS2's IOP (which incorporates the original R3000 CPU core) reconfigures into PS1 hardware mode and executes a modular set of components stored in <code>rom0</code>.
+
+=== Component breakdown in rom0 ===
+The PS1 environment is split into four distinct ROMDIR modules:
+
+{| class="wikitable"
+! Module !! Role !! PS1 offset !! Implementation details
+|-
+| '''rom0:TBIN''' + '''rom0:SBIN''' || Bootstrap & Kernel || N/A (runs from ROM) || Replaces the PS1 bootstrap and K1/K2 kernel. Header reads <code>"PS compatible mode by M.T."</code>, containing Realtime Kernel 2.5 and ROM monitor Ver 2.6 (1999). '''Byte-identical across all six PS2 ROM generations''' (from 1.00 J in 2000 to 2.00 E in 2004). Unlike the PS1, it executes in place via ROMDIR rather than copying <code>0x8BF0</code> bytes to <code>0xA0000500</code>.
+|-
+| '''rom0:LOGO''' || Shell / Licence screen || N/A (loaded by ROMDIR) || Replaces the PS1 shell. Contains '''only the licence verification and PlayStation logo scene'''; the SCE intro, CD audio player, and memory card manager are completely omitted.
+|-
+| '''rom0:KROM''' || Shift-JIS kanji font || <code>0x66000..0x7FE70</code> || Exactly preserves the PS1 memory-mapped offset. '''Byte-identical to every retail PS1 BIOS''' (0x19E70 bytes, SHA-1 prefix <code>50bd0533</code>).
+|-
+| '''rom0:KROMG''' || Gaiji font || <code>0x64000..0x65CB7</code> || Corresponds to PS1 "Block A": contains 245 1-bit glyphs of 30 bytes each (16 × 15 bitmap rows) for accented and half-width characters. The trailing 16-bit table found in retail PS1 ROMs (<code>0x65CB7..0x66000</code>) is zeroed.
+|-
+| '''rom0:VERSTR''' || Shell version string || <code>0x7FF30</code> || Replaces the PS1 tail version string, formatted as <code>"System ROM Version 5.0 mm/dd/yy R"</code>.
+|}
+
+=== Revisions of rom0:LOGO ===
+While TBIN, SBIN, KROM, and KROMG never changed throughout the PS2's life cycle, <code>rom0:LOGO</code> saw three distinct builds:
+# '''1.00 J build''' (SCPH-10000): contains only the <code>...Inc.</code> licence string; check flag is hardcoded to 1 (enforcing the check for Japanese discs).
+# '''1.50 devkit build''' (DTL-H30101): contains no licence strings; check flag is disabled.
+# '''1.60 / 2.00 build''' (SCPH-3000x through SCPH-7000x): sibling of the PSone 4.5 shell. Contains three regional licence strings (<code>...Inc.</code>, <code>...Euro pe   </code>, <code>...Entertainment(Europe)</code>). The check is letter-driven based on <code>VERSTR</code> (disabled for <code>'A'</code>, European strings for <code>'E'</code>, <code>...Inc.</code> otherwise).
+
+=== Boot flow and hand-off ===
+# '''OSDSYS dispatch''': OSDSYS verifies the disc type (types 0x10–0x14 for PS1 CD-ROM) and applies title-specific compatibility parameters via <code>PS1DRV</code> (which maintains an internal database of 71 to 182 title records, or loads <code>TITLE.DB</code> from a memory card).
+# '''TBIN entry''': The IOP switches to PS1 mode and executes <code>TBIN</code>.
+# '''Licence verification''': <code>TBIN</code> executes <code>rom0:LOGO</code>. <code>LOGO</code> checks the disc's system area (LBA 4 text and LBA 5–11 3D model) against its internal reference TMD (<code>0x8003F540</code>) when required by the regional policy, renders the PlayStation logo, and returns.
+# '''Kernel execution''': <code>TBIN</code> opens <code>cdrom:SYSTEM.CNF;1</code>, parsing <code>TCB</code>, <code>EVENT</code>, <code>STACK</code>, and <code>BOOT</code> according to the PS1 kernel grammar, loads the PS-X EXE, and branches to the game entry point.
+
+=== Regional mismatch anomaly ===
+In the SCPH-39004 BIOS (dated 2002-03-19), the console's main <code>ROMVER</code> identifies as American (<code>0160AC20020319</code>), but its embedded PS1 <code>VERSTR</code> string ends with <code>'E'</code> (<code>5.0 03/19/02 E</code>). Consequently, PS2 titles run under American region rules, but PS1 titles execute under European PAL rules and enforce European licence text checks.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_version_matrix.md §0, §7 and notes/research/kernel_eeload_hooks.md §1.1.''

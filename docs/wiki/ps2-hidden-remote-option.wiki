@@ -1,0 +1,44 @@
+== PS2 2.00 hidden Remote Control option page ==
+''Suggested page: PS2 → OSDSYS → Hidden Options & Service Menus.''
+
+In PlayStation 2 BIOS version 2.00 E (SCPH-70004), reverse engineering of <code>rom0:OSDSYS</code> reveals a hidden configuration page titled '''"Remote Control Off/On"'''. The page is reachable from the Version Information screen via a controller chord on port 2, but is gated by a MechaCon EEPROM configuration bit.
+
+=== Trigger combination ===
+# In the OSDSYS main menu, press '''Triangle''' to enter Version Information.
+# Highlight the '''Console''' entry.
+# On '''controller port 2, slot 0''', hold:
+:'''Select + Start + L1 + L2 + R1 + R2''' (active-high digital mask <code>0x090F</code>).
+# Routine <code>0x2266F0</code> tests:
+:<code>(port2_buttons & 0x090F) == 0x090F</code>
+#* There is '''no hold duration or sequential code'''; it evaluates as a subset bitmask on the current frame.
+#* '''Port input-folding detail''': the pad poller at <code>0x208DB8</code> constructs each pad's state using its own high byte (Start/Select/D-pad) but an accumulated low byte (shoulders/face buttons) from earlier polled ports. Consequently, holding the shoulder buttons on port 1 while pressing Start + Select on port 2 also satisfies the condition [I].
+
+=== Menu registration and display ===
+* The hidden option record is registered at <code>0x206CC8</code>.
+* It is placed after the ordinary list terminator, so it does not appear as a selectable line in the normal menu.
+* When triggered, <code>0x224678</code> invokes builder <code>0x206AA8</code> with string ID <code>0x67</code> (<code>"Remote Control"</code>) and value ID <code>0x12</code> (editor strategy 2), presenting an '''Off / On''' toggle.
+* This feature was not present in earlier revisions (1.00 J MCLOCK <code>0x605AC0</code>, 1.50 devkit <code>0x220D10</code>, or 1.60 <code>0x2215E0</code>).
+
+=== Configuration bits and MechaCon gate ===
+The hidden option is governed by three distinct bits in packed MechaCon configuration byte <code>0x13</code> (unpacked by <code>0x203A08</code>):
+
+{| class="wikitable"
+! Packed config byte !! Unpacked field !! Function in OSDSYS 2.00 E
+|-
+| '''Byte 0x13, bit 7''' || Config word 1, bit 2 (getter <code>0x204468</code>) || '''Hidden menu gate''': enables registration of the port 2 hidden option record at <code>0x206CC8</code>.
+|-
+| '''Byte 0x13, bit 6''' || Config word 1, bit 3 (getter <code>0x204428</code>) || '''Current setting''': stores Remote Control Off (0) vs On (1).
+|-
+| '''Byte 0x13, bit 5''' || Config word 1, bit 4 (getter <code>0x2044A8</code>) || '''Standard menu visibility''': controls whether the Remote Control option appears in the standard System Configuration menu.
+|}
+
+=== Reachability on retail hardware ===
+In an authentic SCPH-70004 retail NVM dump, raw byte <code>0x2C4</code> (corresponding to packed byte <code>0x13</code>) holds value '''<code>0x20</code>''':
+* Bit 5 is set (standard Remote Control item visible).
+* Bit 7 is '''clear (0)''', meaning the hidden option gate is disabled in standard factory units.
+
+Furthermore, during cold boot, OSDSYS <code>main</code> (<code>0x209EB8</code>) sends CDVD S-command RPC fno <code>0x30</code> with the inverse of the Remote Control setting. If the drive firmware responds with a status word containing <code>0x100</code>, the branch at <code>0x20A334</code> forcibly '''clears both the hidden gate (bit 7) and the ordinary menu bit (bit 5)'''.
+
+The original purpose of this hidden page is believed to be factory provisioning or MechaCon production testing, rather than an end-user Easter egg.
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/hidden_input.md §1, §3.''

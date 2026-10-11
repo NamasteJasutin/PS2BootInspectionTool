@@ -1,0 +1,54 @@
+== Construction of the PS1 SCE intro ==
+''Suggested page: PS1 → Boot Sequence → Sony Computer Entertainment Intro.''
+
+The PlayStation's iconic power-on sequence — featuring the grey background fade, the orange/red Sony Computer Entertainment diamond logo, and the atmospheric bass sweep followed by chime arpeggios — is handled entirely by code in the standalone PS1 BIOS (routine <code>0x80040520</code> in version 3.0 A). This sequence is unique to standalone PS1/PSone consoles and is completely absent from the PS2's embedded <code>rom0:LOGO</code> and PSP POPS.
+
+=== Video and timeline ===
+The scene displays in '''640 × 480 interlaced 15-bit''' mode (display environment: 640 × 478 at y=2; PAL adds <code>screen.x = 3, screen.y = 27</code>). Frame synchronization is locked to <code>VSync(0)</code> (1 field per frame: 60 Hz NTSC, 50 Hz PAL).
+
+The sequence progresses across four phases (field counts in NTSC; PAL in brackets):
+# '''Black lead-in''' (8 fields [PAL: 8]; 4 fields on SCPH-1000 1.0 J): screen remains pure black (0, 0, 0).
+# '''Background fade''' (61 fields [PAL: 51]): full-screen clear color interpolates linearly from (0, 0, 0) black to '''(180, 180, 180)''' grey (0xB4, 0xB4, 0xB4). Nothing else is drawn.
+# '''Diamond animation and logotype fade''' (180 fields [PAL: 150]):
+#* ''Slide and shrink'' (60 fields [PAL: 50]): the procedural diamond constructs on screen.
+#* ''Logotype fade-in'' (17 fields): "SONY COMPUTER ENTERTAINMENT" logotype sprites fade in from the background grey.
+#* ''Hold'' (120 fields [PAL: 100]): the completed logo holds until the disc spin-up and decision logic take over.
+# '''Exit''': the grey screen remains while the drive reads the disc system area (or transitions to the no-disc menu). Total active animation time is '''249 fields (≈4.15 s)''' on NTSC and '''209 fields (≈4.18 s)''' on PAL.
+
+=== Procedural geometry: the SCE diamond ===
+The central diamond is '''not a 3D model file (TMD)''', but is generated procedurally in code from parameters at <code>0x80078060</code> (routine <code>0x80040BB4</code>):
+* '''Center quad (<code>POLY_G4</code>, opaque)''': corners (-128, 0) red, (0, -128) orange, (0, 128) orange, and (128, 0) red, centered at screen coordinate (320, 240). Brightness is scaled to 70%:
+** Red = (178, 0, 0) (<code>70 * 255 / 100</code>)
+** Orange = (178, 140, 0) (<code>70 * 200 / 100</code>)
+** Drawn into ordering table slot OT[5].
+* '''Two sliding triangles (<code>POLY_G3</code>)''': each triangle has its apex colored red and base colored orange.
+** Left triangle: apex (0, 0), base (128, -128) and (128, 128), originating at offset (-128, 0).
+** Right triangle: apex (0, 0), base (-128, -128) and (-128, 128), originating at offset (128, 0).
+** Over <code>T = 60</code> fields [PAL: 50], both triangles slide inward and shrink toward the center:
+*** Position: <code>(-128 + 80 * t / T, -48 * t / T)</code> for the left triangle, mirrored horizontally for the right triangle.
+*** Scale: interpolates linearly from <code>1.0</code> (0x1000) down to <code>0.448</code> (0x72E).
+** Drawn into ordering table slot OT[4] (above the quad in reverse-OT order), forming the stylized "S" diamond.
+
+=== Logotypes and CLUT interpolation ===
+Once the triangle slide completes, three 4-bit TIM sprites appear, anchored at their centers:
+* <code>"SONY"</code> (240 × 48 TIM) at (320, 80)
+* <code>"COMPUTER ENTERTAINMENT"</code> (240 × 60 TIM) at (320, 412)
+* <code>"TM"</code> (24 × 12 TIM) at (352, 365)
+*(On PSone 4.5 NTSC, these are replaced by 200 × 36, 200 × 44, and a 24 × 10 ® mark).*
+
+Rather than using semi-transparency, the shell fades the text in by '''interpolating the 16-color CLUT entries across 17 fields''' (routine <code>0x800417A0</code>). Each 5-bit color component blends from flat grey (value 22/31, matching the 180 background grey) to its target color:
+:<code>component = (target * t + 22 * (17 - t)) / 17</code>
+
+=== Sound synthesis and the clock jump ===
+The audio uses the same <code>pBAV</code> version 6 bank (0xBA80 bytes at <code>0x80069000</code>) as the licence screen:
+* '''Program 1 (the sweep)''': uses VAG sample 3 (22,304 bytes, center note 60).
+* '''Program 3 (the chime arpeggio)''': uses VAG sample 1 (chime tone).
+
+The intro's sequence table (<code>0x80074A80</code>) contains 40 note events terminated by timestamp 9999. The driver uses a unique timing offset:
+# At <code>t = 0</code>, before the black screen fade begins, routine <code>0x8003F940</code> keys the two initial bass sweep notes (program 1, notes 36 and 48) at master reverb volume 94.
+# The sound driver clock is then immediately '''jumped forward to tick 89 [PAL: 74]'''.
+# While the diamond loop runs, the table ticks once per field, keying off the sweep at tick 30 (the first diamond field) and stepping through the rising chime arpeggio (program 3, notes 50, 55, 60, 62, 67, 64) every 5 fields.
+# At ticks 169–170, a second, deeper sweep (program 1, notes 29 and 41) sounds underneath the logotype text fade-in.
+# As the scene exits into the licence screen or main menu, routine <code>0x8003FB54</code> sends key-offs for the sustained voices (program 3 notes 62/64 and program 1 notes 29/41).
+
+''Source: [https://github.com/NamasteJasutin/PS2BootInspectionTool PS2BootInspectionTool], notes/research/ps1_shell_scenes.md §1a, §2, §4.''
