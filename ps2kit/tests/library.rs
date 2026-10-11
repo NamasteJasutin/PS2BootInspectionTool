@@ -11,7 +11,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = Path::new("/tmp/m3-library").join(format!(
+        let dir = std::env::temp_dir().join("m3-library").join(format!(
             "test-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

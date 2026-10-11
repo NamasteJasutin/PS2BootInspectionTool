@@ -180,11 +180,11 @@ pub struct LibraryBank {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Evidence {
-    /// A recovered call site or stored table verifies the role [V].
+    /// A recovered call site or stored table verifies the role \[V\].
     Verified,
-    /// A descriptive audition/timing interpretation [I].
+    /// A descriptive audition/timing interpretation \[I\].
     Inferred,
-    /// Stored and registered [V], but no actual trigger role was verified.
+    /// Stored and registered \[V\], but no actual trigger role was verified.
     RegisteredCue,
 }
 
@@ -196,7 +196,7 @@ pub struct TimingVariant {
     pub label: String,
     /// Input whose shell code provided the timing recipe.
     pub source: Provenance,
-    /// Repository-recovered scene schedule [I], with native bank binding.
+    /// Repository-recovered scene schedule \[I\], with native bank binding.
     pub song: Song,
 }
 

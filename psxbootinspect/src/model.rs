@@ -75,9 +75,12 @@ impl Default for AssetInspection {
 /// and what the editor has selected.
 pub struct MusicMaker {
     pub song: Option<ps2kit::song::Song>,
-    pub bench: Option<(ps2kit::song::BankRef, ps2kit::bench::SoundBench)>,
-    /// The bench's programs grouped by style, for the instrument picker.
-    pub styles: Vec<(ps2kit::bench::Style, Vec<(i32, ps2kit::bench::Character)>)>,
+    /// Every distinct bank and piece of music in the BIOS files on the shelf (`ps2kit::library`),
+    /// scanned once in the background the first time the Studio opens.
+    pub library: Option<std::sync::Arc<ps2kit::library::SoundLibrary>>,
+    pub library_rx: Option<mpsc::Receiver<ps2kit::library::SoundLibrary>>,
+    /// The library's sounds grouped by measured style, across banks and consoles.
+    pub styles: ps2kit::library::LibraryStyles,
     pub channel: usize,
     pub pattern: usize,
     /// Lowest key shown in the piano roll.
@@ -87,6 +90,8 @@ pub struct MusicMaker {
     pub status: String,
     /// The bar last clicked in the arrangement.
     pub selected_bar: usize,
+    /// First bar shown in the arranger (long pieces scroll).
+    pub bar_offset: usize,
     /// Looping bars `[start, end)` on the transport, if set.
     pub loop_bars: Option<(usize, usize)>,
     pub loop_anchor: usize,
@@ -102,7 +107,7 @@ pub struct MusicMaker {
 
 
 impl Default for MusicMaker {
-    fn default() -> Self { Self { song: None, bench: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None, roll_for: (usize::MAX, 0) } }
+    fn default() -> Self { Self { song: None, library: None, library_rx: None, styles: Vec::new(), channel: 0, pattern: 0, low_key: 48, step: 0, status: String::new(), selected_bar: 0, bar_offset: 0, loop_bars: None, loop_anchor: 0, focused: false, resume_boot: false, rendered_hash: 0, last_render: None, roll_for: (usize::MAX, 0) } }
 }
 
 /// The app's three workspaces, each a set of tabs: watching the boot, inspecting the files, and

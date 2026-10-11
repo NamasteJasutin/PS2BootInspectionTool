@@ -4,7 +4,8 @@
 //! PNG with egui-wgpu. Script steps, separated by `;`: `click x,y`, `rclick x,y`,
 //! `drag x1,y1 x2,y2`, `wheel x,y dy`, `key space|enter|escape`, `type text`, `frames n`,
 //! `shot path.png` (a PNG of that moment; the final frame always goes to `<out.png>`),
-//! `save song.psxsong`, `wav song.wav` (the song as the engine renders it).
+//! `save song.psxsong`, `wav song.wav` (the song as the engine renders it), `waitlib` (wait
+//! for the Studio's background library scan).
 
 use crate::model::{Model, Tab};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -132,12 +133,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 h.frame(vec![Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }]);
             }
             "type" => h.frame(vec![Event::Text(rest.to_string())]),
+            // Blocks until the Studio's background library scan has finished (up to two minutes).
+            "waitlib" => {
+                h.model.tab = Tab::Music;
+                for _ in 0..1200 { h.frame(Vec::new()); if h.model.music.library.is_some() { break } std::thread::sleep(std::time::Duration::from_millis(100)) }
+                if h.model.music.library.is_none() { return Err("the library did not load".into()) }
+                h.frame(Vec::new());
+            }
             "frames" => for _ in 0..rest.parse::<usize>().map_err(|_| "frames n")? { h.frame(Vec::new()) },
             "shot" => { h.frame(Vec::new()); h.snapshot(rest)? }
             "save" => { let song = h.model.music.song.as_ref().ok_or("no song")?; std::fs::write(rest, song.to_text().map_err(|e| e.to_string())?).map_err(|e| e.to_string())? }
             "wav" => {
-                let (song, (_, bench)) = (h.model.music.song.as_ref().ok_or("no song")?, h.model.music.bench.as_ref().ok_or("no bank")?);
-                song.write_wav(bench, rest).map_err(|e| e.to_string())?;
+                let (song, lib) = (h.model.music.song.as_ref().ok_or("no song")?, h.model.music.library.as_ref().ok_or("library not loaded (use waitlib)")?);
+                std::fs::write(rest, crate::ui::wav_bytes(&song.render(lib.as_ref()))).map_err(|e| e.to_string())?;
             }
             other => return Err(format!("unknown step {other:?}")),
         }
